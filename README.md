@@ -321,8 +321,11 @@ If a cross-type overlap is intentional and the template occurrence has not
 been generated yet, accept that decision explicitly with
 `skip_template_occurrence`. The command creates the template-owned occurrence
 directly as CANCELLED even while the conflicting lesson remains in place.
-Future generation then sees the template-owned CANCELLED occurrence as the
-authoritative decision for that slot.
+Past dates are rejected. The skip records both the template-level
+`ScheduleTemplateOccurrenceSkipped` event and a lesson-level
+`LessonCancelled` event under one correlation ID. Future generation then sees
+the template-owned CANCELLED occurrence as the authoritative decision for that
+slot.
 
 Direct cancellation of a DRAFT lesson is rejected when it has an active
 `LessonEnrollment` or active `OneTimeEntitlement`. Use
