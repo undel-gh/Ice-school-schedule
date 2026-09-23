@@ -610,10 +610,11 @@ def generate_lessons(
         occupying_lesson = (
             Lesson.objects.filter(
                 group_id=template.group_id,
-                starts_at=starts_at,
+                starts_at__lt=ends_at,
+                ends_at__gt=starts_at,
             )
             .exclude(status=Lesson.Status.CANCELLED)
-            .order_by("id")
+            .order_by("starts_at", "id")
             .first()
         )
         if occupying_lesson is not None:
@@ -1185,6 +1186,8 @@ def reschedule_lesson(
             {"new_starts_at": "Replacement lesson must start in the future."}
         )
 
+    source_ref = Lesson.objects.only("group_id").get(pk=lesson_id)
+    TrainingGroup.objects.select_for_update().get(pk=source_ref.group_id)
     source = (
         Lesson.objects.select_for_update()
         .select_related("lesson_type")
@@ -1200,6 +1203,28 @@ def reschedule_lesson(
                 "lesson": (
                     "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can be "
                     "rescheduled."
+                )
+            }
+        )
+
+    conflicting_lesson = (
+        Lesson.objects.filter(
+            group_id=source.group_id,
+            starts_at__lt=new_ends_at,
+            ends_at__gt=new_starts_at,
+        )
+        .exclude(pk=source.id)
+        .exclude(status=Lesson.Status.CANCELLED)
+        .order_by("starts_at", "id")
+        .first()
+    )
+    if conflicting_lesson is not None:
+        raise ValidationError(
+            {
+                "new_starts_at": (
+                    "Replacement interval overlaps another non-cancelled "
+                    "lesson of this group: "
+                    f"{conflicting_lesson.id}."
                 )
             }
         )
