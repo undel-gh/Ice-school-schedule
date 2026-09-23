@@ -274,7 +274,14 @@ spoofed `X-Forwarded-For` value is ignored.
 `python manage.py check --deploy` emits `ice_school.W002` when production
 settings leave `TRUSTED_PROXY_IPS` empty and `ice_school.W001` for invalid
 IP/CIDR entries. An empty list is valid only for a deliberately direct
-deployment where no reverse-proxy client IP header is used.
+deployment where no reverse-proxy client IP header is used. For such a
+deliberate direct deployment, silence only this specific warning:
+
+```bash
+SILENCED_SYSTEM_CHECKS=ice_school.W002
+```
+
+Do not silence all deployment checks.
 
 The IP-only lockout currently uses the same `AXES_FAILURE_LIMIT` (5 by
 default) as the combined username+IP scope. This means several failed logins
