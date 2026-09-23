@@ -1012,8 +1012,13 @@ def rebind_attendance_coverage(
         allowance.id: allowance
         for allowance in SubscriptionAllowance.objects.select_for_update()
         .select_related("subscription")
-        .filter(id__in=sorted(allowance_ids, key=str))
-        .order_by("id")
+        .filter(id__in=allowance_ids)
+        .order_by(
+            "subscription__valid_until",
+            "subscription__valid_from",
+            "subscription__created_at",
+            "id",
+        )
     }
 
     target_allowance = None
