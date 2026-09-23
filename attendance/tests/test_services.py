@@ -8,7 +8,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
-from attendance.services import mark_remaining_absent, set_attendance
+from attendance.services import (\n    mark_remaining_absent,\n    reopen_attendance,\n    set_attendance,\n    submit_attendance,\n)
 from core.choices import SubscriptionCategory
 from scheduling.models import (
     Lesson,
@@ -640,3 +640,195 @@ def test_mark_remaining_absent_only_marks_unmarked_active_roster(
         lesson=lesson,
         student=third_student,
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_submit_attendance_closes_completed_lesson(
+    student,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+        status=Lesson.Status.COMPLETED,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+
+    closed = submit_attendance(
+        lesson_id=lesson.id,
+        actor=coach_user,
+        now=starts_at + timedelta(hours=2),
+    )
+
+    assert closed.status == Lesson.Status.CLOSED
+    assert closed.attendance_submitted_by_id == coach_user.id
+    assert closed.attendance_submitted_at is not None
+
+
+@pytest.mark.django_db
+def test_submit_attendance_rejects_unmarked_active_roster(
+    student,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+        status=Lesson.Status.COMPLETED,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+
+    with pytest.raises(ValidationError):
+        submit_attendance(
+            lesson_id=lesson.id,
+            actor=coach_user,
+            now=starts_at + timedelta(hours=2),
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.status == Lesson.Status.COMPLETED
+
+
+@pytest.mark.django_db
+def test_reopen_attendance_requires_admin(
+    student,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+        status=Lesson.Status.CLOSED,
+    )
+    lesson.attendance_submitted_at = starts_at + timedelta(hours=2)
+    lesson.attendance_submitted_by = coach_user
+    lesson.save(
+        update_fields=[
+            "attendance_submitted_at",
+            "attendance_submitted_by",
+        ]
+    )
+
+    with pytest.raises(PermissionDenied):
+        reopen_attendance(
+            lesson_id=lesson.id,
+            actor=coach_user,
+            reason="Correction needed",
+        )
+
+
+@pytest.mark.django_db
+def test_admin_can_reopen_closed_attendance(
+    student,
+    admin_user,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+        status=Lesson.Status.CLOSED,
+    )
+    lesson.attendance_submitted_at = starts_at + timedelta(hours=2)
+    lesson.attendance_submitted_by = coach_user
+    lesson.save(
+        update_fields=[
+            "attendance_submitted_at",
+            "attendance_submitted_by",
+        ]
+    )
+
+    reopened = reopen_attendance(
+        lesson_id=lesson.id,
+        actor=admin_user,
+        reason="Coach correction",
+    )
+
+    assert reopened.status == Lesson.Status.COMPLETED
+    assert reopened.attendance_submitted_at is None
+    assert reopened.attendance_submitted_by_id is None
+
+
+@pytest.mark.django_db
+def test_reopen_attendance_requires_reason(
+    admin_user,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+        status=Lesson.Status.CLOSED,
+    )
+    lesson.attendance_submitted_at = starts_at + timedelta(hours=2)
+    lesson.attendance_submitted_by = coach_user
+    lesson.save(
+        update_fields=[
+            "attendance_submitted_at",
+            "attendance_submitted_by",
+        ]
+    )
+
+    with pytest.raises(ValidationError):
+        reopen_attendance(
+            lesson_id=lesson.id,
+            actor=admin_user,
+            reason="   ",
+        )
