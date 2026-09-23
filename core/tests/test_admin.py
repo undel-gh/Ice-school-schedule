@@ -33,7 +33,7 @@ def staff_user(db):
 
 
 @pytest.fixture
-def request(staff_user):
+def admin_request(staff_user):
     request = RequestFactory().get("/admin/")
     request.user = staff_user
     return request
@@ -58,21 +58,21 @@ def request(staff_user):
         AuditEvent,
     ],
 )
-def test_operational_models_are_registered_read_only(model, request):
+def test_operational_models_are_registered_read_only(model, admin_request):
     model_admin = admin.site._registry[model]
 
     assert isinstance(model_admin, ReadOnlyAdmin)
-    assert model_admin.has_add_permission(request) is False
-    assert model_admin.has_delete_permission(request) is False
-    assert model_admin.has_change_permission(request) is True
+    assert model_admin.has_add_permission(admin_request) is False
+    assert model_admin.has_delete_permission(admin_request) is False
+    assert model_admin.has_change_permission(admin_request) is True
 
-    readonly = set(model_admin.get_readonly_fields(request))
+    readonly = set(model_admin.get_readonly_fields(admin_request))
     model_fields = {field.name for field in model._meta.fields}
     assert model_fields <= readonly
 
 
 @pytest.mark.django_db
-def test_attendance_admin_exposes_service_backed_actions(request):
+def test_attendance_admin_exposes_service_backed_actions(admin_request):
     model_admin = admin.site._registry[Attendance]
 
     assert isinstance(model_admin, AttendanceAdmin)
@@ -80,7 +80,7 @@ def test_attendance_admin_exposes_service_backed_actions(request):
 
 
 @pytest.mark.django_db
-def test_lesson_admin_exposes_reopen_action(request):
+def test_lesson_admin_exposes_reopen_action(admin_request):
     model_admin = admin.site._registry[Lesson]
 
     assert isinstance(model_admin, LessonAdmin)
