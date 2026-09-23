@@ -41,6 +41,10 @@ class AbsenceJustification(UUIDModel):
     class VerificationMethod(models.TextChoices):
         IN_PERSON = "in_person", "In person"
 
+    class RevocationReason(models.TextChoices):
+        ATTENDANCE_CORRECTION = "attendance_correction", "Attendance correction"
+        ADMINISTRATIVE = "administrative", "Administrative"
+
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="absence_justifications")
     lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="absence_justifications")
     type = models.CharField(max_length=16, choices=Type.choices, default=Type.MEDICAL)
@@ -53,19 +57,46 @@ class AbsenceJustification(UUIDModel):
     reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
     revoked_at = models.DateTimeField(null=True, blank=True)
     revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    revocation_reason = models.CharField(
+        max_length=32,
+        choices=RevocationReason.choices,
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["student", "lesson", "type"],
-                name="absence_student_lesson_uq",
+                condition=models.Q(status__in=["pending", "verified"]),
+                name="absence_active_student_lesson_uq",
             ),
             models.CheckConstraint(
                 condition=(
-                    models.Q(status="pending", reviewed_at__isnull=True, revoked_at__isnull=True)
-                    | models.Q(status="verified", reviewed_at__isnull=False, revoked_at__isnull=True)
-                    | models.Q(status="rejected", reviewed_at__isnull=False, revoked_at__isnull=True)
-                    | models.Q(status="revoked", reviewed_at__isnull=False, revoked_at__isnull=False)
+                    models.Q(
+                        status="pending",
+                        reviewed_at__isnull=True,
+                        revoked_at__isnull=True,
+                        revocation_reason__isnull=True,
+                    )
+                    | models.Q(
+                        status="verified",
+                        reviewed_at__isnull=False,
+                        revoked_at__isnull=True,
+                        revocation_reason__isnull=True,
+                    )
+                    | models.Q(
+                        status="rejected",
+                        reviewed_at__isnull=False,
+                        revoked_at__isnull=True,
+                        revocation_reason__isnull=True,
+                    )
+                    | models.Q(
+                        status="revoked",
+                        reviewed_at__isnull=False,
+                        revoked_at__isnull=False,
+                        revocation_reason__isnull=False,
+                    )
                 ),
                 name="absence_state_metadata_ck",
             ),
