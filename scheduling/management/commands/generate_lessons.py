@@ -80,6 +80,17 @@ class Command(BaseCommand):
                 errors.append(f"{template_id}: {exc}")
                 continue
             total += len(lessons)
+            for conflict in getattr(lessons, "conflicts", ()):
+                errors.append(
+                    (
+                        f"{template_id}: generation conflict with lesson "
+                        f"{conflict.conflicting_lesson_id} "
+                        f"({conflict.conflicting_lesson_type_id}) while "
+                        f"expecting lesson type "
+                        f"{conflict.expected_lesson_type_id} at "
+                        f"{conflict.starts_at.isoformat()}"
+                    )
+                )
 
         self.stdout.write(
             self.style.SUCCESS(
