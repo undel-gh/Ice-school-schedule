@@ -281,6 +281,11 @@ deliberate direct deployment, silence only this specific warning:
 SILENCED_SYSTEM_CHECKS=ice_school.W002
 ```
 
+Only `ice_school.W002` is accepted from the
+`SILENCED_SYSTEM_CHECKS` environment variable; built-in Django security
+checks such as `security.W004` cannot be silenced through this deployment
+shortcut.
+
 Do not silence all deployment checks.
 
 The IP-only lockout currently uses the same `AXES_FAILURE_LIMIT` (5 by
