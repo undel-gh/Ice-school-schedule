@@ -509,6 +509,7 @@ def test_reschedule_creates_draft_without_copying_rsvp(
         new_ends_at=starts_at + timedelta(days=1, hours=1),
         actor=admin,
         reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
     )
 
     source.refresh_from_db()
@@ -582,6 +583,7 @@ def test_reschedule_beyond_subscription_creates_targeted_makeup(
         ),
         actor=admin,
         reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
     )
 
     makeup = MakeupEntitlement.objects.get(
