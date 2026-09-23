@@ -164,12 +164,18 @@ def get_expired_unused_report(
     if not positive_allowance_ids:
         return ()
 
+    active_makeup_usage = AttendanceCoverage.objects.filter(
+        makeup_entitlement_id=OuterRef("pk"),
+        reversed_at__isnull=True,
+    )
     makeups = list(
         MakeupEntitlement.objects.filter(
             source_subscription_allowance_id__in=positive_allowance_ids,
             cancelled_at__isnull=True,
             valid_until__gte=as_of,
         )
+        .annotate(is_used=Exists(active_makeup_usage))
+        .filter(is_used=False)
         .select_related("source_subscription_allowance")
         .order_by("valid_until", "created_at")
     )
