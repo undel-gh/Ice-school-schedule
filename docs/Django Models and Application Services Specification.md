@@ -31,6 +31,10 @@ subscriptions/
 audit/
     models.py
     services.py
+
+core/
+    permissions.py
+    workflows.py
 ```
 
 Зависимости:
@@ -48,6 +52,20 @@ audit ← все приложения
 ```
 
 Циклических импортов между service-модулями следует избегать.
+
+Cross-app orchestration, которое по смыслу затрагивает несколько доменов,
+размещается в `core.workflows`, а не создаёт обратную зависимость между
+domain apps.
+
+Audit persistence централизуется через:
+
+```text
+audit.services.record_event()
+audit.services.event_exists()
+```
+
+Domain services могут иметь тонкие локальные wrappers для удобства payload,
+но не должны писать `AuditEvent.objects.create()` напрямую.
 
 ---
 
@@ -1989,6 +2007,7 @@ reschedule_lesson(
     new_ends_at: datetime,
     actor: User,
     reason: CancellationReason,
+    now: datetime,
 ) -> Lesson
 ```
 
@@ -2011,13 +2030,47 @@ Event:
 
 RSVP не копируются.
 
+Активные `LessonEnrollment` переносятся на replacement как новые enrollment
+records. RSVP при этом не копируются.
+
 После этого replacement публикуется отдельно.
 
 ---
 
 # 37. Entitlements при переносе школы
 
-Если replacement Lesson выходит за обычный срок, для участников с `RSVP=YES` определяется `SubscriptionAllowance` той же категории, который мог покрыть исходный Lesson. При необходимости создаётся `MakeupEntitlement(source_subscription_allowance=..., target_lesson=replacement)`.
+Создание make-up entitlement не находится в `scheduling.services`.
+
+Subscription-domain service:
+
+```python
+subscriptions.services.grant_school_reschedule_makeups(
+    *,
+    source_lesson_id: UUID,
+    replacement_lesson_id: UUID,
+    actor: User,
+)
+```
+
+Для атомарного пользовательского/административного сценария используется
+cross-app orchestration:
+
+```python
+core.workflows.reschedule_lesson_with_entitlements(...)
+```
+
+Workflow в одной транзакции вызывает:
+
+```text
+scheduling.services.reschedule_lesson()
+        ↓
+subscriptions.services.grant_school_reschedule_makeups()
+```
+
+Если replacement Lesson выходит за обычный срок, для участников с `RSVP=YES`
+определяется `SubscriptionAllowance` той же категории, который мог покрыть
+исходный Lesson. При необходимости создаётся
+`MakeupEntitlement(source_subscription_allowance=..., target_lesson=replacement)`.
 
 Никакого `GRANT` при этом не создаётся.
 
@@ -2585,6 +2638,11 @@ uncovered_count
 
 # 73. Admin protection
 
+Прямое изменение operational models запрещено даже для обычного `is_staff`.
+
+Просмотр использует стандартные Django model permissions. Service-backed
+actions дополнительно требуют соответствующий `change_*` permission.
+
 Read-only через обычный Admin: `Attendance`, `AttendanceCoverage`, `SubscriptionLedgerEntry`, lifecycle fields justification/lesson. Изменения выполняются application services.
 
 ---
@@ -2650,6 +2708,8 @@ Payload содержит идентификаторы `subscription_id`, `allowa
 ---
 
 # 78. correlation_id
+
+Запись audit events выполняется через `audit.services.record_event()`.
 
 Все события одной операции `Attendance → Coverage → Ledger` используют общий correlation_id.
 
