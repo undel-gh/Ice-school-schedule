@@ -440,7 +440,8 @@ def version_schedule_template(
                     "Template versioning would cancel a DRAFT lesson with "
                     "an active enrollment or one-time entitlement. Use the "
                     "reschedule_lesson command to move that booked lesson "
-                    f"to an explicit exception slot first: {booked_draft.id}."
+                    "to an explicit exception slot outside the new recurring "
+                    f"template slot first: {booked_draft.id}."
                 )
             }
         )
