@@ -6,13 +6,17 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 
-from accounts.models import CoachProfile, Student
+from accounts.models import CoachProfile, Student, StudentAccess
 from attendance.models import Attendance
 from attendance.services import (
+    declare_medical_absence,
     mark_remaining_absent,
+    reject_medical_absence,
     reopen_attendance,
+    revoke_medical_absence,
     set_attendance,
     submit_attendance,
+    verify_medical_absence,
 )
 from core.choices import SubscriptionCategory
 from scheduling.models import (
@@ -24,6 +28,7 @@ from scheduling.models import (
 )
 from subscriptions.models import (
     AttendanceCoverage,
+    MakeupEntitlement,
     SubscriptionLedgerEntry,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
@@ -837,3 +842,345 @@ def test_reopen_attendance_requires_reason(
             actor=admin_user,
             reason="   ",
         )
+
+
+
+@pytest.mark.django_db
+def test_declare_medical_absence_requires_student_access(
+    student,
+    outsider,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+
+    with pytest.raises(PermissionDenied):
+        declare_medical_absence(
+            student_id=student.id,
+            lesson_id=lesson.id,
+            actor=outsider,
+        )
+
+
+@pytest.mark.django_db
+def test_declare_medical_absence_requires_absent_attendance(
+    student,
+    coach_user,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=admin_user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+
+    with pytest.raises(ValidationError):
+        declare_medical_absence(
+            student_id=student.id,
+            lesson_id=lesson.id,
+            actor=admin_user,
+        )
+
+
+@pytest.mark.django_db
+def test_verify_medical_absence_creates_makeup_from_matching_allowance(
+    student,
+    coach_user,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=admin_user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    attendance = set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="medical-ice",
+        name="Medical ICE",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=2,
+    )
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=admin_user,
+    )
+
+    justification = declare_medical_absence(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        actor=admin_user,
+    )
+    verified = verify_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        valid_until=date(2026, 10, 15),
+        now=starts_at + timedelta(days=1),
+    )
+
+    entitlement = MakeupEntitlement.objects.get(
+        source_justification=verified,
+    )
+    assert attendance.status == Attendance.Status.ABSENT
+    assert verified.status == "verified"
+    assert entitlement.reason == MakeupEntitlement.Reason.MEDICAL_VERIFIED
+    assert entitlement.source_subscription_allowance.subscription_id == subscription.id
+    assert entitlement.valid_from == date(2026, 10, 1)
+    assert entitlement.valid_until == date(2026, 10, 15)
+
+
+@pytest.mark.django_db
+def test_verify_medical_absence_without_allowance_creates_no_makeup(
+    student,
+    coach_user,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=admin_user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+
+    justification = declare_medical_absence(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        actor=admin_user,
+    )
+    verified = verify_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        valid_until=date(2026, 10, 15),
+        now=starts_at + timedelta(days=1),
+    )
+
+    assert verified.status == "verified"
+    assert not MakeupEntitlement.objects.filter(
+        source_justification=verified,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_reject_medical_absence_moves_pending_to_rejected(
+    student,
+    coach_user,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=admin_user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+    justification = declare_medical_absence(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        actor=admin_user,
+    )
+
+    rejected = reject_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        now=starts_at + timedelta(days=1),
+    )
+
+    assert rejected.status == "rejected"
+    assert rejected.reviewed_by_id == admin_user.id
+
+
+@pytest.mark.django_db
+def test_revoke_medical_absence_cancels_active_makeup(
+    student,
+    coach_user,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=admin_user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="medical-revoke",
+        name="Medical revoke",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=1,
+    )
+    issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=admin_user,
+    )
+    justification = declare_medical_absence(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        actor=admin_user,
+    )
+    verify_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        valid_until=date(2026, 10, 15),
+        now=starts_at + timedelta(days=1),
+    )
+    entitlement = MakeupEntitlement.objects.get(
+        source_justification=justification,
+    )
+
+    revoked = revoke_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        now=starts_at + timedelta(days=2),
+    )
+
+    entitlement.refresh_from_db()
+    assert revoked.status == "revoked"
+    assert revoked.revoked_by_id == admin_user.id
+    assert entitlement.cancelled_at is not None
+    assert entitlement.cancelled_by_id == admin_user.id
