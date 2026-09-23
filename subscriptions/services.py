@@ -64,7 +64,7 @@ def issue_subscription(
     plan_id: UUID,
     valid_from: date,
     valid_until: date,
-    actor: User | None,
+    actor: User,
 ) -> Subscription:
     require_permission(
         actor,
@@ -1369,7 +1369,7 @@ def grant_one_time_entitlement(
     student_id: UUID,
     lesson_id: UUID,
     entitlement_type: str,
-    actor: User | None,
+    actor: User,
 ) -> OneTimeEntitlement:
     require_permission(
         actor,
@@ -1430,7 +1430,7 @@ def grant_one_time_entitlement(
 def cancel_one_time_entitlement(
     *,
     entitlement_id: UUID,
-    actor: User | None,
+    actor: User,
     at=None,
 ) -> OneTimeEntitlement:
     require_permission(
