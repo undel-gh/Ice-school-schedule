@@ -1546,6 +1546,7 @@ def process_subscription_lifecycle(
             has_activated_event=Exists(activated_event),
             has_expired_event=Exists(expired_event),
             has_unused_event=Exists(unused_event),
+            total_balance=Sum("allowances__ledger_entries__delta"),
         )
         .filter(
             Q(has_activated_event=False)
@@ -1556,6 +1557,7 @@ def process_subscription_lifecycle(
             | Q(
                 valid_until__lt=as_of,
                 has_unused_event=False,
+                total_balance__gt=0,
             )
         )
         .order_by("id")
