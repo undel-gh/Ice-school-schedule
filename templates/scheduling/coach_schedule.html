@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Расписание тренера{% endblock %}
+{% block content %}
+<h1>{{ coach.display_name }}</h1>
+<h2>{{ school_date }}</h2>
+
+{% for item in lessons %}
+  <article>
+    <h3>
+      <a href="{% url 'scheduling:coach_lesson' item.lesson.id %}">
+        {{ item.lesson.starts_at|date:"H:i" }} · {{ item.lesson.lesson_type.name }} · {{ item.lesson.group.name }}
+      </a>
+    </h3>
+    <p>
+      Ожидается: {{ item.yes_count }} · Не придут: {{ item.no_count }} · Без ответа: {{ item.no_response_count }}
+    </p>
+  </article>
+{% empty %}
+  <p>Занятий нет.</p>
+{% endfor %}
+{% endblock %}
