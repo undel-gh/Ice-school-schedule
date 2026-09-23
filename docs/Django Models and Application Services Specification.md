@@ -2748,4 +2748,14 @@ Attendance ──► AttendanceCoverage
 
 После утверждения консолидированной модели реализация идёт в порядке: accounts/scheduling → Attendance → allowance-based subscriptions + ledger → AttendanceCoverage + concurrency tests → OneTimeEntitlement → Makeup flow → Admin/UI → future Billing.
 
+Server-rendered presentation layer должен соблюдать UX-контракт раздела:
+
+```text
+«Mobile-first UI и адаптивность»
+```
+
+в основной системной спецификации.
+
+Mobile/desktop responsive presentation не меняет domain semantics: views/templates не создают и не изменяют Lesson lifecycle, Attendance, Coverage, Ledger или entitlements напрямую; пользовательские действия вызывают application services.
+
 Критическую цепочку `Attendance → AttendanceCoverage → optional Ledger` необходимо покрыть transaction tests до разработки финансового UI.
