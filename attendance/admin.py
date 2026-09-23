@@ -14,7 +14,7 @@ class AttendanceAdmin(ReadOnlyAdmin):
     list_filter = ("status",)
     actions = ("mark_present", "mark_absent")
 
-    @admin.action(description="Mark selected attendance as present")
+    @admin.action(permissions=["service"], description="Mark selected attendance as present")
     def mark_present(self, request, queryset):
         self._set_status(
             request=request,
@@ -22,7 +22,7 @@ class AttendanceAdmin(ReadOnlyAdmin):
             status=Attendance.Status.PRESENT,
         )
 
-    @admin.action(description="Mark selected attendance as absent")
+    @admin.action(permissions=["service"], description="Mark selected attendance as absent")
     def mark_absent(self, request, queryset):
         self._set_status(
             request=request,
