@@ -287,3 +287,113 @@ def mark_remaining_absent(
         count += 1
 
     return count
+
+
+@transaction.atomic
+def submit_attendance(
+    *,
+    lesson_id: UUID,
+    actor: User,
+    now: datetime,
+) -> Lesson:
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("coach__user")
+        .get(pk=lesson_id)
+    )
+    _assert_actor_can_mark(lesson=lesson, actor=actor)
+
+    if lesson.status != Lesson.Status.COMPLETED:
+        raise ValidationError(
+            {"lesson": "Only a COMPLETED lesson can be submitted."}
+        )
+
+    active_student_ids = LessonRosterEntry.objects.filter(
+        lesson_id=lesson.id,
+        is_active=True,
+    ).values("student_id")
+    marked_student_ids = Attendance.objects.filter(
+        lesson_id=lesson.id,
+        student_id__in=active_student_ids,
+    ).values("student_id")
+
+    unmarked_count = (
+        LessonRosterEntry.objects.filter(
+            lesson_id=lesson.id,
+            is_active=True,
+        )
+        .exclude(student_id__in=marked_student_ids)
+        .count()
+    )
+    if unmarked_count:
+        raise ValidationError(
+            {
+                "attendance": (
+                    f"{unmarked_count} active roster participant(s) "
+                    "remain unmarked."
+                )
+            }
+        )
+
+    lesson.status = Lesson.Status.CLOSED
+    lesson.attendance_submitted_at = now
+    lesson.attendance_submitted_by = actor
+    lesson.save(
+        update_fields=[
+            "status",
+            "attendance_submitted_at",
+            "attendance_submitted_by",
+            "updated_at",
+        ]
+    )
+
+    AuditEvent.objects.create(
+        event_type="LessonAttendanceSubmitted",
+        actor=actor,
+        aggregate_type="Lesson",
+        aggregate_id=lesson.id,
+        payload={"submitted_at": now.isoformat()},
+    )
+    return lesson
+
+
+@transaction.atomic
+def reopen_attendance(
+    *,
+    lesson_id: UUID,
+    actor: User,
+    reason: str,
+) -> Lesson:
+    if not (actor.is_staff or actor.is_superuser):
+        raise PermissionDenied(
+            "Only an administrator may reopen submitted attendance."
+        )
+    if not reason.strip():
+        raise ValidationError({"reason": "Reopen reason is required."})
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status != Lesson.Status.CLOSED:
+        raise ValidationError(
+            {"lesson": "Only a CLOSED lesson can be reopened."}
+        )
+
+    lesson.status = Lesson.Status.COMPLETED
+    lesson.attendance_submitted_at = None
+    lesson.attendance_submitted_by = None
+    lesson.save(
+        update_fields=[
+            "status",
+            "attendance_submitted_at",
+            "attendance_submitted_by",
+            "updated_at",
+        ]
+    )
+
+    AuditEvent.objects.create(
+        event_type="LessonAttendanceReopened",
+        actor=actor,
+        aggregate_type="Lesson",
+        aggregate_id=lesson.id,
+        payload={"reason": reason.strip()},
+    )
+    return lesson
