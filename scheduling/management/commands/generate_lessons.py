@@ -5,6 +5,7 @@ from uuid import UUID
 
 from django.core.management.base import BaseCommand, CommandError
 
+from core.management import command_errors
 from scheduling.services import generate_lessons
 
 
@@ -23,6 +24,7 @@ class Command(BaseCommand):
         parser.add_argument("--from-date", required=True)
         parser.add_argument("--until-date", required=True)
 
+    @command_errors
     def handle(self, *args, **options):
         try:
             template_id = UUID(options["template"])
