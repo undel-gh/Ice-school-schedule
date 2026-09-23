@@ -189,6 +189,168 @@ def update_group_membership(
     return membership
 
 
+_UNCHANGED = object()
+
+
+@transaction.atomic
+def version_schedule_template(
+    *,
+    template_id: UUID,
+    effective_from: date,
+    actor: User,
+    now: datetime,
+    group_id: UUID | object = _UNCHANGED,
+    lesson_type_id: UUID | object = _UNCHANGED,
+    coach_id: UUID | object = _UNCHANGED,
+    venue_id: UUID | object = _UNCHANGED,
+    weekday: int | object = _UNCHANGED,
+    start_time: object = _UNCHANGED,
+    duration_minutes: int | object = _UNCHANGED,
+    minimum_attendees_override: int | None | object = _UNCHANGED,
+) -> ScheduleTemplate:
+    """Create a new future template version without rewriting history."""
+    require_permission(
+        actor,
+        "scheduling.change_scheduletemplate",
+        "Schedule template change permission is required.",
+    )
+    template = ScheduleTemplate.objects.select_for_update().get(pk=template_id)
+    today = get_school_date(now)
+    if effective_from < today:
+        raise ValidationError(
+            {"effective_from": "Template changes cannot start in the past."}
+        )
+    if effective_from <= template.valid_from:
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "New template version must start after the current "
+                    "template valid_from."
+                )
+            }
+        )
+    if (
+        template.valid_until is not None
+        and effective_from > template.valid_until
+    ):
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "New template version must start within the current "
+                    "template validity interval."
+                )
+            }
+        )
+
+    new_values = {
+        "group_id": template.group_id,
+        "lesson_type_id": template.lesson_type_id,
+        "coach_id": template.coach_id,
+        "venue_id": template.venue_id,
+        "weekday": template.weekday,
+        "start_time": template.start_time,
+        "duration_minutes": template.duration_minutes,
+        "minimum_attendees_override": template.minimum_attendees_override,
+    }
+    requested = {
+        "group_id": group_id,
+        "lesson_type_id": lesson_type_id,
+        "coach_id": coach_id,
+        "venue_id": venue_id,
+        "weekday": weekday,
+        "start_time": start_time,
+        "duration_minutes": duration_minutes,
+        "minimum_attendees_override": minimum_attendees_override,
+    }
+    for key, value in requested.items():
+        if value is not _UNCHANGED:
+            new_values[key] = value
+
+    if not 0 <= int(new_values["weekday"]) <= 6:
+        raise ValidationError({"weekday": "weekday must be between 0 and 6."})
+    if int(new_values["duration_minutes"]) <= 0:
+        raise ValidationError(
+            {"duration_minutes": "duration_minutes must be positive."}
+        )
+    minimum = new_values["minimum_attendees_override"]
+    if minimum is not None and int(minimum) < 1:
+        raise ValidationError(
+            {
+                "minimum_attendees_override": (
+                    "minimum_attendees_override must be at least 1."
+                )
+            }
+        )
+
+    previous_valid_until = template.valid_until
+    template.valid_until = effective_from - timedelta(days=1)
+    template.is_active = False
+    template.save(update_fields=["valid_until", "is_active", "updated_at"])
+
+    replacement = ScheduleTemplate.objects.create(
+        **new_values,
+        valid_from=effective_from,
+        valid_until=previous_valid_until,
+        is_active=True,
+    )
+
+    cutoff = make_school_aware(
+        datetime.combine(effective_from, datetime.min.time())
+    )
+    draft_lessons = list(
+        Lesson.objects.select_for_update()
+        .filter(
+            source_template=template,
+            status=Lesson.Status.DRAFT,
+            starts_at__gte=cutoff,
+        )
+        .order_by("starts_at", "id")
+    )
+    cancelled_ids = []
+    for lesson in draft_lessons:
+        lesson.status = Lesson.Status.CANCELLED
+        lesson.cancelled_at = now
+        lesson.cancelled_by = actor
+        lesson.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
+        lesson.save(
+            update_fields=[
+                "status",
+                "cancelled_at",
+                "cancelled_by",
+                "cancellation_reason",
+                "updated_at",
+            ]
+        )
+        cancelled_ids.append(str(lesson.id))
+        _audit_lesson(
+            event_type="LessonCancelled",
+            lesson=lesson,
+            actor=actor,
+            payload={
+                "reason": "schedule_template_versioned",
+                "replacement_template_id": str(replacement.id),
+            },
+        )
+
+    record_event(
+        event_type="ScheduleTemplateVersioned",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        actor=actor,
+        payload={
+            "replacement_template_id": str(replacement.id),
+            "effective_from": effective_from.isoformat(),
+            "previous_valid_until": (
+                previous_valid_until.isoformat()
+                if previous_valid_until is not None
+                else None
+            ),
+            "cancelled_draft_lesson_ids": cancelled_ids,
+        },
+    )
+    return replacement
+
+
 def _validate_deadline_policy() -> tuple[int, int]:
     rsvp_minutes = settings.SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START
     decision_minutes = settings.SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START
