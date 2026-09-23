@@ -189,6 +189,79 @@ def update_group_membership(
     return membership
 
 
+@transaction.atomic
+def create_schedule_template(
+    *,
+    group_id: UUID,
+    lesson_type_id: UUID,
+    coach_id: UUID,
+    venue_id: UUID,
+    weekday: int,
+    start_time,
+    duration_minutes: int,
+    valid_from: date,
+    valid_until: date | None,
+    minimum_attendees_override: int | None,
+    actor: User,
+) -> ScheduleTemplate:
+    require_permission(
+        actor,
+        "scheduling.add_scheduletemplate",
+        "Schedule template creation permission is required.",
+    )
+    if not 0 <= weekday <= 6:
+        raise ValidationError({"weekday": "weekday must be between 0 and 6."})
+    if duration_minutes <= 0:
+        raise ValidationError(
+            {"duration_minutes": "duration_minutes must be positive."}
+        )
+    if valid_until is not None and valid_until < valid_from:
+        raise ValidationError(
+            {"valid_until": "valid_until cannot precede valid_from."}
+        )
+    if minimum_attendees_override is not None and minimum_attendees_override < 1:
+        raise ValidationError(
+            {
+                "minimum_attendees_override": (
+                    "minimum_attendees_override must be at least 1."
+                )
+            }
+        )
+
+    template = ScheduleTemplate.objects.create(
+        group_id=group_id,
+        lesson_type_id=lesson_type_id,
+        coach_id=coach_id,
+        venue_id=venue_id,
+        weekday=weekday,
+        start_time=start_time,
+        duration_minutes=duration_minutes,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        minimum_attendees_override=minimum_attendees_override,
+        is_active=True,
+    )
+    record_event(
+        event_type="ScheduleTemplateCreated",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        actor=actor,
+        payload={
+            "group_id": str(group_id),
+            "lesson_type_id": str(lesson_type_id),
+            "coach_id": str(coach_id),
+            "venue_id": str(venue_id),
+            "weekday": weekday,
+            "start_time": start_time.isoformat(),
+            "duration_minutes": duration_minutes,
+            "valid_from": valid_from.isoformat(),
+            "valid_until": valid_until.isoformat() if valid_until else None,
+            "minimum_attendees_override": minimum_attendees_override,
+        },
+    )
+    return template
+
+
 _UNCHANGED = object()
 
 
