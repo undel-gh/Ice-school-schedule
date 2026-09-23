@@ -344,6 +344,38 @@ def _try_makeup_coverage(
             },
             correlation_id=correlation_id,
         )
+        remaining_balance = balance - 1
+        if remaining_balance == 0:
+            _audit(
+                event_type="SubscriptionAllowanceExhausted",
+                aggregate_type="SubscriptionAllowance",
+                aggregate_id=allowance.id,
+                actor=actor,
+                payload={
+                    "attendance_id": str(attendance.id),
+                    "coverage_id": str(coverage.id),
+                    "allowance_id": str(allowance.id),
+                    "category": category,
+                    "balance": 0,
+                },
+                correlation_id=correlation_id,
+            )
+        remaining_balance = balance - 1
+        if remaining_balance == 0:
+            _audit(
+                event_type="SubscriptionAllowanceExhausted",
+                aggregate_type="SubscriptionAllowance",
+                aggregate_id=allowance.id,
+                actor=actor,
+                payload={
+                    "attendance_id": str(attendance.id),
+                    "coverage_id": str(coverage.id),
+                    "allowance_id": str(allowance.id),
+                    "category": category,
+                    "balance": 0,
+                },
+                correlation_id=correlation_id,
+            )
         _audit(
             event_type="MakeupEntitlementUsed",
             aggregate_type="MakeupEntitlement",
@@ -1150,6 +1182,22 @@ def rebind_attendance_coverage(
             },
             correlation_id=correlation_id,
         )
+        if target_balance == 1:
+            _audit(
+                event_type="SubscriptionAllowanceExhausted",
+                aggregate_type="SubscriptionAllowance",
+                aggregate_id=target_allowance.id,
+                actor=actor,
+                payload={
+                    "attendance_id": str(attendance.id),
+                    "coverage_id": str(new_coverage.id),
+                    "allowance_id": str(target_allowance.id),
+                    "category": category,
+                    "balance": 0,
+                    "reason": "rebind",
+                },
+                correlation_id=correlation_id,
+            )
 
     if target_one_time is not None:
         _audit(
