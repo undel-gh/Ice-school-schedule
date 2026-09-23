@@ -328,3 +328,37 @@ def test_coach_lesson_renders_mobile_cards_and_bulk_actions(
     assert 'class="bulk-actions"' in body
     assert "✓ Пришёл" in body
     assert "Оставшиеся отсутствуют" in body
+
+
+
+@pytest.mark.django_db
+def test_rsvp_unknown_lesson_returns_404(client, web_context):
+    import uuid
+
+    client.force_login(web_context["guardian"])
+    response = client.post(
+        reverse(
+            "scheduling:set_rsvp",
+            kwargs={
+                "student_id": web_context["student"].id,
+                "lesson_id": uuid.uuid4(),
+            },
+        ),
+        {"status": LessonResponse.Status.YES},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_student_schedule_rejects_excessive_date_range(client, web_context):
+    client.force_login(web_context["guardian"])
+    response = client.get(
+        reverse("scheduling:student_schedule"),
+        {
+            "from": "2026-01-01",
+            "until": "2027-12-31",
+        },
+    )
+
+    assert response.status_code == 404
