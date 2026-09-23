@@ -11,6 +11,7 @@ from ice_school.workflows import reschedule_lesson_with_entitlements
 
 from accounts.models import CoachProfile
 from attendance.models import Attendance
+from audit.models import AuditEvent
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from scheduling.services import complete_lesson
 
@@ -1206,3 +1207,56 @@ def test_reschedule_workflow_rolls_back_when_entitlement_permission_missing(
     assert Lesson.objects.filter(
         replaced_lesson=source,
     ).count() == 0
+
+
+
+@pytest.mark.django_db
+def test_reschedule_transfers_unused_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        25,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=source,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=source.id,
+        new_starts_at=starts_at + timedelta(days=1),
+        new_ends_at=starts_at + timedelta(days=1, hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    entitlement.refresh_from_db()
+    assert entitlement.lesson_id == replacement.id
+    assert AuditEvent.objects.filter(
+        event_type="OneTimeEntitlementTransferred",
+        aggregate_id=entitlement.id,
+    ).exists()
