@@ -7,7 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from attendance.services import verify_medical_absence
-from core.management import resolve_actor
+from core.management import command_errors, resolve_actor
 
 
 class Command(BaseCommand):
@@ -18,6 +18,7 @@ class Command(BaseCommand):
         parser.add_argument("--valid-until", required=True)
         parser.add_argument("--actor", required=True)
 
+    @command_errors
     def handle(self, *args, **options):
         try:
             justification_id = UUID(options["justification"])
