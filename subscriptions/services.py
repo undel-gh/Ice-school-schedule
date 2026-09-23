@@ -694,8 +694,8 @@ def cancel_subscription(
 def _assert_entitlement_admin(actor: User) -> None:
     require_permission(
         actor,
-        "subscriptions.change_makeupentitlement",
-        "Administrative entitlement permission is required.",
+        "subscriptions.add_makeupentitlement",
+        "Administrative make-up grant permission is required.",
     )
 
 
