@@ -12,6 +12,7 @@ from attendance.models import Attendance
 from audit.models import AuditEvent
 from attendance.services import (
     declare_medical_absence,
+    mark_expected_present,
     mark_remaining_absent,
     reject_medical_absence,
     reopen_attendance,
@@ -1303,3 +1304,124 @@ def test_uncovered_attendance_emits_correlated_uncovered_event(
         aggregate_id=attendance.id,
     )
     assert marked.correlation_id == uncovered.correlation_id
+
+
+
+@pytest.mark.django_db
+def test_mark_expected_present_requires_confirmation(
+    student,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=coach_user,
+    )
+
+    with pytest.raises(ValidationError):
+        mark_expected_present(
+            lesson_id=lesson.id,
+            actor=coach_user,
+            now=starts_at + timedelta(minutes=5),
+            confirmed=False,
+        )
+
+    assert not Attendance.objects.filter(
+        lesson=lesson,
+        student=student,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_mark_expected_present_only_marks_unmarked_yes_responses(
+    student,
+    second_student,
+    coach_user,
+    school_context,
+):
+    third = Student.objects.create(display_name="Student C")
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+
+    for s in (student, second_student, third):
+        add_to_roster(
+            lesson=lesson,
+            student=s,
+            actor=coach_user,
+        )
+
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=coach_user,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=second_student,
+        status=LessonResponse.Status.YES,
+        updated_by=coach_user,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=third,
+        status=LessonResponse.Status.NO,
+        updated_by=coach_user,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=second_student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=1),
+    )
+
+    changed = mark_expected_present(
+        lesson_id=lesson.id,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+        confirmed=True,
+    )
+
+    assert changed == 1
+    assert Attendance.objects.get(
+        lesson=lesson,
+        student=student,
+    ).status == Attendance.Status.PRESENT
+    assert Attendance.objects.get(
+        lesson=lesson,
+        student=second_student,
+    ).status == Attendance.Status.ABSENT
+    assert not Attendance.objects.filter(
+        lesson=lesson,
+        student=third,
+    ).exists()
