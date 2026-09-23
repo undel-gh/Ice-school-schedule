@@ -21,7 +21,13 @@ from subscriptions.models import (
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
-from subscriptions.selectors import allowance_balance, subscription_balances
+from subscriptions.selectors import (
+    allowance_balance,
+    get_available_makeups,
+    get_available_one_time_entitlements,
+    get_eligible_allowances,
+    subscription_balances,
+)
 from subscriptions.services import (
     adjust_allowance,
     grant_administrative_makeup,
@@ -921,3 +927,187 @@ def test_rebind_one_time_to_allowance_consumes_target_allowance(
     assert new_coverage.subscription_allowance_id == allowance.id
     assert new_coverage.one_time_entitlement_id is None
     assert allowance_balance(allowance.id) == 0
+
+
+
+@pytest.mark.django_db
+def test_get_eligible_allowances_orders_by_earliest_expiry(
+    student,
+    actor,
+):
+    plan = make_plan(code="selector-ice", ice=2)
+    later = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    earlier = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 20),
+        actor=actor,
+    )
+
+    results = get_eligible_allowances(
+        student_id=student.id,
+        category=SubscriptionCategory.ICE,
+        lesson_date=date(2026, 9, 15),
+    )
+
+    assert [item.allowance.subscription_id for item in results] == [
+        earlier.id,
+        later.id,
+    ]
+    assert [item.balance for item in results] == [2, 2]
+
+
+@pytest.mark.django_db
+def test_get_available_one_time_entitlements_excludes_used(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    first = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+    second = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.TRIAL_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+
+    coverage = AttendanceCoverage.objects.create(
+        attendance=attendance,
+        one_time_entitlement=first,
+        created_by=actor,
+    )
+
+    available = get_available_one_time_entitlements(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        category=SubscriptionCategory.ICE,
+    )
+    assert [item.id for item in available] == [second.id]
+
+    coverage.reversed_at = datetime(
+        2026,
+        9,
+        16,
+        12,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    coverage.reversed_by = actor
+    coverage.save(update_fields=["reversed_at", "reversed_by"])
+
+    available_after_reverse = get_available_one_time_entitlements(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        category=SubscriptionCategory.ICE,
+    )
+    assert {item.id for item in available_after_reverse} == {
+        first.id,
+        second.id,
+    }
+
+
+@pytest.mark.django_db
+def test_get_available_makeups_prioritizes_target_specific(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="selector-makeup", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            10,
+            5,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    generic = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 10),
+        created_by=actor,
+    )
+    targeted = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 15),
+        target_lesson=target_lesson,
+        created_by=actor,
+    )
+
+    available = get_available_makeups(
+        student_id=student.id,
+        lesson_id=target_lesson.id,
+        category=SubscriptionCategory.ICE,
+        lesson_date=date(2026, 10, 5),
+    )
+
+    assert [item.id for item in available] == [
+        targeted.id,
+        generic.id,
+    ]
