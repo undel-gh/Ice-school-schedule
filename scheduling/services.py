@@ -551,6 +551,106 @@ def _aware_datetime_for_school_date(
     return naive
 
 
+@transaction.atomic
+def skip_template_occurrence(
+    *,
+    template_id: UUID,
+    occurrence_date: date,
+    actor: User,
+    now: datetime,
+) -> Lesson:
+    """Create an authoritative CANCELLED occurrence for one template date."""
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson change permission is required to skip a template occurrence.",
+    )
+    template = (
+        ScheduleTemplate.objects.select_for_update()
+        .select_related("group")
+        .get(pk=template_id)
+    )
+    TrainingGroup.objects.select_for_update().get(pk=template.group_id)
+
+    if not template.is_active:
+        raise ValidationError(
+            {"template": "Inactive schedule templates cannot skip occurrences."}
+        )
+    if occurrence_date < template.valid_from or (
+        template.valid_until is not None
+        and occurrence_date > template.valid_until
+    ):
+        raise ValidationError(
+            {"date": "Occurrence date is outside template validity."}
+        )
+    if occurrence_date.weekday() != template.weekday:
+        raise ValidationError(
+            {"date": "Occurrence date does not match template weekday."}
+        )
+
+    starts_at = _aware_datetime_for_school_date(
+        school_date=occurrence_date,
+        local_time=template.start_time,
+    )
+    existing = (
+        Lesson.objects.select_for_update()
+        .filter(
+            source_template=template,
+            starts_at=starts_at,
+        )
+        .order_by("id")
+        .first()
+    )
+    if existing is not None:
+        if existing.status == Lesson.Status.CANCELLED:
+            return existing
+        raise ValidationError(
+            {
+                "date": (
+                    "Template occurrence is already materialized as lesson "
+                    f"{existing.id} with status {existing.status}."
+                )
+            }
+        )
+
+    rsvp_minutes, decision_minutes = _validate_deadline_policy()
+    ends_at = starts_at + timedelta(minutes=template.duration_minutes)
+    minimum_attendees = (
+        template.minimum_attendees_override
+        if template.minimum_attendees_override is not None
+        else template.group.default_minimum_attendees
+    )
+    lesson = Lesson.objects.create(
+        source_template=template,
+        group_id=template.group_id,
+        lesson_type_id=template.lesson_type_id,
+        coach_id=template.coach_id,
+        venue_id=template.venue_id,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        minimum_attendees=minimum_attendees,
+        rsvp_deadline=starts_at - timedelta(minutes=rsvp_minutes),
+        decision_deadline=starts_at - timedelta(minutes=decision_minutes),
+        status=Lesson.Status.CANCELLED,
+        cancelled_at=now,
+        cancelled_by=actor,
+        cancellation_reason=Lesson.CancellationReason.ADMINISTRATIVE,
+    )
+    record_event(
+        event_type="ScheduleTemplateOccurrenceSkipped",
+        actor=actor,
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        payload={
+            "lesson_id": str(lesson.id),
+            "occurrence_date": occurrence_date.isoformat(),
+            "starts_at": starts_at.isoformat(),
+            "ends_at": ends_at.isoformat(),
+        },
+    )
+    return lesson
+
+
 def _audit_lesson(
     *,
     event_type: str,
@@ -1201,6 +1301,21 @@ def cancel_lesson(
     )
     _validate_cancellation_reason(reason)
     lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status == Lesson.Status.DRAFT and (
+        lesson.enrollments.filter(cancelled_at__isnull=True).exists()
+        or lesson.one_time_entitlements.filter(
+            cancelled_at__isnull=True
+        ).exists()
+    ):
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Cannot cancel a DRAFT lesson with an active enrollment "
+                    "or one-time entitlement. Reschedule the lesson instead "
+                    "so bookings move to the replacement lesson."
+                )
+            }
+        )
     if lesson.status not in {
         Lesson.Status.DRAFT,
         Lesson.Status.RSVP_OPEN,
