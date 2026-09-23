@@ -5,7 +5,7 @@ from uuid import UUID
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from core.management import resolve_actor
+from core.management import command_errors, resolve_actor
 from scheduling.services import confirm_lesson
 
 
@@ -16,6 +16,7 @@ class Command(BaseCommand):
         parser.add_argument("--lesson", required=True)
         parser.add_argument("--actor", required=True)
 
+    @command_errors
     def handle(self, *args, **options):
         try:
             lesson_id = UUID(options["lesson"])
