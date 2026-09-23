@@ -1605,3 +1605,68 @@ def test_version_schedule_template_rejects_draft_with_one_time_entitlement(
 
     template.refresh_from_db()
     assert template.valid_until is None
+
+
+
+@pytest.mark.django_db
+def test_draft_reschedule_moves_enrollment_and_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        10,
+        5,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    enrollment = LessonEnrollment.objects.create(
+        lesson=source,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=source,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=source.id,
+        new_starts_at=starts_at + timedelta(days=1),
+        new_ends_at=starts_at + timedelta(days=1, hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(days=10),
+    )
+
+    source.refresh_from_db()
+    entitlement.refresh_from_db()
+    assert source.status == Lesson.Status.CANCELLED
+    assert source.replacement_lesson_id == replacement.id
+    assert replacement.status == Lesson.Status.DRAFT
+    assert LessonEnrollment.objects.filter(
+        lesson=replacement,
+        student=student,
+        reason=enrollment.reason,
+        cancelled_at__isnull=True,
+    ).exists()
+    assert entitlement.lesson_id == replacement.id
