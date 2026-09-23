@@ -2123,7 +2123,84 @@ def test_skip_template_occurrence_is_idempotent(
     )
 
 
+
 @pytest.mark.django_db
+def test_skip_template_occurrence_records_correlated_lesson_cancel_event(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc)
+
+    lesson = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=now,
+    )
+
+    template_event = AuditEvent.objects.get(
+        event_type="ScheduleTemplateOccurrenceSkipped",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    )
+    lesson_event = AuditEvent.objects.get(
+        event_type="LessonCancelled",
+        aggregate_type="Lesson",
+        aggregate_id=lesson.id,
+    )
+    assert lesson_event.correlation_id == template_event.correlation_id
+    assert lesson_event.payload["cancelled_at"] == now.isoformat()
+    assert lesson_event.payload["reason"] == (
+        Lesson.CancellationReason.ADMINISTRATIVE
+    )
+    assert lesson_event.payload["source"] == (
+        "schedule_template_occurrence_skipped"
+    )
+    assert lesson_event.payload["source_template_id"] == str(template.id)
+
+@pytest.mark.django_db
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_rejects_past_date(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 9, 3, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+
+    with pytest.raises(ValidationError):
+        skip_template_occurrence(
+            template_id=template.id,
+            occurrence_date=date(2026, 9, 3),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+        )
+
+    assert not Lesson.objects.filter(source_template=template).exists()
+
+
 def test_skip_template_occurrence_rejects_wrong_weekday(
     school_context,
     admin,
