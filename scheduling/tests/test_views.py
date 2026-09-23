@@ -362,3 +362,35 @@ def test_student_schedule_rejects_excessive_date_range(client, web_context):
     )
 
     assert response.status_code == 404
+
+
+
+@pytest.mark.django_db
+def test_staff_without_attendance_permission_cannot_access_foreign_lesson(
+    client,
+    web_context,
+    django_user_model,
+):
+    lesson = make_lesson(context=web_context)
+    staff = django_user_model.objects.create_user(
+        username="limited-web-staff",
+        password="test",
+        is_staff=True,
+    )
+    client.force_login(staff)
+
+    response = client.get(
+        reverse(
+            "scheduling:coach_lesson",
+            kwargs={"lesson_id": lesson.id},
+        )
+    )
+    assert response.status_code == 403
+
+    response = client.post(
+        reverse(
+            "scheduling:coach_complete_lesson",
+            kwargs={"lesson_id": lesson.id},
+        )
+    )
+    assert response.status_code == 403
