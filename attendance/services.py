@@ -135,9 +135,9 @@ def _revoke_verified_medical_justifications_for_present_correction(
             raise ValidationError(
                 {
                     "attendance": (
-                        "Нельзя исправить отсутствие на присутствие: "
-                        "медицинская отработка уже использована. "
-                        "Сначала нужно перепривязать или отменить её покрытие."
+                        "Attendance cannot be corrected to PRESENT because "
+                        "the medical make-up is already used. Rebind or "
+                        "reverse that coverage first."
                     )
                 }
             )
@@ -670,6 +670,7 @@ def declare_medical_absence(
             existing.reviewed_by = None
             existing.revoked_at = None
             existing.revoked_by = None
+            existing.declared_at = timezone.now()
             existing.declared_by = actor
             existing.save(
                 update_fields=[
@@ -678,6 +679,7 @@ def declare_medical_absence(
                     "reviewed_by",
                     "revoked_at",
                     "revoked_by",
+                    "declared_at",
                     "declared_by",
                 ]
             )
