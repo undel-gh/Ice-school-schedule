@@ -1672,6 +1672,22 @@ def test_medical_justification_can_be_redeclared_after_present_correction(
         actor=coach_user,
         now=starts_at + timedelta(minutes=5),
     )
+    plan = SubscriptionPlan.objects.create(
+        code="medical-redeclare",
+        name="Medical redeclare",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=2,
+    )
+    issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=admin_user,
+    )
     justification = declare_medical_absence(
         student_id=student.id,
         lesson_id=lesson.id,
@@ -1682,6 +1698,9 @@ def test_medical_justification_can_be_redeclared_after_present_correction(
         actor=admin_user,
         valid_until=date(2026, 10, 15),
         now=starts_at + timedelta(days=1),
+    )
+    original_makeup = MakeupEntitlement.objects.get(
+        source_justification=justification,
     )
 
     set_attendance(
@@ -1716,4 +1735,21 @@ def test_medical_justification_can_be_redeclared_after_present_correction(
     assert AuditEvent.objects.filter(
         event_type="AbsenceJustificationRedeclared",
         aggregate_id=justification.id,
+    ).exists()
+
+    verify_medical_absence(
+        justification_id=redeclared.id,
+        actor=admin_user,
+        valid_until=date(2026, 10, 20),
+        now=starts_at + timedelta(days=4),
+    )
+    reactivated = MakeupEntitlement.objects.get(
+        source_justification=redeclared,
+    )
+    assert reactivated.id == original_makeup.id
+    assert reactivated.cancelled_at is None
+    assert reactivated.valid_until == date(2026, 10, 20)
+    assert AuditEvent.objects.filter(
+        event_type="MakeupEntitlementReactivated",
+        aggregate_id=reactivated.id,
     ).exists()
