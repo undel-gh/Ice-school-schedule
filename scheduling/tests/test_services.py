@@ -643,17 +643,25 @@ def test_generate_lessons_creates_matching_weekdays_and_is_idempotent(
         actor=admin,
     )
 
-    assert [lesson.id for lesson in second] == [lesson.id for lesson in first]
-    assert len(first) == 3
-    assert all(lesson.status == Lesson.Status.DRAFT for lesson in first)
-    assert all(lesson.minimum_attendees == 4 for lesson in first)
+    assert [lesson.id for lesson in second.lessons] == [
+        lesson.id for lesson in first.lessons
+    ]
+    assert len(first.lessons) == 3
+    assert all(
+        lesson.status == Lesson.Status.DRAFT
+        for lesson in first.lessons
+    )
+    assert all(
+        lesson.minimum_attendees == 4
+        for lesson in first.lessons
+    )
     assert all(
         lesson.starts_at - lesson.rsvp_deadline == timedelta(hours=3)
-        for lesson in first
+        for lesson in first.lessons
     )
     assert all(
         lesson.starts_at - lesson.decision_deadline == timedelta(hours=2)
-        for lesson in first
+        for lesson in first.lessons
     )
 
 
@@ -685,8 +693,8 @@ def test_generate_lessons_uses_template_minimum_override(
         actor=admin,
     )
 
-    assert len(lessons) == 1
-    assert lessons[0].minimum_attendees == 2
+    assert len(lessons.lessons) == 1
+    assert lessons.lessons[0].minimum_attendees == 2
 
 
 @pytest.mark.django_db
@@ -1149,8 +1157,13 @@ def test_generate_lessons_uses_school_timezone_not_active_request_timezone(
         actor=admin,
     )
 
-    assert len(lessons) == 1
-    assert lessons[0].starts_at.astimezone(dt_timezone.utc).hour == 15
+    assert len(lessons.lessons) == 1
+    assert (
+        lessons.lessons[0]
+        .starts_at.astimezone(dt_timezone.utc)
+        .hour
+        == 15
+    )
 
 
 
@@ -1317,7 +1330,7 @@ def test_version_schedule_template_cancels_future_drafts_and_avoids_duplicates(
         until_date=date(2026, 10, 5),
         actor=admin,
     )
-    assert generated
+    assert generated.lessons
 
     replacement = version_schedule_template(
         template_id=template.id,
@@ -1696,7 +1709,7 @@ def test_generate_lessons_reuses_existing_group_slot_after_draft_reschedule(
         from_date=date(2026, 10, 20),
         until_date=date(2026, 10, 20),
         actor=admin,
-    )[0]
+    ).lessons[0]
     LessonEnrollment.objects.create(
         lesson=old_lesson,
         student=student,
@@ -1741,7 +1754,7 @@ def test_generate_lessons_reuses_existing_group_slot_after_draft_reschedule(
     ).exclude(status=Lesson.Status.CANCELLED)
     assert slot_lessons.count() == 1
     assert slot_lessons.get().id == replacement.id
-    assert generated == [replacement]
+    assert generated.lessons == (replacement,)
 
     entitlement.refresh_from_db()
     assert entitlement.lesson_id == replacement.id
@@ -1843,7 +1856,7 @@ def test_generate_lessons_treats_overlapping_group_lesson_as_occupied(
         actor=admin,
     )
 
-    assert generated == [existing]
+    assert generated.lessons == (existing,)
     assert (
         Lesson.objects.filter(group=group)
         .exclude(status=Lesson.Status.CANCELLED)
@@ -1898,7 +1911,7 @@ def test_generate_lessons_reports_cross_type_overlap_conflict(
         actor=admin,
     )
 
-    assert list(result) == []
+    assert result.lessons == ()
     assert len(result.conflicts) == 1
     conflict = result.conflicts[0]
     assert conflict.conflicting_lesson_id == ice_lesson.id
