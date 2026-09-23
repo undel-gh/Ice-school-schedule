@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Посещаемость{% endblock %}
+{% block content %}
+<h1>{{ lesson.lesson_type.name }}</h1>
+<p>
+  {{ lesson.starts_at|date:"d.m.Y H:i" }} · {{ lesson.group.name }} · {{ lesson.venue.name }}
+</p>
+<p>Статус: {{ lesson.status }}</p>
+
+{% if lesson.status == "confirmed" and now >= lesson.ends_at %}
+<form method="post" action="{% url 'scheduling:coach_complete_lesson' lesson.id %}">
+  {% csrf_token %}
+  <button type="submit">Завершить занятие</button>
+</form>
+{% endif %}
+
+{% if lesson.status == "confirmed" or lesson.status == "completed" %}
+<form method="post" action="{% url 'scheduling:coach_mark_expected_present' lesson.id %}"
+      onsubmit="return confirm('Отметить всех ожидаемых как присутствовавших?');">
+  {% csrf_token %}
+  <input type="hidden" name="confirmed" value="1">
+  <button type="submit">Отметить ожидаемых как пришедших</button>
+</form>
+
+<form method="post" action="{% url 'scheduling:coach_mark_remaining_absent' lesson.id %}">
+  {% csrf_token %}
+  <button type="submit">Отметить оставшихся отсутствующими</button>
+</form>
+{% endif %}
+
+<table>
+  <thead>
+    <tr>
+      <th>Ученик</th>
+      <th>RSVP</th>
+      <th>Attendance</th>
+      <th>Coverage</th>
+      <th>Действия</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr>
+      <td>{{ row.entry.student.display_name }}</td>
+      <td>{{ row.response_status|default:"?" }}</td>
+      <td>
+        {% if row.attendance %}
+          {{ row.attendance.status }}
+        {% else %}
+          UNMARKED
+        {% endif %}
+      </td>
+      <td>
+        {% if row.coverage %}
+          covered
+        {% elif row.attendance and row.attendance.status == "present" %}
+          uncovered
+        {% else %}
+          —
+        {% endif %}
+      </td>
+      <td>
+        {% if lesson.status == "confirmed" or lesson.status == "completed" %}
+        <form method="post" action="{% url 'scheduling:coach_set_attendance' lesson.id row.entry.student.id %}">
+          {% csrf_token %}
+          <button type="submit" name="status" value="present">Пришёл</button>
+          <button type="submit" name="status" value="absent">Не пришёл</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if lesson.status == "completed" %}
+<form method="post" action="{% url 'scheduling:coach_submit_attendance' lesson.id %}">
+  {% csrf_token %}
+  <button type="submit">Закрыть ведомость</button>
+</form>
+{% endif %}
+{% endblock %}
