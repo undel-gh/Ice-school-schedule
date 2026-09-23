@@ -5,6 +5,8 @@ from datetime import date
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from core.time import school_date
+
 from subscriptions.services import process_subscription_lifecycle
 
 
@@ -31,7 +33,7 @@ class Command(BaseCommand):
                     "--date must use YYYY-MM-DD format."
                 ) from exc
         else:
-            as_of = timezone.localdate()
+            as_of = school_date(timezone.now())
 
         counts = process_subscription_lifecycle(
             as_of=as_of,
