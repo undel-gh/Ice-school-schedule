@@ -5,7 +5,7 @@ from uuid import UUID
 
 from django.core.management.base import BaseCommand, CommandError
 
-from core.management import resolve_actor
+from core.management import command_errors, resolve_actor
 from subscriptions.services import issue_subscription
 
 
@@ -26,6 +26,7 @@ class Command(BaseCommand):
         parser.add_argument("--valid-until", required=True)
         parser.add_argument("--actor", required=True)
 
+    @command_errors
     def handle(self, *args, **options):
         try:
             student_id = UUID(options["student"])
