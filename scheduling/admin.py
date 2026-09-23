@@ -20,7 +20,21 @@ from .models import (
 admin.site.register(TrainingGroup)
 admin.site.register(Venue)
 admin.site.register(LessonType)
-admin.site.register(ScheduleTemplate)
+
+
+@admin.register(ScheduleTemplate)
+class ScheduleTemplateAdmin(ReadOnlyAdmin):
+    list_display = (
+        "group",
+        "lesson_type",
+        "coach",
+        "weekday",
+        "start_time",
+        "valid_from",
+        "valid_until",
+        "is_active",
+    )
+    list_filter = ("is_active", "lesson_type", "weekday")
 
 
 @admin.register(Lesson)
