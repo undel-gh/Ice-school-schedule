@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone as dt_timezone
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from accounts.models import CoachProfile
 from attendance.models import Attendance
@@ -1110,3 +1111,37 @@ def test_reschedule_copies_active_enrollments_without_rsvp(
         lesson=replacement,
         student=student,
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_uses_school_timezone_not_active_request_timezone(
+    school_context,
+    admin,
+    settings,
+):
+    coach, group, venue, lesson_type = school_context
+    settings.SCHOOL_TIME_ZONE = "Europe/Riga"
+    timezone.activate("UTC")
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 1, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 1),
+        is_active=True,
+    )
+
+    lessons = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 1),
+        until_date=date(2026, 9, 1),
+        actor=admin,
+    )
+
+    assert len(lessons) == 1
+    assert lessons[0].starts_at.astimezone(dt_timezone.utc).hour == 15
