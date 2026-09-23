@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 from io import StringIO
 
 import pytest
 from django.core.management import call_command
 
-from accounts.models import CoachProfile
-from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from accounts.models import CoachProfile, Student
+from scheduling.models import (GroupMembership, Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue)
 
 
 @pytest.fixture
@@ -127,3 +127,90 @@ def test_reschedule_lesson_command_uses_cross_app_workflow(ops_context):
     assert source.status == Lesson.Status.CANCELLED
     assert source.replacement_lesson_id is not None
     assert "Replacement lesson" in out.getvalue()
+
+
+
+@pytest.mark.django_db
+def test_publish_daily_schedule_command_defaults_to_school_date(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "scheduling.management.commands.publish_daily_schedule.get_school_date",
+        lambda value: date(2026, 9, 25),
+    )
+    out = StringIO()
+    call_command("publish_daily_schedule", stdout=out)
+    assert "Published lessons:" in out.getvalue()
+
+
+@pytest.mark.django_db
+def test_group_membership_commands(ops_context):
+    actor, _coach, group, _venue, _lesson_type = ops_context
+    student = Student.objects.create(display_name="Membership Student")
+
+    out = StringIO()
+    call_command(
+        "create_group_membership",
+        "--student",
+        str(student.id),
+        "--group",
+        str(group.id),
+        "--starts-on",
+        "2026-09-01",
+        "--actor",
+        actor.username,
+        stdout=out,
+    )
+    membership = GroupMembership.objects.get(student=student, group=group)
+    assert "created" in out.getvalue().lower()
+
+    out = StringIO()
+    call_command(
+        "update_group_membership",
+        "--membership",
+        str(membership.id),
+        "--starts-on",
+        "2026-09-02",
+        "--ends-on",
+        "2026-12-31",
+        "--actor",
+        actor.username,
+        stdout=out,
+    )
+    membership.refresh_from_db()
+    assert membership.starts_on == date(2026, 9, 2)
+    assert membership.ends_on == date(2026, 12, 31)
+    assert "updated" in out.getvalue().lower()
+
+
+@pytest.mark.django_db
+def test_generate_lessons_all_active_horizon(monkeypatch, ops_context):
+    actor, coach, group, venue, lesson_type = ops_context
+    ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=4,
+        start_time=datetime(2026, 9, 25, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 10, 31),
+        is_active=True,
+    )
+    monkeypatch.setattr(
+        "scheduling.management.commands.generate_lessons.school_date",
+        lambda value: date(2026, 9, 25),
+    )
+
+    out = StringIO()
+    call_command(
+        "generate_lessons",
+        "--all-active",
+        "--horizon-days",
+        "7",
+        stdout=out,
+    )
+
+    assert Lesson.objects.filter(source_template__isnull=False).exists()
+    assert "Templates processed: 1" in out.getvalue()
