@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from core.management import resolve_actor
 from core.time import make_school_aware
-from core.workflows import reschedule_lesson_with_entitlements
+from ice_school.workflows import reschedule_lesson_with_entitlements
 from scheduling.models import Lesson
 
 
