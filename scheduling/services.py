@@ -563,7 +563,10 @@ def skip_template_occurrence(
     require_permission(
         actor,
         "scheduling.change_lesson",
-        "Lesson change permission is required to skip a template occurrence.",
+        (
+            "Lesson change permission is required to skip a template "
+            "occurrence."
+        ),
     )
     template = (
         ScheduleTemplate.objects.select_for_update()
@@ -574,7 +577,11 @@ def skip_template_occurrence(
 
     if not template.is_active:
         raise ValidationError(
-            {"template": "Inactive schedule templates cannot skip occurrences."}
+            {
+                "template": (
+                    "Inactive schedule templates cannot skip occurrences."
+                )
+            }
         )
     if occurrence_date < template.valid_from or (
         template.valid_until is not None
