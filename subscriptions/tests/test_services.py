@@ -11,6 +11,7 @@ from django.db import close_old_connections, connection, connections
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
+from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
@@ -30,7 +31,9 @@ from subscriptions.selectors import (
 )
 from subscriptions.services import (
     adjust_allowance,
+    cancel_one_time_entitlement,
     grant_administrative_makeup,
+    grant_one_time_entitlement,
     assign_attendance_coverage,
     cancel_subscription,
     issue_subscription,
@@ -1111,3 +1114,204 @@ def test_get_available_makeups_prioritizes_target_specific(
         targeted.id,
         generic.id,
     ]
+
+
+
+@pytest.mark.django_db
+def test_grant_one_time_entitlement_uses_lesson_category(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    entitlement = grant_one_time_entitlement(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        entitlement_type=OneTimeEntitlement.Type.TRIAL_ICE,
+        actor=actor,
+    )
+
+    assert entitlement.category == SubscriptionCategory.ICE
+    assert AuditEvent.objects.filter(
+        event_type="OneTimeEntitlementGranted",
+        aggregate_id=entitlement.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_grant_one_time_entitlement_rejects_category_mismatch(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["hall"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    with pytest.raises(ValidationError):
+        grant_one_time_entitlement(
+            student_id=student.id,
+            lesson_id=lesson.id,
+            entitlement_type=OneTimeEntitlement.Type.TRIAL_ICE,
+            actor=actor,
+        )
+
+
+@pytest.mark.django_db
+def test_grant_one_time_entitlement_rejects_cancelled_lesson(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    lesson.status = Lesson.Status.CANCELLED
+    lesson.cancelled_at = datetime(
+        2026,
+        9,
+        14,
+        12,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
+    lesson.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancellation_reason",
+        ]
+    )
+
+    with pytest.raises(ValidationError):
+        grant_one_time_entitlement(
+            student_id=student.id,
+            lesson_id=lesson.id,
+            entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+            actor=actor,
+        )
+
+
+@pytest.mark.django_db
+def test_cancel_one_time_entitlement_is_idempotent_and_audited(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    entitlement = grant_one_time_entitlement(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        actor=actor,
+    )
+    at = datetime(
+        2026,
+        9,
+        14,
+        12,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+
+    first = cancel_one_time_entitlement(
+        entitlement_id=entitlement.id,
+        actor=actor,
+        at=at,
+    )
+    second = cancel_one_time_entitlement(
+        entitlement_id=entitlement.id,
+        actor=actor,
+        at=at + timedelta(hours=1),
+    )
+
+    assert first.cancelled_at == at
+    assert second.cancelled_at == at
+    assert AuditEvent.objects.filter(
+        event_type="OneTimeEntitlementCancelled",
+        aggregate_id=entitlement.id,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_cancel_one_time_entitlement_rejects_active_usage(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    entitlement = grant_one_time_entitlement(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        actor=actor,
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert coverage.one_time_entitlement_id == entitlement.id
+
+    with pytest.raises(ValidationError):
+        cancel_one_time_entitlement(
+            entitlement_id=entitlement.id,
+            actor=actor,
+        )
