@@ -166,8 +166,16 @@ def _revoke_verified_medical_justifications_for_present_correction(
         justification.status = AbsenceJustification.Status.REVOKED
         justification.revoked_at = now
         justification.revoked_by = actor
+        justification.revocation_reason = (
+            AbsenceJustification.RevocationReason.ATTENDANCE_CORRECTION
+        )
         justification.save(
-            update_fields=["status", "revoked_at", "revoked_by"]
+            update_fields=[
+                "status",
+                "revoked_at",
+                "revoked_by",
+                "revocation_reason",
+            ]
         )
         record_event(
             event_type="AbsenceJustificationRevoked",
@@ -178,7 +186,9 @@ def _revoke_verified_medical_justifications_for_present_correction(
             payload={
                 "student_id": str(justification.student_id),
                 "lesson_id": str(justification.lesson_id),
-                "reason": "attendance_corrected_to_present",
+                "reason": (
+                    AbsenceJustification.RevocationReason.ATTENDANCE_CORRECTION
+                ),
                 "cancelled_makeup_count": sum(
                     1
                     for entitlement in entitlements
@@ -654,47 +664,49 @@ def declare_medical_absence(
             }
         )
 
-    existing = (
+    active = (
+        AbsenceJustification.objects.select_for_update()
+        .filter(
+            student_id=student_id,
+            lesson_id=lesson_id,
+            type=AbsenceJustification.Type.MEDICAL,
+            status__in=[
+                AbsenceJustification.Status.PENDING,
+                AbsenceJustification.Status.VERIFIED,
+            ],
+        )
+        .order_by("-declared_at")
+        .first()
+    )
+    if active is not None:
+        return active
+
+    latest = (
         AbsenceJustification.objects.select_for_update()
         .filter(
             student_id=student_id,
             lesson_id=lesson_id,
             type=AbsenceJustification.Type.MEDICAL,
         )
+        .order_by("-declared_at", "-id")
         .first()
     )
-    if existing is not None:
-        if existing.status == AbsenceJustification.Status.REVOKED:
-            existing.status = AbsenceJustification.Status.PENDING
-            existing.reviewed_at = None
-            existing.reviewed_by = None
-            existing.revoked_at = None
-            existing.revoked_by = None
-            existing.declared_at = timezone.now()
-            existing.declared_by = actor
-            existing.save(
-                update_fields=[
-                    "status",
-                    "reviewed_at",
-                    "reviewed_by",
-                    "revoked_at",
-                    "revoked_by",
-                    "declared_at",
-                    "declared_by",
-                ]
+    if latest is not None:
+        if (
+            latest.status == AbsenceJustification.Status.REVOKED
+            and latest.revocation_reason
+            == AbsenceJustification.RevocationReason.ATTENDANCE_CORRECTION
+        ):
+            pass
+        else:
+            raise ValidationError(
+                {
+                    "justification": (
+                        "A terminal medical justification already exists for "
+                        "this absence and cannot be redeclared automatically."
+                    )
+                }
             )
-            record_event(
-                event_type="AbsenceJustificationRedeclared",
-                actor=actor,
-                aggregate_type="AbsenceJustification",
-                aggregate_id=existing.id,
-                payload={
-                    "student_id": str(student_id),
-                    "lesson_id": str(lesson_id),
-                    "type": existing.type,
-                },
-            )
-        return existing
 
     justification = AbsenceJustification.objects.create(
         student_id=student_id,
@@ -707,7 +719,11 @@ def declare_medical_absence(
         declared_by=actor,
     )
     record_event(
-        event_type="AbsenceJustificationDeclared",
+        event_type=(
+            "AbsenceJustificationRedeclared"
+            if latest is not None
+            else "AbsenceJustificationDeclared"
+        ),
         actor=actor,
         aggregate_type="AbsenceJustification",
         aggregate_id=justification.id,
@@ -798,60 +814,20 @@ def verify_medical_absence(
                 }
             )
 
-        entitlement = (
-            MakeupEntitlement.objects.select_for_update()
-            .filter(
-                student_id=justification.student_id,
-                source_lesson_id=justification.lesson_id,
-                reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
-            )
-            .first()
+        entitlement = MakeupEntitlement.objects.create(
+            student_id=justification.student_id,
+            source_lesson_id=justification.lesson_id,
+            source_subscription_allowance=allowance,
+            source_justification=justification,
+            category=allowance.category,
+            reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            created_by=actor,
         )
-        event_type = "MakeupEntitlementGranted"
-        if entitlement is None:
-            entitlement = MakeupEntitlement.objects.create(
-                student_id=justification.student_id,
-                source_lesson_id=justification.lesson_id,
-                source_subscription_allowance=allowance,
-                source_justification=justification,
-                category=allowance.category,
-                reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
-                valid_from=valid_from,
-                valid_until=valid_until,
-                created_by=actor,
-            )
-        else:
-            if entitlement.cancelled_at is None:
-                raise ValidationError(
-                    {
-                        "justification": (
-                            "An active medical make-up already exists for "
-                            "this absence."
-                        )
-                    }
-                )
-            entitlement.source_subscription_allowance = allowance
-            entitlement.source_justification = justification
-            entitlement.category = allowance.category
-            entitlement.valid_from = valid_from
-            entitlement.valid_until = valid_until
-            entitlement.cancelled_at = None
-            entitlement.cancelled_by = None
-            entitlement.save(
-                update_fields=[
-                    "source_subscription_allowance",
-                    "source_justification",
-                    "category",
-                    "valid_from",
-                    "valid_until",
-                    "cancelled_at",
-                    "cancelled_by",
-                ]
-            )
-            event_type = "MakeupEntitlementReactivated"
 
         record_event(
-            event_type=event_type,
+            event_type="MakeupEntitlementGranted",
             actor=actor,
             aggregate_type="MakeupEntitlement",
             aggregate_id=entitlement.id,
@@ -995,8 +971,16 @@ def revoke_medical_absence(
     justification.status = AbsenceJustification.Status.REVOKED
     justification.revoked_at = revoked_at
     justification.revoked_by = actor
+    justification.revocation_reason = (
+        AbsenceJustification.RevocationReason.ADMINISTRATIVE
+    )
     justification.save(
-        update_fields=["status", "revoked_at", "revoked_by"]
+        update_fields=[
+            "status",
+            "revoked_at",
+            "revoked_by",
+            "revocation_reason",
+        ]
     )
 
     record_event(
@@ -1008,6 +992,7 @@ def revoke_medical_absence(
             "student_id": str(justification.student_id),
             "lesson_id": str(justification.lesson_id),
             "cancelled_makeup_count": len(entitlements),
+            "reason": AbsenceJustification.RevocationReason.ADMINISTRATIVE,
         },
     )
     return justification
