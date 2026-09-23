@@ -176,25 +176,39 @@ def generate_lessons(
 
 def publish_daily_schedule(
     *,
-    school_date: date,
+    school_date_value: date,
     now: datetime,
 ) -> list[Lesson]:
-    lesson_ids = []
-    for lesson in Lesson.objects.filter(status=Lesson.Status.DRAFT).only(
-        "id", "starts_at"
-    ):
-        if school_date(lesson.starts_at) == school_date:
-            lesson_ids.append(lesson.id)
+    start = make_school_aware(
+        datetime.combine(school_date_value, datetime.min.time())
+    )
+    end = start + timedelta(days=1)
+    lesson_ids = list(
+        Lesson.objects.filter(
+            status=Lesson.Status.DRAFT,
+            starts_at__gte=start,
+            starts_at__lt=end,
+        )
+        .order_by("starts_at", "id")
+        .values_list("id", flat=True)
+    )
 
     published = []
     for lesson_id in lesson_ids:
-        published.append(
-            publish_lesson(
+        try:
+            lesson = publish_lesson(
                 lesson_id=lesson_id,
                 actor=None,
                 now=now,
             )
-        )
+        except ValidationError:
+            current_status = Lesson.objects.filter(
+                pk=lesson_id
+            ).values_list("status", flat=True).first()
+            if current_status != Lesson.Status.DRAFT:
+                continue
+            raise
+        published.append(lesson)
     return published
 
 
@@ -706,11 +720,16 @@ def reschedule_lesson(
     new_ends_at: datetime,
     actor: User,
     reason: str,
+    now: datetime,
 ) -> Lesson:
     _validate_cancellation_reason(reason)
     if new_ends_at <= new_starts_at:
         raise ValidationError(
             {"new_ends_at": "Replacement lesson must end after it starts."}
+        )
+    if new_starts_at <= now:
+        raise ValidationError(
+            {"new_starts_at": "Replacement lesson must start in the future."}
         )
 
     source = (
@@ -748,8 +767,22 @@ def reschedule_lesson(
         status=Lesson.Status.DRAFT,
     )
 
+    source_enrollments = list(
+        LessonEnrollment.objects.select_for_update().filter(
+            lesson=source,
+            cancelled_at__isnull=True,
+        )
+    )
+    for enrollment in source_enrollments:
+        LessonEnrollment.objects.create(
+            lesson=replacement,
+            student_id=enrollment.student_id,
+            reason=enrollment.reason,
+            created_by=actor,
+        )
+
     source.status = Lesson.Status.CANCELLED
-    source.cancelled_at = timezone.now()
+    source.cancelled_at = now
     source.cancelled_by = actor
     source.cancellation_reason = reason
     source.replacement_lesson = replacement
