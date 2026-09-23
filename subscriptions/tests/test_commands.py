@@ -65,8 +65,8 @@ def test_process_subscription_lifecycle_command_rejects_bad_date():
 @pytest.mark.django_db
 def test_process_subscription_lifecycle_command_defaults_to_localdate(monkeypatch):
     monkeypatch.setattr(
-        "subscriptions.management.commands.process_subscription_lifecycle.timezone.localdate",
-        lambda: date(2026, 9, 23),
+        "subscriptions.management.commands.process_subscription_lifecycle.school_date",
+        lambda value: date(2026, 9, 23),
     )
 
     out = StringIO()
