@@ -66,6 +66,11 @@ def issue_subscription(
     valid_until: date,
     actor: User | None,
 ) -> Subscription:
+    require_permission(
+        actor,
+        "subscriptions.add_subscription",
+        "Subscription issue permission is required.",
+    )
     if valid_until < valid_from:
         raise ValidationError(
             {"valid_until": "valid_until must be on or after valid_from."}
@@ -597,6 +602,11 @@ def adjust_allowance(
     reason: str,
     actor: User,
 ) -> SubscriptionLedgerEntry:
+    require_permission(
+        actor,
+        "subscriptions.change_subscriptionallowance",
+        "Subscription allowance adjustment permission is required.",
+    )
     if delta == 0:
         raise ValidationError(
             {"delta": "Adjustment delta must be non-zero."}
@@ -645,6 +655,11 @@ def cancel_subscription(
     actor: User,
     at=None,
 ) -> Subscription:
+    require_permission(
+        actor,
+        "subscriptions.change_subscription",
+        "Subscription cancellation permission is required.",
+    )
     subscription = Subscription.objects.select_for_update().get(
         pk=subscription_id
     )
@@ -691,6 +706,11 @@ def grant_school_reschedule_makeups(
     replacement_lesson_id: UUID,
     actor: User,
 ) -> tuple[MakeupEntitlement, ...]:
+    require_permission(
+        actor,
+        "subscriptions.add_makeupentitlement",
+        "School reschedule make-up permission is required.",
+    )
     source = (
         Lesson.objects.select_for_update()
         .select_related("lesson_type")
@@ -932,7 +952,11 @@ def rebind_attendance_coverage(
     makeup_entitlement_id: UUID | None = None,
 ) -> AttendanceCoverage:
     correlation_id = uuid4()
-    _assert_entitlement_admin(actor)
+    require_permission(
+        actor,
+        "subscriptions.change_attendancecoverage",
+        "Attendance coverage rebind permission is required.",
+    )
 
     primary_count = sum(
         value is not None
@@ -1347,6 +1371,11 @@ def grant_one_time_entitlement(
     entitlement_type: str,
     actor: User | None,
 ) -> OneTimeEntitlement:
+    require_permission(
+        actor,
+        "subscriptions.add_onetimeentitlement",
+        "One-time entitlement grant permission is required.",
+    )
     if entitlement_type not in OneTimeEntitlement.Type.values:
         raise ValidationError(
             {"entitlement_type": "Unsupported one-time entitlement type."}
@@ -1404,6 +1433,11 @@ def cancel_one_time_entitlement(
     actor: User | None,
     at=None,
 ) -> OneTimeEntitlement:
+    require_permission(
+        actor,
+        "subscriptions.change_onetimeentitlement",
+        "One-time entitlement cancellation permission is required.",
+    )
     entitlement = OneTimeEntitlement.objects.select_for_update().get(
         pk=entitlement_id
     )
