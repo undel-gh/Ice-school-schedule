@@ -57,6 +57,7 @@ def admin_user(db):
         username="admin",
         password="test",
         is_staff=True,
+        is_superuser=True,
     )
 
 
