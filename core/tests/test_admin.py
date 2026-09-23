@@ -64,7 +64,8 @@ def test_operational_models_are_registered_read_only(model, admin_request):
     assert isinstance(model_admin, ReadOnlyAdmin)
     assert model_admin.has_add_permission(admin_request) is False
     assert model_admin.has_delete_permission(admin_request) is False
-    assert model_admin.has_change_permission(admin_request) is True
+    assert model_admin.has_change_permission(admin_request) is False
+    assert model_admin.has_service_permission(admin_request) is False
 
     readonly = set(model_admin.get_readonly_fields(admin_request))
     model_fields = {field.name for field in model._meta.fields}
