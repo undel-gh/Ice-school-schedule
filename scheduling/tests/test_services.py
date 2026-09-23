@@ -1148,3 +1148,61 @@ def test_generate_lessons_uses_school_timezone_not_active_request_timezone(
 
     assert len(lessons) == 1
     assert lessons[0].starts_at.astimezone(dt_timezone.utc).hour == 15
+
+
+
+@pytest.mark.django_db
+def test_reschedule_workflow_rolls_back_when_entitlement_permission_missing(
+    school_context,
+):
+    coach, group, venue, lesson_type = school_context
+    actor = User.objects.create_user(
+        username="lesson-only-admin",
+        password="test",
+        is_staff=True,
+    )
+    from django.contrib.auth.models import Permission
+
+    actor.user_permissions.add(
+        Permission.objects.get(
+            content_type__app_label="scheduling",
+            codename="change_lesson",
+        )
+    )
+    starts_at = datetime(
+        2026,
+        9,
+        25,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+
+    with pytest.raises(PermissionDenied):
+        reschedule_lesson_with_entitlements(
+            lesson_id=source.id,
+            new_starts_at=starts_at + timedelta(days=1),
+            new_ends_at=starts_at + timedelta(days=1, hours=1),
+            actor=actor,
+            reason=Lesson.CancellationReason.ADMINISTRATIVE,
+            now=starts_at - timedelta(hours=3),
+        )
+
+    source.refresh_from_db()
+    assert source.status == Lesson.Status.RSVP_OPEN
+    assert source.replacement_lesson_id is None
+    assert Lesson.objects.filter(
+        replacement_for=source,
+    ).count() == 0
