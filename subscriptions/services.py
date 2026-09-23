@@ -360,22 +360,6 @@ def _try_makeup_coverage(
                 },
                 correlation_id=correlation_id,
             )
-        remaining_balance = balance - 1
-        if remaining_balance == 0:
-            _audit(
-                event_type="SubscriptionAllowanceExhausted",
-                aggregate_type="SubscriptionAllowance",
-                aggregate_id=allowance.id,
-                actor=actor,
-                payload={
-                    "attendance_id": str(attendance.id),
-                    "coverage_id": str(coverage.id),
-                    "allowance_id": str(allowance.id),
-                    "category": category,
-                    "balance": 0,
-                },
-                correlation_id=correlation_id,
-            )
         _audit(
             event_type="MakeupEntitlementUsed",
             aggregate_type="MakeupEntitlement",
@@ -479,6 +463,22 @@ def _try_ordinary_allowance_coverage(
             },
             correlation_id=correlation_id,
         )
+        remaining_balance = balance - 1
+        if remaining_balance == 0:
+            _audit(
+                event_type="SubscriptionAllowanceExhausted",
+                aggregate_type="SubscriptionAllowance",
+                aggregate_id=allowance.id,
+                actor=actor,
+                payload={
+                    "attendance_id": str(attendance.id),
+                    "coverage_id": str(coverage.id),
+                    "allowance_id": str(allowance.id),
+                    "category": category,
+                    "balance": 0,
+                },
+                correlation_id=correlation_id,
+            )
         return coverage
 
     return None
