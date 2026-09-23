@@ -41,3 +41,21 @@ def event_exists(
         aggregate_type=aggregate_type,
         aggregate_id=aggregate_id,
     ).exists()
+
+
+
+def event_exists_with_payload(
+    *,
+    event_type: str,
+    aggregate_type: str,
+    aggregate_id: UUID,
+    payload_filters: dict[str, object],
+) -> bool:
+    queryset = AuditEvent.objects.filter(
+        event_type=event_type,
+        aggregate_type=aggregate_type,
+        aggregate_id=aggregate_id,
+    )
+    for key, value in payload_filters.items():
+        queryset = queryset.filter(**{f"payload__{key}": value})
+    return queryset.exists()
