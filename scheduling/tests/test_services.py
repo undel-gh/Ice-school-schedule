@@ -1204,5 +1204,5 @@ def test_reschedule_workflow_rolls_back_when_entitlement_permission_missing(
     assert source.status == Lesson.Status.RSVP_OPEN
     assert source.replacement_lesson_id is None
     assert Lesson.objects.filter(
-        replacement_for=source,
+        replaced_lesson=source,
     ).count() == 0
