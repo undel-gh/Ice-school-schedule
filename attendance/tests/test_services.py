@@ -5,9 +5,11 @@ from datetime import date, datetime, timedelta, timezone as dt_timezone
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import models
 
 from accounts.models import CoachProfile, Student, StudentAccess
 from attendance.models import Attendance
+from audit.models import AuditEvent
 from attendance.services import (
     declare_medical_absence,
     mark_remaining_absent,
@@ -1184,3 +1186,120 @@ def test_revoke_medical_absence_cancels_active_makeup(
     assert revoked.revoked_by_id == admin_user.id
     assert entitlement.cancelled_at is not None
     assert entitlement.cancelled_by_id == admin_user.id
+
+
+
+@pytest.mark.django_db
+def test_present_attendance_audit_events_share_correlation_id(
+    student,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="audit-correlation",
+        name="Audit correlation",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=1,
+    )
+    issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=coach_user,
+    )
+
+    attendance = set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.PRESENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+
+    coverage = AttendanceCoverage.objects.get(
+        attendance=attendance,
+        reversed_at__isnull=True,
+    )
+    events = AuditEvent.objects.filter(
+        event_type__in=[
+            "AttendanceMarkedPresent",
+            "AttendanceCoverageAssigned",
+            "SubscriptionAllowanceConsumed",
+        ],
+    ).filter(
+        models.Q(aggregate_id=attendance.id)
+        | models.Q(aggregate_id=coverage.id)
+        | models.Q(
+            aggregate_id=coverage.subscription_allowance_id
+        )
+    )
+
+    correlation_ids = set(
+        events.values_list("correlation_id", flat=True)
+    )
+    assert events.count() == 3
+    assert len(correlation_ids) == 1
+
+
+@pytest.mark.django_db
+def test_uncovered_attendance_emits_correlated_uncovered_event(
+    student,
+    coach_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+
+    attendance = set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.PRESENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+
+    marked = AuditEvent.objects.get(
+        event_type="AttendanceMarkedPresent",
+        aggregate_id=attendance.id,
+    )
+    uncovered = AuditEvent.objects.get(
+        event_type="AttendanceUncovered",
+        aggregate_id=attendance.id,
+    )
+    assert marked.correlation_id == uncovered.correlation_id
