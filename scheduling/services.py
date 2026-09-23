@@ -355,10 +355,57 @@ def version_schedule_template(
             }
         )
 
+    cutoff = make_school_aware(
+        datetime.combine(effective_from, datetime.min.time())
+    )
+    affected = Lesson.objects.select_for_update().filter(
+        source_template=template,
+        starts_at__gte=cutoff,
+    )
+    blocking_statuses = {
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+        Lesson.Status.COMPLETED,
+        Lesson.Status.CLOSED,
+    }
+    blocking_lesson = affected.filter(
+        status__in=blocking_statuses,
+    ).order_by("starts_at", "id").first()
+    if blocking_lesson is not None:
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "Template versioning would affect a published or "
+                    "processed lesson. Reschedule/cancel that lesson "
+                    f"explicitly first: {blocking_lesson.id}."
+                )
+            }
+        )
+
+    booked_draft = (
+        affected.filter(status=Lesson.Status.DRAFT)
+        .filter(
+            Q(enrollments__cancelled_at__isnull=True)
+            | Q(one_time_entitlements__cancelled_at__isnull=True)
+        )
+        .distinct()
+        .order_by("starts_at", "id")
+        .first()
+    )
+    if booked_draft is not None:
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "Template versioning would cancel a DRAFT lesson with "
+                    "an active enrollment or one-time entitlement. "
+                    f"Reschedule it explicitly first: {booked_draft.id}."
+                )
+            }
+        )
+
     previous_valid_until = template.valid_until
     template.valid_until = effective_from - timedelta(days=1)
-    template.is_active = False
-    template.save(update_fields=["valid_until", "is_active", "updated_at"])
+    template.save(update_fields=["valid_until", "updated_at"])
 
     replacement = ScheduleTemplate.objects.create(
         **new_values,
@@ -367,9 +414,6 @@ def version_schedule_template(
         is_active=True,
     )
 
-    cutoff = make_school_aware(
-        datetime.combine(effective_from, datetime.min.time())
-    )
     draft_lessons = list(
         Lesson.objects.select_for_update()
         .filter(
