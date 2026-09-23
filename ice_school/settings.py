@@ -165,4 +165,15 @@ AUTHENTICATION_BACKENDS = [
 AXES_FAILURE_LIMIT = int(os.environ.get("AXES_FAILURE_LIMIT", "5"))
 AXES_COOLOFF_TIME = 1
 AXES_RESET_ON_SUCCESS = True
-AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"]]
+AXES_LOCKOUT_PARAMETERS = ["username", "ip_address"]
+AXES_IPWARE_PROXY_COUNT = int(
+    os.environ.get("AXES_IPWARE_PROXY_COUNT", "1" if not DEBUG else "0")
+)
+AXES_IPWARE_META_PRECEDENCE_ORDER = (
+    "HTTP_X_FORWARDED_FOR",
+    "REMOTE_ADDR",
+)
+AXES_IPWARE_PROXY_ORDER = os.environ.get(
+    "AXES_IPWARE_PROXY_ORDER",
+    "left-most",
+)
