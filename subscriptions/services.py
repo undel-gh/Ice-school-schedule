@@ -1182,3 +1182,120 @@ def rebind_attendance_coverage(
         )
 
     return new_coverage
+
+
+
+_ONE_TIME_CATEGORY_BY_TYPE = {
+    OneTimeEntitlement.Type.SINGLE_ICE: "ice",
+    OneTimeEntitlement.Type.SINGLE_HALL: "hall",
+    OneTimeEntitlement.Type.INDIVIDUAL_ICE: "ice",
+    OneTimeEntitlement.Type.MINI_GROUP_ICE: "ice",
+    OneTimeEntitlement.Type.TRIAL_ICE: "ice",
+}
+
+
+@transaction.atomic
+def grant_one_time_entitlement(
+    *,
+    student_id: UUID,
+    lesson_id: UUID,
+    entitlement_type: str,
+    actor: User | None,
+) -> OneTimeEntitlement:
+    if entitlement_type not in OneTimeEntitlement.Type.values:
+        raise ValidationError(
+            {"entitlement_type": "Unsupported one-time entitlement type."}
+        )
+
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("lesson_type")
+        .get(pk=lesson_id)
+    )
+    if lesson.status == Lesson.Status.CANCELLED:
+        raise ValidationError(
+            {"lesson": "Cannot grant one-time entitlement for CANCELLED lesson."}
+        )
+
+    category = lesson.lesson_type.subscription_category
+    expected_category = _ONE_TIME_CATEGORY_BY_TYPE[entitlement_type]
+    if category != expected_category:
+        raise ValidationError(
+            {
+                "entitlement_type": (
+                    "One-time entitlement type does not match lesson category."
+                )
+            }
+        )
+
+    Student.objects.get(pk=student_id)
+    entitlement = OneTimeEntitlement.objects.create(
+        student_id=student_id,
+        lesson=lesson,
+        entitlement_type=entitlement_type,
+        category=category,
+        created_by=actor,
+    )
+
+    _audit(
+        event_type="OneTimeEntitlementGranted",
+        aggregate_type="OneTimeEntitlement",
+        aggregate_id=entitlement.id,
+        actor=actor,
+        payload={
+            "student_id": str(student_id),
+            "lesson_id": str(lesson.id),
+            "entitlement_type": entitlement.entitlement_type,
+            "category": entitlement.category,
+        },
+    )
+    return entitlement
+
+
+@transaction.atomic
+def cancel_one_time_entitlement(
+    *,
+    entitlement_id: UUID,
+    actor: User | None,
+    at=None,
+) -> OneTimeEntitlement:
+    entitlement = OneTimeEntitlement.objects.select_for_update().get(
+        pk=entitlement_id
+    )
+    if entitlement.cancelled_at is not None:
+        return entitlement
+
+    if AttendanceCoverage.objects.filter(
+        one_time_entitlement=entitlement,
+        reversed_at__isnull=True,
+    ).exists():
+        raise ValidationError(
+            {
+                "entitlement": (
+                    "One-time entitlement is used by an active coverage; "
+                    "reverse or rebind the coverage first."
+                )
+            }
+        )
+
+    cancelled_at = at or timezone.now()
+    entitlement.cancelled_at = cancelled_at
+    entitlement.cancelled_by = actor
+    entitlement.save(
+        update_fields=["cancelled_at", "cancelled_by"]
+    )
+
+    _audit(
+        event_type="OneTimeEntitlementCancelled",
+        aggregate_type="OneTimeEntitlement",
+        aggregate_id=entitlement.id,
+        actor=actor,
+        payload={
+            "student_id": str(entitlement.student_id),
+            "lesson_id": str(entitlement.lesson_id),
+            "entitlement_type": entitlement.entitlement_type,
+            "category": entitlement.category,
+            "cancelled_at": cancelled_at.isoformat(),
+        },
+    )
+    return entitlement
