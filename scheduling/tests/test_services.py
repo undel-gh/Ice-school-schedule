@@ -1335,7 +1335,7 @@ def test_version_schedule_template_cancels_future_drafts_and_avoids_duplicates(
     )
 
     template.refresh_from_db()
-    assert template.is_active is False
+    assert template.is_active is True
     assert template.valid_until == date(2026, 9, 27)
     assert replacement.valid_from == date(2026, 9, 28)
     assert replacement.start_time.hour == 19
@@ -1394,3 +1394,161 @@ def test_group_membership_audit_preserves_previous_values(
     assert event.payload["previous_ends_on"] is None
     assert event.payload["starts_on"] == "2026-09-02"
     assert event.payload["ends_on"] == "2026-12-31"
+
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_keeps_old_version_generating_until_cutoff(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 9, 21, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 1),
+        until_date=date(2026, 9, 30),
+        actor=admin,
+    )
+
+    replacement = version_schedule_template(
+        template_id=template.id,
+        effective_from=date(2026, 10, 19),
+        actor=admin,
+        now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+        start_time=datetime(2026, 9, 21, 19, 0).time(),
+    )
+
+    template.refresh_from_db()
+    assert template.is_active is True
+    assert template.valid_until == date(2026, 10, 18)
+
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 1),
+        until_date=date(2026, 10, 18),
+        actor=admin,
+    )
+    old_dates = {
+        item.starts_at.date()
+        for item in Lesson.objects.filter(
+            source_template=template,
+            status=Lesson.Status.DRAFT,
+        )
+    }
+    assert date(2026, 10, 5) in old_dates
+    assert date(2026, 10, 12) in old_dates
+
+    generate_lessons(
+        template_id=replacement.id,
+        from_date=date(2026, 10, 19),
+        until_date=date(2026, 10, 31),
+        actor=admin,
+    )
+    assert Lesson.objects.filter(
+        source_template=replacement,
+        status=Lesson.Status.DRAFT,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_rejects_booked_draft(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 10, 5, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    lesson = Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.DRAFT,
+    )
+    LessonEnrollment.objects.create(
+        lesson=lesson,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        version_schedule_template(
+            template_id=template.id,
+            effective_from=date(2026, 10, 1),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+            start_time=datetime(2026, 10, 5, 19, 0).time(),
+        )
+
+    template.refresh_from_db()
+    assert template.valid_until is None
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_rejects_published_lesson(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 10, 5, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.RSVP_OPEN,
+        published_at=datetime(2026, 9, 23, 7, 0, tzinfo=dt_timezone.utc),
+    )
+
+    with pytest.raises(ValidationError):
+        version_schedule_template(
+            template_id=template.id,
+            effective_from=date(2026, 10, 1),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+            start_time=datetime(2026, 10, 5, 19, 0).time(),
+        )
