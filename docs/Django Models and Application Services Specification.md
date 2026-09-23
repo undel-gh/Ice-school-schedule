@@ -34,6 +34,8 @@ audit/
 
 core/
     permissions.py
+
+ice_school/
     workflows.py
 ```
 
@@ -54,8 +56,8 @@ audit ← все приложения
 Циклических импортов между service-модулями следует избегать.
 
 Cross-app orchestration, которое по смыслу затрагивает несколько доменов,
-размещается в `core.workflows`, а не создаёт обратную зависимость между
-domain apps.
+размещается в composition root `ice_school.workflows`, а не в нижнем
+`core` и не создаёт обратную зависимость между domain apps.
 
 Audit persistence централизуется через:
 
@@ -1999,6 +2001,11 @@ Attendance для отменённого занятия создавать не�
 
 # 36. scheduling.services.reschedule_lesson()
 
+Это low-level scheduling transition. Интерактивные callers не должны вызывать
+его напрямую: административный UI/CLI использует
+`ice_school.workflows.reschedule_lesson_with_entitlements()`, чтобы перенос
+Lesson и entitlement'ов был одной транзакцией.
+
 ```python
 reschedule_lesson(
     *,
@@ -2044,7 +2051,7 @@ records. RSVP при этом не копируются.
 Subscription-domain service:
 
 ```python
-subscriptions.services.grant_school_reschedule_makeups(
+subscriptions.services.apply_school_reschedule_entitlements(
     *,
     source_lesson_id: UUID,
     replacement_lesson_id: UUID,
@@ -2056,7 +2063,7 @@ subscriptions.services.grant_school_reschedule_makeups(
 cross-app orchestration:
 
 ```python
-core.workflows.reschedule_lesson_with_entitlements(...)
+ice_school.workflows.reschedule_lesson_with_entitlements(...)
 ```
 
 Workflow в одной транзакции вызывает:
@@ -2064,8 +2071,13 @@ Workflow в одной транзакции вызывает:
 ```text
 scheduling.services.reschedule_lesson()
         ↓
-subscriptions.services.grant_school_reschedule_makeups()
+subscriptions.services.apply_school_reschedule_entitlements()
 ```
+
+Неиспользованный и неотменённый `OneTimeEntitlement`, привязанный к
+исходному Lesson и совпадающий по категории, перепривязывается к replacement.
+Использованный one-time entitlement остаётся исторически привязанным к исходному
+занятию. Новое разовое право при переносе не создаётся.
 
 Если replacement Lesson выходит за обычный срок, для участников с `RSVP=YES`
 определяется `SubscriptionAllowance` той же категории, который мог покрыть
