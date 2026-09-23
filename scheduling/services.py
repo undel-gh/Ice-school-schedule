@@ -19,7 +19,7 @@ from core.permissions import (
 from core.time import make_school_aware, school_date as get_school_date
 
 from accounts.models import Student
-from audit.services import record_event
+from audit.services import event_exists_with_payload, record_event
 from .models import (
     GroupMembership,
     TrainingGroup,
@@ -52,15 +52,10 @@ class LessonGenerationConflict:
     ends_at: datetime
 
 
-class LessonGenerationResult(list[Lesson]):
-    def __init__(
-        self,
-        lessons=(),
-        *,
-        conflicts: tuple[LessonGenerationConflict, ...] = (),
-    ):
-        super().__init__(lessons)
-        self.conflicts = conflicts
+@dataclass(frozen=True, slots=True)
+class LessonGenerationResult:
+    lessons: tuple[Lesson, ...] = ()
+    conflicts: tuple[LessonGenerationConflict, ...] = ()
 
 
 
@@ -629,6 +624,19 @@ def generate_lessons(
         rsvp_deadline = starts_at - timedelta(minutes=rsvp_minutes)
         decision_deadline = starts_at - timedelta(minutes=decision_minutes)
 
+        own_lesson = (
+            Lesson.objects.filter(
+                source_template=template,
+                starts_at=starts_at,
+            )
+            .order_by("id")
+            .first()
+        )
+        if own_lesson is not None:
+            created_or_existing.append(own_lesson)
+            current += timedelta(days=1)
+            continue
+
         overlapping_lessons = list(
             Lesson.objects.filter(
                 group_id=template.group_id,
@@ -659,29 +667,38 @@ def generate_lessons(
                     ends_at=ends_at,
                 )
                 conflicts.append(conflict)
-                record_event(
+                expected_starts_at = starts_at.isoformat()
+                if not event_exists_with_payload(
                     event_type="LessonGenerationConflict",
-                    actor=actor,
                     aggregate_type="ScheduleTemplate",
                     aggregate_id=template.id,
-                    payload={
-                        "conflicting_lesson_id": str(cross_type.id),
-                        "expected_lesson_type_id": str(
-                            template.lesson_type_id
-                        ),
-                        "conflicting_lesson_type_id": str(
-                            cross_type.lesson_type_id
-                        ),
-                        "expected_starts_at": starts_at.isoformat(),
-                        "expected_ends_at": ends_at.isoformat(),
-                        "conflicting_starts_at": (
-                            cross_type.starts_at.isoformat()
-                        ),
-                        "conflicting_ends_at": (
-                            cross_type.ends_at.isoformat()
-                        ),
+                    payload_filters={
+                        "expected_starts_at": expected_starts_at,
                     },
-                )
+                ):
+                    record_event(
+                        event_type="LessonGenerationConflict",
+                        actor=actor,
+                        aggregate_type="ScheduleTemplate",
+                        aggregate_id=template.id,
+                        payload={
+                            "conflicting_lesson_id": str(cross_type.id),
+                            "expected_lesson_type_id": str(
+                                template.lesson_type_id
+                            ),
+                            "conflicting_lesson_type_id": str(
+                                cross_type.lesson_type_id
+                            ),
+                            "expected_starts_at": expected_starts_at,
+                            "expected_ends_at": ends_at.isoformat(),
+                            "conflicting_starts_at": (
+                                cross_type.starts_at.isoformat()
+                            ),
+                            "conflicting_ends_at": (
+                                cross_type.ends_at.isoformat()
+                            ),
+                        },
+                    )
             current += timedelta(days=1)
             continue
 
@@ -718,7 +735,7 @@ def generate_lessons(
             },
         )
     return LessonGenerationResult(
-        created_or_existing,
+        lessons=tuple(created_or_existing),
         conflicts=tuple(conflicts),
     )
 
