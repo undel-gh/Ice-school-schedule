@@ -7,6 +7,7 @@ import pytest
 from django.core.management import call_command
 
 from accounts.models import CoachProfile, Student
+from audit.models import AuditEvent
 from scheduling.models import (GroupMembership, Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue)
 
 
@@ -181,6 +182,14 @@ def test_group_membership_commands(ops_context):
     assert membership.starts_on == date(2026, 9, 2)
     assert membership.ends_on == date(2026, 12, 31)
     assert "updated" in out.getvalue().lower()
+    assert AuditEvent.objects.filter(
+        event_type="GroupMembershipCreated",
+        aggregate_id=membership.id,
+    ).exists()
+    assert AuditEvent.objects.filter(
+        event_type="GroupMembershipChanged",
+        aggregate_id=membership.id,
+    ).exists()
 
 
 @pytest.mark.django_db
