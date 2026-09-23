@@ -92,13 +92,26 @@ def create_group_membership(
             }
         )
 
-    return GroupMembership.objects.create(
+    membership = GroupMembership.objects.create(
         student_id=student_id,
         group_id=group_id,
         starts_on=starts_on,
         ends_on=ends_on,
         created_by=actor,
     )
+    record_event(
+        event_type="GroupMembershipCreated",
+        aggregate_type="GroupMembership",
+        aggregate_id=membership.id,
+        actor=actor,
+        payload={
+            "student_id": str(student_id),
+            "group_id": str(group_id),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat() if ends_on else None,
+        },
+    )
+    return membership
 
 
 @transaction.atomic
@@ -150,7 +163,27 @@ def update_group_membership(
 
     membership.starts_on = starts_on
     membership.ends_on = ends_on
+    previous_starts_on = membership.starts_on
+    previous_ends_on = membership.ends_on
+    membership.starts_on = starts_on
+    membership.ends_on = ends_on
     membership.save(update_fields=["starts_on", "ends_on"])
+    record_event(
+        event_type="GroupMembershipChanged",
+        aggregate_type="GroupMembership",
+        aggregate_id=membership.id,
+        actor=actor,
+        payload={
+            "student_id": str(membership.student_id),
+            "group_id": str(membership.group_id),
+            "previous_starts_on": previous_starts_on.isoformat(),
+            "previous_ends_on": (
+                previous_ends_on.isoformat() if previous_ends_on else None
+            ),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat() if ends_on else None,
+        },
+    )
     return membership
 
 
