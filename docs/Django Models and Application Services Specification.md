@@ -2559,13 +2559,23 @@ PENDING
 MEDICAL
 ```
 
+Если для того же `student + lesson + MEDICAL` уже существует REVOKED
+justification и Attendance снова ABSENT, она переводится обратно в PENDING.
+Это redeclare той же уникальной записи; предыдущая история остаётся в audit.
+
 Справку в систему не загружаем.
 
 ---
 
 # 65. attendance.services.verify_medical_absence()
 
-При VERIFIED определяется конкретный `SubscriptionAllowance` категории исходного Lesson, который мог покрыть пропуск. Если allowance найден, создаётся MakeupEntitlement на него. Если подходящего allowance нет, justification остаётся VERIFIED, но entitlement не создаётся.
+Lock order для коррекции/верификации:
+
+```text
+Lesson → Attendance → AbsenceJustification → entitlement/allowance
+```
+
+При VERIFIED определяется конкретный `SubscriptionAllowance` категории исходного Lesson, который мог покрыть пропуск. Если allowance найден, создаётся MakeupEntitlement на него. Если это повторная верификация после REVOKED → PENDING, ранее отменённый medical MakeupEntitlement реактивируется. Если подходящего allowance нет, justification остаётся VERIFIED, но entitlement не создаётся.
 
 ---
 
