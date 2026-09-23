@@ -1315,3 +1315,62 @@ def test_cancel_one_time_entitlement_rejects_active_usage(
             entitlement_id=entitlement.id,
             actor=actor,
         )
+
+
+
+@pytest.mark.django_db
+def test_last_visit_emits_single_correlated_exhausted_event(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="exhaust-event", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    exhausted = AuditEvent.objects.filter(
+        event_type="SubscriptionAllowanceExhausted",
+        aggregate_id=allowance.id,
+    )
+    consumed = AuditEvent.objects.get(
+        event_type="SubscriptionAllowanceConsumed",
+        aggregate_id=allowance.id,
+    )
+    assigned = AuditEvent.objects.get(
+        event_type="AttendanceCoverageAssigned",
+        aggregate_id=coverage.id,
+    )
+
+    assert exhausted.count() == 1
+    event = exhausted.get()
+    assert event.payload["balance"] == 0
+    assert event.correlation_id == consumed.correlation_id
+    assert event.correlation_id == assigned.correlation_id
