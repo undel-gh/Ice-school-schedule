@@ -2910,10 +2910,28 @@ TrainingGroup и запрещает пересекающийся replacement.
 
 - overlap + тот же `lesson_type` → существующий Lesson считается покрывающим
   регулярный слот и новый Lesson не создаётся;
-- overlap + другой `lesson_type` → создаётся audit event
-  `LessonGenerationConflict`, слот не считается успешно сгенерированным;
-- management command собирает такие конфликты и завершает запуск
-  `CommandError`, не откатывая audit event.
+- если у самого template уже есть concrete Lesson с точным
+  `source_template + starts_at`, его статус (включая CANCELLED) является
+  окончательным решением по слоту;
+- overlap + другой `lesson_type` → возвращается conflict, слот не считается
+  успешно сгенерированным;
+- `LessonGenerationConflict` записывается в audit идемпотентно по
+  `template + expected_starts_at`;
+- management command собирает такие конфликты и завершает каждый unresolved
+  запуск `CommandError`, не размножая одинаковые audit events.
 
 Таким образом ручной перенос ICE в новый ICE-слот не создаёт дубль, но ICE не
 может молча вытеснить регулярный HALL и наоборот.
+
+
+`generate_lessons()` возвращает явный value object:
+
+```python
+LessonGenerationResult(
+    lessons=(...),
+    conflicts=(...),
+)
+```
+
+Callers используют поля `.lessons` и `.conflicts`; result не является
+подклассом list.
