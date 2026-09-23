@@ -629,7 +629,7 @@ def generate_lessons(
         rsvp_deadline = starts_at - timedelta(minutes=rsvp_minutes)
         decision_deadline = starts_at - timedelta(minutes=decision_minutes)
 
-        occupying_lesson = (
+        overlapping_lessons = list(
             Lesson.objects.filter(
                 group_id=template.group_id,
                 starts_at__lt=ends_at,
@@ -637,19 +637,24 @@ def generate_lessons(
             )
             .exclude(status=Lesson.Status.CANCELLED)
             .order_by("starts_at", "id")
-            .first()
         )
-        if occupying_lesson is not None:
-            if occupying_lesson.lesson_type_id == template.lesson_type_id:
-                created_or_existing.append(occupying_lesson)
+        if overlapping_lessons:
+            cross_type = next(
+                (
+                    lesson
+                    for lesson in overlapping_lessons
+                    if lesson.lesson_type_id != template.lesson_type_id
+                ),
+                None,
+            )
+            if cross_type is None:
+                created_or_existing.append(overlapping_lessons[0])
             else:
                 conflict = LessonGenerationConflict(
                     template_id=template.id,
-                    conflicting_lesson_id=occupying_lesson.id,
+                    conflicting_lesson_id=cross_type.id,
                     expected_lesson_type_id=template.lesson_type_id,
-                    conflicting_lesson_type_id=(
-                        occupying_lesson.lesson_type_id
-                    ),
+                    conflicting_lesson_type_id=cross_type.lesson_type_id,
                     starts_at=starts_at,
                     ends_at=ends_at,
                 )
@@ -660,22 +665,20 @@ def generate_lessons(
                     aggregate_type="ScheduleTemplate",
                     aggregate_id=template.id,
                     payload={
-                        "conflicting_lesson_id": str(
-                            occupying_lesson.id
-                        ),
+                        "conflicting_lesson_id": str(cross_type.id),
                         "expected_lesson_type_id": str(
                             template.lesson_type_id
                         ),
                         "conflicting_lesson_type_id": str(
-                            occupying_lesson.lesson_type_id
+                            cross_type.lesson_type_id
                         ),
                         "expected_starts_at": starts_at.isoformat(),
                         "expected_ends_at": ends_at.isoformat(),
                         "conflicting_starts_at": (
-                            occupying_lesson.starts_at.isoformat()
+                            cross_type.starts_at.isoformat()
                         ),
                         "conflicting_ends_at": (
-                            occupying_lesson.ends_at.isoformat()
+                            cross_type.ends_at.isoformat()
                         ),
                     },
                 )
