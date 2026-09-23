@@ -224,6 +224,7 @@ def generate_lessons(
 
     rsvp_minutes, decision_minutes = _validate_deadline_policy()
     created_or_existing: list[Lesson] = []
+    created_ids: list[str] = []
 
     current = effective_from
     while current <= effective_until:
@@ -244,7 +245,7 @@ def generate_lessons(
         rsvp_deadline = starts_at - timedelta(minutes=rsvp_minutes)
         decision_deadline = starts_at - timedelta(minutes=decision_minutes)
 
-        lesson, _ = Lesson.objects.get_or_create(
+        lesson, created = Lesson.objects.get_or_create(
             source_template=template,
             starts_at=starts_at,
             defaults={
@@ -260,9 +261,11 @@ def generate_lessons(
             },
         )
         created_or_existing.append(lesson)
+        if created:
+            created_ids.append(str(lesson.id))
         current += timedelta(days=1)
 
-    if created_or_existing:
+    if created_ids:
         AuditEvent.objects.create(
             event_type="LessonsGenerated",
             actor=actor,
@@ -271,7 +274,7 @@ def generate_lessons(
             payload={
                 "from_date": from_date.isoformat(),
                 "until_date": until_date.isoformat(),
-                "lesson_ids": [str(lesson.id) for lesson in created_or_existing],
+                "lesson_ids": created_ids,
             },
         )
     return created_or_existing
@@ -417,6 +420,7 @@ def publish_lesson(
     memberships = (
         GroupMembership.objects.filter(
             group_id=lesson.group_id,
+            student__is_active=True,
             starts_on__lte=lesson_date,
         )
         .filter(Q(ends_on__isnull=True) | Q(ends_on__gte=lesson_date))
@@ -453,6 +457,7 @@ def publish_lesson(
     enrollments = (
         LessonEnrollment.objects.filter(
             lesson=lesson,
+            student__is_active=True,
             cancelled_at__isnull=True,
         )
         .order_by("student_id", "created_at", "id")
