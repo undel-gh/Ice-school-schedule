@@ -23,11 +23,15 @@ from subscriptions.models import (
     SubscriptionPlanAllowance,
 )
 from subscriptions.selectors import (
+    AllowanceState,
+    SubscriptionState,
     allowance_balance,
+    allowance_state,
     get_available_makeups,
     get_available_one_time_entitlements,
     get_eligible_allowances,
     subscription_balances,
+    subscription_state,
 )
 from subscriptions.services import (
     adjust_allowance,
@@ -37,6 +41,7 @@ from subscriptions.services import (
     assign_attendance_coverage,
     cancel_subscription,
     issue_subscription,
+    process_subscription_lifecycle,
     rebind_attendance_coverage,
     reverse_attendance_coverage,
 )
@@ -1374,3 +1379,204 @@ def test_last_visit_emits_single_correlated_exhausted_event(
     assert event.payload["balance"] == 0
     assert event.correlation_id == consumed.correlation_id
     assert event.correlation_id == assigned.correlation_id
+
+
+
+@pytest.mark.django_db
+def test_derived_subscription_and_allowance_states(
+    student,
+    actor,
+):
+    plan = make_plan(code="state-plan", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 10),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 9, 1),
+    ) == SubscriptionState.UPCOMING
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 9, 15),
+    ) == SubscriptionState.ACTIVE
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 10, 1),
+    ) == SubscriptionState.EXPIRED
+    assert allowance_state(
+        allowance=allowance,
+        as_of=date(2026, 9, 15),
+    ) == AllowanceState.AVAILABLE
+
+    adjust_allowance(
+        allowance_id=allowance.id,
+        delta=-1,
+        reason="Exhaust for derived-state test",
+        actor=actor,
+    )
+    assert allowance_state(
+        allowance=allowance,
+        as_of=date(2026, 9, 15),
+    ) == AllowanceState.EXHAUSTED
+
+    cancel_subscription(
+        subscription_id=subscription.id,
+        actor=actor,
+        at=datetime(
+            2026,
+            9,
+            16,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    subscription.refresh_from_db()
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 9, 16),
+    ) == SubscriptionState.CANCELLED
+
+
+@pytest.mark.django_db
+def test_process_subscription_lifecycle_is_idempotent(
+    student,
+    actor,
+):
+    plan = make_plan(code="lifecycle-unused", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+
+    first = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+    second = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+
+    assert first["activated"] == 1
+    assert first["expired"] == 1
+    assert first["expired_with_unused"] == 1
+    assert second == {
+        "activated": 0,
+        "expired": 0,
+        "expired_with_unused": 0,
+        "makeup_expired": 0,
+    }
+    assert AuditEvent.objects.filter(
+        event_type="SubscriptionActivated",
+        aggregate_id=subscription.id,
+    ).count() == 1
+    assert AuditEvent.objects.filter(
+        event_type="SubscriptionExpired",
+        aggregate_id=subscription.id,
+    ).count() == 1
+    unused = AuditEvent.objects.get(
+        event_type="SubscriptionExpiredWithUnusedBalance",
+        aggregate_id=subscription.id,
+    )
+    assert unused.payload["balances"] == {
+        SubscriptionCategory.ICE: 2,
+    }
+
+
+@pytest.mark.django_db
+def test_expired_fully_consumed_subscription_has_no_unused_event(
+    student,
+    actor,
+):
+    plan = make_plan(code="lifecycle-consumed", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    adjust_allowance(
+        allowance_id=allowance.id,
+        delta=-1,
+        reason="Consumed before expiry",
+        actor=actor,
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+
+    assert result["expired"] == 1
+    assert result["expired_with_unused"] == 0
+    assert not AuditEvent.objects.filter(
+        event_type="SubscriptionExpiredWithUnusedBalance",
+        aggregate_id=subscription.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_process_subscription_lifecycle_emits_makeup_expired_once(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="makeup-expiry", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            8,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    makeup = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 10),
+        created_by=actor,
+    )
+
+    first = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+    second = process_subscription_lifecycle(
+        as_of=date(2026, 9, 16),
+        actor=actor,
+    )
+
+    assert first["makeup_expired"] == 1
+    assert second["makeup_expired"] == 0
+    assert AuditEvent.objects.filter(
+        event_type="MakeupEntitlementExpired",
+        aggregate_id=makeup.id,
+    ).count() == 1
