@@ -26,6 +26,8 @@ from .models import Lesson, LessonResponse, LessonRosterEntry
 from .selectors import get_coach_schedule, get_student_schedule
 from .services import complete_lesson, set_lesson_response
 
+MAX_SCHEDULE_RANGE_DAYS = 366
+
 
 def _parse_date(value: str | None, *, default: date) -> date:
     if not value:
@@ -113,6 +115,8 @@ def student_schedule(request: HttpRequest) -> HttpResponse:
     )
     if until_date < from_date:
         raise Http404("Invalid date range.")
+    if (until_date - from_date).days > MAX_SCHEDULE_RANGE_DAYS:
+        raise Http404("Date range is too large.")
 
     lessons = get_student_schedule(
         student_id=selected.id,
@@ -151,8 +155,10 @@ def set_rsvp(
             status=status,
             now=timezone.now(),
         )
+    except Lesson.DoesNotExist as exc:
+        raise Http404("Lesson not found.") from exc
     except ValidationError as exc:
-        messages.error(request, str(exc))
+        messages.error(request, " ".join(exc.messages))
     else:
         messages.success(request, "Ответ сохранён.")
 
@@ -282,7 +288,7 @@ def coach_set_attendance(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, str(exc))
+        messages.error(request, " ".join(exc.messages))
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
 
 
@@ -304,7 +310,7 @@ def coach_mark_expected_present(
             confirmed=confirmed,
         )
     except ValidationError as exc:
-        messages.error(request, str(exc))
+        messages.error(request, " ".join(exc.messages))
     else:
         messages.success(request, f"Отмечено присутствующими: {count}.")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
@@ -326,7 +332,7 @@ def coach_mark_remaining_absent(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, str(exc))
+        messages.error(request, " ".join(exc.messages))
     else:
         messages.success(request, f"Отмечено отсутствующими: {count}.")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
@@ -347,7 +353,7 @@ def coach_complete_lesson(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, str(exc))
+        messages.error(request, " ".join(exc.messages))
     else:
         messages.success(request, "Занятие переведено в COMPLETED.")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
@@ -369,7 +375,7 @@ def coach_submit_attendance(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, str(exc))
+        messages.error(request, " ".join(exc.messages))
     else:
         messages.success(request, "Ведомость закрыта.")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
