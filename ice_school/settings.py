@@ -27,10 +27,15 @@ TRUSTED_PROXY_IPS = tuple(
     for value in os.environ.get("TRUSTED_PROXY_IPS", "").split(",")
     if value.strip()
 )
-SILENCED_SYSTEM_CHECKS = [
+_requested_silenced_checks = {
     value.strip()
     for value in os.environ.get("SILENCED_SYSTEM_CHECKS", "").split(",")
     if value.strip()
+}
+SILENCED_SYSTEM_CHECKS = [
+    check_id
+    for check_id in ("ice_school.W002",)
+    if check_id in _requested_silenced_checks
 ]
 
 INSTALLED_APPS = [
