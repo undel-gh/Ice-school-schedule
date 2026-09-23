@@ -72,7 +72,8 @@ else:
 AUTH_PASSWORD_VALIDATORS = []
 AUTH_USER_MODEL = "accounts.User"
 LANGUAGE_CODE = "ru-ru"
-TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", "UTC")
+SCHOOL_TIME_ZONE = os.environ.get("SCHOOL_TIME_ZONE", "Europe/Riga")
+TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", SCHOOL_TIME_ZONE)
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
