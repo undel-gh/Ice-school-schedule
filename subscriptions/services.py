@@ -4,7 +4,7 @@ from datetime import date
 from uuid import UUID
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -565,3 +565,467 @@ def cancel_subscription(
         payload={"cancelled_at": cancelled_at.isoformat()},
     )
     return subscription
+
+
+
+def _assert_entitlement_admin(actor: User) -> None:
+    if actor.is_staff or actor.is_superuser:
+        return
+    raise PermissionDenied(
+        "Only an administrator may manage administrative entitlements."
+    )
+
+
+@transaction.atomic
+def grant_administrative_makeup(
+    *,
+    source_subscription_allowance_id: UUID,
+    source_lesson_id: UUID,
+    valid_from: date,
+    valid_until: date,
+    actor: User,
+    reason: str,
+    target_lesson_id: UUID | None = None,
+) -> MakeupEntitlement:
+    _assert_entitlement_admin(actor)
+
+    if valid_until < valid_from:
+        raise ValidationError(
+            {"valid_until": "valid_until must be on or after valid_from."}
+        )
+    if not reason.strip():
+        raise ValidationError(
+            {"reason": "Administrative reason is required."}
+        )
+
+    allowance, balance = _locked_allowance_balance(
+        source_subscription_allowance_id
+    )
+    subscription = Subscription.objects.select_for_update().get(
+        pk=allowance.subscription_id
+    )
+    if subscription.cancelled_at is not None:
+        raise ValidationError(
+            {"allowance": "Cancelled subscription cannot fund a make-up."}
+        )
+    if balance <= 0:
+        raise ValidationError(
+            {"allowance": "Source allowance has no remaining visits."}
+        )
+
+    source_lesson = Lesson.objects.select_related("lesson_type").get(
+        pk=source_lesson_id
+    )
+    if (
+        source_lesson.lesson_type.subscription_category
+        != allowance.category
+    ):
+        raise ValidationError(
+            {
+                "source_lesson": (
+                    "Source lesson category does not match source allowance."
+                )
+            }
+        )
+
+    target_lesson = None
+    if target_lesson_id is not None:
+        target_lesson = Lesson.objects.select_related("lesson_type").get(
+            pk=target_lesson_id
+        )
+        if (
+            target_lesson.lesson_type.subscription_category
+            != allowance.category
+        ):
+            raise ValidationError(
+                {
+                    "target_lesson": (
+                        "Target lesson category does not match source "
+                        "allowance."
+                    )
+                }
+            )
+        target_date = (
+            timezone.localtime(target_lesson.starts_at).date()
+            if timezone.is_aware(target_lesson.starts_at)
+            else target_lesson.starts_at.date()
+        )
+        if not (valid_from <= target_date <= valid_until):
+            raise ValidationError(
+                {
+                    "target_lesson": (
+                        "Target lesson date must fall inside the make-up "
+                        "validity period."
+                    )
+                }
+            )
+
+    existing = (
+        MakeupEntitlement.objects.select_for_update()
+        .filter(
+            student_id=subscription.student_id,
+            source_lesson_id=source_lesson.id,
+            reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        )
+        .first()
+    )
+    if existing is not None:
+        if existing.cancelled_at is None:
+            return existing
+        raise ValidationError(
+            {
+                "source_lesson": (
+                    "An administrative make-up already exists historically "
+                    "for this student and source lesson."
+                )
+            }
+        )
+
+    entitlement = MakeupEntitlement.objects.create(
+        student_id=subscription.student_id,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=allowance.category,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        target_lesson=target_lesson,
+        created_by=actor,
+    )
+
+    _audit(
+        event_type="MakeupEntitlementGranted",
+        aggregate_type="MakeupEntitlement",
+        aggregate_id=entitlement.id,
+        actor=actor,
+        payload={
+            "student_id": str(subscription.student_id),
+            "source_lesson_id": str(source_lesson.id),
+            "source_allowance_id": str(allowance.id),
+            "category": allowance.category,
+            "valid_from": valid_from.isoformat(),
+            "valid_until": valid_until.isoformat(),
+            "target_lesson_id": (
+                str(target_lesson.id) if target_lesson is not None else None
+            ),
+            "reason": reason.strip(),
+            "entitlement_reason": entitlement.reason,
+        },
+    )
+    return entitlement
+
+
+def _coverage_matches_target(
+    *,
+    coverage: AttendanceCoverage,
+    one_time_entitlement_id: UUID | None,
+    subscription_allowance_id: UUID | None,
+    makeup_entitlement_id: UUID | None,
+) -> bool:
+    return (
+        coverage.one_time_entitlement_id == one_time_entitlement_id
+        and coverage.subscription_allowance_id == subscription_allowance_id
+        and coverage.makeup_entitlement_id == makeup_entitlement_id
+    )
+
+
+@transaction.atomic
+def rebind_attendance_coverage(
+    *,
+    attendance_id: UUID,
+    actor: User,
+    one_time_entitlement_id: UUID | None = None,
+    subscription_allowance_id: UUID | None = None,
+    makeup_entitlement_id: UUID | None = None,
+) -> AttendanceCoverage:
+    _assert_entitlement_admin(actor)
+
+    primary_count = sum(
+        value is not None
+        for value in (
+            one_time_entitlement_id,
+            subscription_allowance_id,
+        )
+    )
+    if primary_count != 1:
+        raise ValidationError(
+            "Exactly one target primary source must be supplied."
+        )
+    if (
+        makeup_entitlement_id is not None
+        and subscription_allowance_id is None
+    ):
+        raise ValidationError(
+            "Make-up entitlement requires a subscription allowance target."
+        )
+
+    attendance = (
+        Attendance.objects.select_for_update()
+        .select_related("lesson__lesson_type")
+        .get(pk=attendance_id)
+    )
+    if attendance.status != Attendance.Status.PRESENT:
+        raise ValidationError(
+            {"attendance": "Only PRESENT attendance can be rebound."}
+        )
+
+    old_coverage = (
+        AttendanceCoverage.objects.select_for_update()
+        .filter(
+            attendance=attendance,
+            reversed_at__isnull=True,
+        )
+        .first()
+    )
+    if old_coverage is None:
+        raise ValidationError(
+            {"attendance": "Attendance has no active coverage to rebind."}
+        )
+
+    if _coverage_matches_target(
+        coverage=old_coverage,
+        one_time_entitlement_id=one_time_entitlement_id,
+        subscription_allowance_id=subscription_allowance_id,
+        makeup_entitlement_id=makeup_entitlement_id,
+    ):
+        return old_coverage
+
+    category = attendance.lesson.lesson_type.subscription_category
+    lesson_date = _lesson_date(attendance)
+
+    target_one_time = None
+    target_makeup = None
+    target_allowance_id = subscription_allowance_id
+
+    if one_time_entitlement_id is not None:
+        target_one_time = OneTimeEntitlement.objects.select_for_update().get(
+            pk=one_time_entitlement_id
+        )
+        if target_one_time.cancelled_at is not None:
+            raise ValidationError(
+                {"one_time_entitlement": "Entitlement is cancelled."}
+            )
+        if (
+            target_one_time.student_id != attendance.student_id
+            or target_one_time.lesson_id != attendance.lesson_id
+            or target_one_time.category != category
+        ):
+            raise ValidationError(
+                {
+                    "one_time_entitlement": (
+                        "Entitlement does not match attendance student, "
+                        "lesson, or category."
+                    )
+                }
+            )
+        if AttendanceCoverage.objects.filter(
+            one_time_entitlement=target_one_time,
+            reversed_at__isnull=True,
+        ).exclude(pk=old_coverage.pk).exists():
+            raise ValidationError(
+                {"one_time_entitlement": "Entitlement is already in use."}
+            )
+
+    if makeup_entitlement_id is not None:
+        target_makeup = MakeupEntitlement.objects.select_for_update().get(
+            pk=makeup_entitlement_id
+        )
+        if target_makeup.cancelled_at is not None:
+            raise ValidationError(
+                {"makeup_entitlement": "Make-up entitlement is cancelled."}
+            )
+        if (
+            target_makeup.student_id != attendance.student_id
+            or target_makeup.category != category
+            or not (
+                target_makeup.valid_from
+                <= lesson_date
+                <= target_makeup.valid_until
+            )
+            or target_makeup.target_lesson_id
+            not in (None, attendance.lesson_id)
+        ):
+            raise ValidationError(
+                {
+                    "makeup_entitlement": (
+                        "Make-up entitlement is not valid for this "
+                        "attendance."
+                    )
+                }
+            )
+        if (
+            target_makeup.source_subscription_allowance_id
+            != subscription_allowance_id
+        ):
+            raise ValidationError(
+                {
+                    "makeup_entitlement": (
+                        "Make-up entitlement does not belong to target "
+                        "allowance."
+                    )
+                }
+            )
+        if AttendanceCoverage.objects.filter(
+            makeup_entitlement=target_makeup,
+            reversed_at__isnull=True,
+        ).exclude(pk=old_coverage.pk).exists():
+            raise ValidationError(
+                {"makeup_entitlement": "Make-up entitlement is already in use."}
+            )
+
+    allowance_ids = {
+        value
+        for value in (
+            old_coverage.subscription_allowance_id,
+            target_allowance_id,
+        )
+        if value is not None
+    }
+    locked_allowances = {
+        allowance.id: allowance
+        for allowance in SubscriptionAllowance.objects.select_for_update()
+        .select_related("subscription")
+        .filter(id__in=sorted(allowance_ids, key=str))
+        .order_by("id")
+    }
+
+    target_allowance = None
+    if target_allowance_id is not None:
+        target_allowance = locked_allowances[target_allowance_id]
+        target_subscription = target_allowance.subscription
+        if (
+            target_subscription.student_id != attendance.student_id
+            or target_allowance.category != category
+            or target_subscription.cancelled_at is not None
+        ):
+            raise ValidationError(
+                {
+                    "subscription_allowance": (
+                        "Allowance does not match attendance student/category "
+                        "or belongs to a cancelled subscription."
+                    )
+                }
+            )
+        if target_makeup is None and not (
+            target_subscription.valid_from
+            <= lesson_date
+            <= target_subscription.valid_until
+        ):
+            raise ValidationError(
+                {
+                    "subscription_allowance": (
+                        "Ordinary allowance is not valid on lesson date."
+                    )
+                }
+            )
+
+    old_allowance = (
+        locked_allowances.get(old_coverage.subscription_allowance_id)
+        if old_coverage.subscription_allowance_id is not None
+        else None
+    )
+
+    if old_allowance is not None:
+        if not SubscriptionLedgerEntry.objects.filter(
+            coverage=old_coverage,
+            entry_type=SubscriptionLedgerEntry.EntryType.RESTORE,
+        ).exists():
+            SubscriptionLedgerEntry.objects.create(
+                allowance=old_allowance,
+                coverage=old_coverage,
+                entry_type=SubscriptionLedgerEntry.EntryType.RESTORE,
+                delta=1,
+                reason="Attendance coverage rebound",
+                created_by=actor,
+            )
+
+    old_coverage.reversed_at = timezone.now()
+    old_coverage.reversed_by = actor
+    old_coverage.save(update_fields=["reversed_at", "reversed_by"])
+
+    if target_allowance is not None:
+        target_balance = SubscriptionLedgerEntry.objects.filter(
+            allowance=target_allowance
+        ).aggregate(balance=Sum("delta"))["balance"]
+        target_balance = int(target_balance or 0)
+        if target_balance <= 0:
+            raise ValidationError(
+                {
+                    "subscription_allowance": (
+                        "Target allowance has no remaining visits."
+                    )
+                }
+            )
+
+    new_coverage = AttendanceCoverage.objects.create(
+        attendance=attendance,
+        subscription_allowance=target_allowance,
+        one_time_entitlement=target_one_time,
+        makeup_entitlement=target_makeup,
+        created_by=actor,
+    )
+
+    if target_allowance is not None:
+        SubscriptionLedgerEntry.objects.create(
+            allowance=target_allowance,
+            coverage=new_coverage,
+            entry_type=SubscriptionLedgerEntry.EntryType.CONSUME,
+            delta=-1,
+            reason="Attendance coverage rebound",
+            created_by=actor,
+        )
+
+    _audit(
+        event_type="AttendanceCoverageReversed",
+        aggregate_type="AttendanceCoverage",
+        aggregate_id=old_coverage.id,
+        actor=actor,
+        payload={
+            "attendance_id": str(attendance.id),
+            "reason": "rebind",
+        },
+    )
+    _audit(
+        event_type="AttendanceCoverageAssigned",
+        aggregate_type="AttendanceCoverage",
+        aggregate_id=new_coverage.id,
+        actor=actor,
+        payload={
+            "attendance_id": str(attendance.id),
+            "source": (
+                "one_time"
+                if target_one_time is not None
+                else "makeup"
+                if target_makeup is not None
+                else "subscription"
+            ),
+            "one_time_entitlement_id": (
+                str(target_one_time.id)
+                if target_one_time is not None
+                else None
+            ),
+            "allowance_id": (
+                str(target_allowance.id)
+                if target_allowance is not None
+                else None
+            ),
+            "makeup_entitlement_id": (
+                str(target_makeup.id)
+                if target_makeup is not None
+                else None
+            ),
+            "category": category,
+        },
+    )
+    _audit(
+        event_type="AttendanceCoverageRebound",
+        aggregate_type="AttendanceCoverage",
+        aggregate_id=new_coverage.id,
+        actor=actor,
+        payload={
+            "attendance_id": str(attendance.id),
+            "old_coverage_id": str(old_coverage.id),
+            "new_coverage_id": str(new_coverage.id),
+        },
+    )
+    return new_coverage
