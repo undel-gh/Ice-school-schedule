@@ -29,6 +29,8 @@ def _trusted_proxy_networks(values: tuple[str, ...]):
 def _is_trusted_proxy(remote_addr) -> bool:
     if remote_addr is None:
         return False
+    if getattr(remote_addr, "ipv4_mapped", None) is not None:
+        remote_addr = remote_addr.ipv4_mapped
     values = tuple(getattr(settings, "TRUSTED_PROXY_IPS", ()))
     return any(
         remote_addr.version == network.version
