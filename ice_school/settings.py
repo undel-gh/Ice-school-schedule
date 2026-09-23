@@ -77,3 +77,17 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START = int(
+    os.environ.get(
+        "SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START",
+        "180",
+    )
+)
+SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START = int(
+    os.environ.get(
+        "SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START",
+        "120",
+    )
+)
