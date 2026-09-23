@@ -108,35 +108,34 @@ minimum_attendees:
 ```text
                      ┌─────────────┐
                      │    DRAFT    │
-                     └───┬────┬────┘
-                         │    │
-                      cancel publish
-                         │    │
-                         ▼    ▼
-                  ┌───────────┐  ┌─────────────┐
-                  │ CANCELLED │  │  RSVP_OPEN  │
-                  └───────────┘  └──────┬──────┘
-                                        │
-                         ┌──────────────┼───────────────┐
-                         │              │               │
-                      confirm         cancel         reschedule
-                         │              │               │
-                         ▼              ▼               ▼
-                   ┌───────────┐   ┌───────────┐   CANCELLED
-                   │ CONFIRMED │   │ CANCELLED │       +
-                   └─────┬─────┘   └───────────┘    new Lesson
-                         │
-                         │ lesson ends
-                         ▼
-                   ┌───────────┐
-                   │ COMPLETED │
-                   └─────┬─────┘
-                         │ trainer submits
-                         │ attendance
-                         ▼
-                   ┌───────────┐
-                   │  CLOSED   │
-                   └───────────┘
+                     └──┬────┬─────┘
+                        │    │
+                   cancel   publish
+                        │    │
+                        ▼    ▼
+                 CANCELLED  RSVP_OPEN
+                        ▲      │  │  │
+                        │      │  │  └─ reschedule → CANCELLED + new DRAFT
+                        │      │  └──── cancel ──────→ CANCELLED
+                        │      └─────── confirm
+                        │                 │
+                        │                 ▼
+                        │             CONFIRMED
+                        │              │  │  │
+                        │              │  │  └─ reschedule → CANCELLED + new DRAFT
+                        │              │  └──── cancel ──────→ CANCELLED
+                        │              └─────── complete
+                        │                         │
+ DRAFT ─ reschedule ────┘                         ▼
+                                   ┌───────────┐
+                                   │ COMPLETED │
+                                   └─────┬─────┘
+                                         │ trainer submits
+                                         │ attendance
+                                         ▼
+                                   ┌───────────┐
+                                   │  CLOSED   │
+                                   └───────────┘
 ```
 
 Администратор может выполнить:
@@ -173,8 +172,23 @@ COMPLETED
 DRAFT → CANCELLED
 ```
 
-Это штатный способ зафиксировать намеренный пропуск occurrence шаблона до
-публикации дня.
+Если у DRAFT есть активный `LessonEnrollment` или `OneTimeEntitlement`,
+прямая отмена запрещена: нужно использовать перенос, чтобы бронь могла
+перейти на replacement lesson.
+
+Для ещё не сгенерированного occurrence шаблона намеренный пропуск фиксируется
+отдельной операцией:
+
+```text
+ScheduleTemplate occurrence
+        │
+        │ skip_template_occurrence
+        ▼
+    CANCELLED
+```
+
+Она создаёт template-owned CANCELLED occurrence напрямую, в том числе когда
+его слот уже занят занятием другого типа.
 
 ---
 
