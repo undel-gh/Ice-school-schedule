@@ -1,82 +1,104 @@
 {% extends "base.html" %}
 {% block title %}Посещаемость{% endblock %}
 {% block content %}
-<h1>{{ lesson.lesson_type.name }}</h1>
-<p>
-  {{ lesson.starts_at|date:"d.m.Y H:i" }} · {{ lesson.group.name }} · {{ lesson.venue.name }}
-</p>
-<p>Статус: {{ lesson.status }}</p>
+<header class="page-header">
+  <h1>{{ lesson.lesson_type.name }}</h1>
+  <div class="page-header__meta">
+    {{ lesson.starts_at|date:"d.m.Y · H:i" }}–{{ lesson.ends_at|date:"H:i" }}
+    · {{ lesson.group.name }} · {{ lesson.venue.name }}
+  </div>
+</header>
+
+<div class="student-card__state">
+  <span class="badge">{{ lesson.status }}</span>
+</div>
 
 {% if lesson.status == "confirmed" and now >= lesson.ends_at %}
-<form method="post" action="{% url 'scheduling:coach_complete_lesson' lesson.id %}">
-  {% csrf_token %}
-  <button type="submit">Завершить занятие</button>
-</form>
+  <form method="post" action="{% url 'scheduling:coach_complete_lesson' lesson.id %}">
+    {% csrf_token %}
+    <button class="btn-secondary" type="submit">Завершить занятие</button>
+  </form>
 {% endif %}
+
+<h2 class="section-title">Участники</h2>
+
+<div class="student-list">
+{% for row in rows %}
+  <article class="student-card">
+    <div>
+      <div class="student-card__top">
+        <div class="student-card__name">{{ row.entry.student.display_name }}</div>
+
+        {% if row.response_status == "yes" %}
+          <span class="badge badge--yes">RSVP +</span>
+        {% elif row.response_status == "no" %}
+          <span class="badge badge--no">RSVP −</span>
+        {% else %}
+          <span class="badge badge--unknown">RSVP ?</span>
+        {% endif %}
+      </div>
+
+      <div class="student-card__state">
+        {% if row.attendance %}
+          {% if row.attendance.status == "present" %}
+            <span class="badge badge--present">Пришёл</span>
+            {% if row.coverage %}
+              <span class="badge badge--covered">Покрыто</span>
+            {% else %}
+              <span class="badge badge--uncovered">Без покрытия</span>
+            {% endif %}
+          {% else %}
+            <span class="badge badge--absent">Не пришёл</span>
+          {% endif %}
+        {% else %}
+          <span class="badge">Не отмечен</span>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if lesson.status == "confirmed" or lesson.status == "completed" %}
+      <form class="student-card__actions action-row" method="post" action="{% url 'scheduling:coach_set_attendance' lesson.id row.entry.student.id %}">
+        {% csrf_token %}
+        <button
+          class="btn-present {% if row.attendance and row.attendance.status == 'present' %}is-active{% endif %}"
+          type="submit"
+          name="status"
+          value="present"
+        >✓ Пришёл</button>
+        <button
+          class="btn-absent {% if row.attendance and row.attendance.status == 'absent' %}is-active{% endif %}"
+          type="submit"
+          name="status"
+          value="absent"
+        >Не пришёл</button>
+      </form>
+    {% endif %}
+  </article>
+{% empty %}
+  <div class="empty-state">В составе занятия пока нет участников.</div>
+{% endfor %}
+</div>
 
 {% if lesson.status == "confirmed" or lesson.status == "completed" %}
-<form method="post" action="{% url 'scheduling:coach_mark_expected_present' lesson.id %}"
-      onsubmit="return confirm('Отметить всех ожидаемых как присутствовавших?');">
-  {% csrf_token %}
-  <input type="hidden" name="confirmed" value="1">
-  <button type="submit">Отметить ожидаемых как пришедших</button>
-</form>
+<section class="bulk-actions" aria-label="Массовые действия">
+  <form method="post" action="{% url 'scheduling:coach_mark_expected_present' lesson.id %}"
+        onsubmit="return confirm('Отметить всех ожидаемых как присутствовавших?');">
+    {% csrf_token %}
+    <input type="hidden" name="confirmed" value="1">
+    <button class="btn-present" type="submit">✓ Ожидаемые пришли</button>
+  </form>
 
-<form method="post" action="{% url 'scheduling:coach_mark_remaining_absent' lesson.id %}">
-  {% csrf_token %}
-  <button type="submit">Отметить оставшихся отсутствующими</button>
-</form>
-{% endif %}
+  <form method="post" action="{% url 'scheduling:coach_mark_remaining_absent' lesson.id %}">
+    {% csrf_token %}
+    <button class="btn-secondary" type="submit">Оставшиеся отсутствуют</button>
+  </form>
 
-<table>
-  <thead>
-    <tr>
-      <th>Ученик</th>
-      <th>RSVP</th>
-      <th>Attendance</th>
-      <th>Coverage</th>
-      <th>Действия</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for row in rows %}
-    <tr>
-      <td>{{ row.entry.student.display_name }}</td>
-      <td>{{ row.response_status|default:"?" }}</td>
-      <td>
-        {% if row.attendance %}
-          {{ row.attendance.status }}
-        {% else %}
-          UNMARKED
-        {% endif %}
-      </td>
-      <td>
-        {% if row.coverage %}
-          covered
-        {% elif row.attendance and row.attendance.status == "present" %}
-          uncovered
-        {% else %}
-          —
-        {% endif %}
-      </td>
-      <td>
-        {% if lesson.status == "confirmed" or lesson.status == "completed" %}
-        <form method="post" action="{% url 'scheduling:coach_set_attendance' lesson.id row.entry.student.id %}">
-          {% csrf_token %}
-          <button type="submit" name="status" value="present">Пришёл</button>
-          <button type="submit" name="status" value="absent">Не пришёл</button>
-        </form>
-        {% endif %}
-      </td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-
-{% if lesson.status == "completed" %}
-<form method="post" action="{% url 'scheduling:coach_submit_attendance' lesson.id %}">
-  {% csrf_token %}
-  <button type="submit">Закрыть ведомость</button>
-</form>
+  {% if lesson.status == "completed" %}
+    <form method="post" action="{% url 'scheduling:coach_submit_attendance' lesson.id %}">
+      {% csrf_token %}
+      <button class="btn-primary" type="submit">Закрыть ведомость</button>
+    </form>
+  {% endif %}
+</section>
 {% endif %}
 {% endblock %}
