@@ -11,7 +11,7 @@ from scheduling.services import cancel_lesson
 
 
 class Command(BaseCommand):
-    help = "Cancel one RSVP_OPEN or CONFIRMED lesson."
+    help = "Cancel one DRAFT, RSVP_OPEN or CONFIRMED lesson."
 
     def add_arguments(self, parser):
         parser.add_argument("--lesson", required=True)
