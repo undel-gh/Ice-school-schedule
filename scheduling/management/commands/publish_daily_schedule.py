@@ -5,6 +5,7 @@ from datetime import date
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from core.management import command_errors
 from core.time import school_date as get_school_date
 
 from scheduling.services import publish_daily_schedule
@@ -16,6 +17,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--date", dest="school_date")
 
+    @command_errors
     def handle(self, *args, **options):
         raw = options["school_date"]
         if raw:
