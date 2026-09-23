@@ -378,3 +378,7 @@ def test_generate_lessons_command_fails_on_cross_type_conflict(
         )
 
     assert "generation conflict" in str(exc_info.value)
+    assert AuditEvent.objects.filter(
+        event_type="LessonGenerationConflict",
+        aggregate_type="ScheduleTemplate",
+    ).exists()
