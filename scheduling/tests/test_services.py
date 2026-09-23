@@ -103,6 +103,10 @@ from scheduling.models import (
     LessonResponse,
     LessonRosterEntry,
 )
+from scheduling.selectors import (
+    get_coach_schedule,
+    get_student_schedule,
+)
 from scheduling.services import (
     add_lesson_enrollment,
     cancel_lesson,
@@ -798,3 +802,218 @@ def test_add_lesson_enrollment_to_draft_defers_roster_until_publish(
         student=student,
     )
     assert roster.lesson_enrollment_id == enrollment.id
+
+
+
+@pytest.mark.django_db
+def test_student_schedule_uses_roster_snapshot_and_excludes_draft(
+    school_context,
+    student,
+    coach_user,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    visible = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at,
+    )
+    hidden = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=starts_at + timedelta(days=1),
+    )
+    cancelled = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at + timedelta(days=2),
+    )
+    cancelled.status = Lesson.Status.CANCELLED
+    cancelled.cancelled_at = starts_at
+    cancelled.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
+    cancelled.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancellation_reason",
+        ]
+    )
+
+    for lesson in (visible, hidden, cancelled):
+        LessonRosterEntry.objects.create(
+            lesson=lesson,
+            student=student,
+            source=LessonRosterEntry.Source.MANUAL,
+            added_by=coach_user,
+        )
+
+    result = get_student_schedule(
+        student_id=student.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 17),
+    )
+
+    assert [item.lesson.id for item in result] == [
+        visible.id,
+        cancelled.id,
+    ]
+
+
+@pytest.mark.django_db
+def test_student_schedule_includes_response_attendance_and_coverage(
+    school_context,
+    student,
+    guardian,
+    coach_user,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.COMPLETED,
+        starts_at=starts_at,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=coach_user,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=coach_user,
+    )
+    coverage = AttendanceCoverage.objects.create(
+        attendance=attendance,
+        one_time_entitlement=entitlement,
+        created_by=coach_user,
+    )
+
+    result = get_student_schedule(
+        student_id=student.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 15),
+    )
+
+    assert len(result) == 1
+    assert result[0].response_status == LessonResponse.Status.YES
+    assert result[0].attendance_status == Attendance.Status.PRESENT
+    assert result[0].coverage.id == coverage.id
+
+
+@pytest.mark.django_db
+def test_coach_schedule_counts_only_active_roster(
+    school_context,
+    student,
+    second_student,
+    guardian,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at,
+    )
+    active = LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+    )
+    inactive = LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=second_student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+        is_active=False,
+        deactivated_at=starts_at - timedelta(days=1),
+        deactivated_by=coach_user,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=second_student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+
+    result = get_coach_schedule(
+        coach_id=coach.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 15),
+    )
+
+    assert len(result) == 1
+    assert result[0].roster_count == 1
+    assert result[0].yes_count == 1
+    assert result[0].no_count == 0
+    assert result[0].no_response_count == 0
+
+
+@pytest.mark.django_db
+def test_coach_schedule_excludes_draft(
+    school_context,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=starts_at,
+    )
+
+    result = get_coach_schedule(
+        coach_id=coach.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 15),
+    )
+
+    assert result == ()
