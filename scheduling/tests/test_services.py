@@ -1552,3 +1552,56 @@ def test_version_schedule_template_rejects_published_lesson(
             now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
             start_time=datetime(2026, 10, 5, 19, 0).time(),
         )
+
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_rejects_draft_with_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 10, 5, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    lesson = Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.DRAFT,
+    )
+    OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        version_schedule_template(
+            template_id=template.id,
+            effective_from=date(2026, 10, 1),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+            start_time=datetime(2026, 10, 5, 19, 0).time(),
+        )
+
+    template.refresh_from_db()
+    assert template.valid_until is None
