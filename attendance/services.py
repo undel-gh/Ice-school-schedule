@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from accounts.models import StudentAccess
 from audit.models import AuditEvent
-from scheduling.models import Lesson, LessonRosterEntry
+from scheduling.models import Lesson, LessonResponse, LessonRosterEntry
 from subscriptions.models import (
     AttendanceCoverage,
     MakeupEntitlement,
@@ -286,6 +286,62 @@ def set_attendance(
             )
         }
     )
+
+
+@transaction.atomic
+def mark_expected_present(
+    *,
+    lesson_id: UUID,
+    actor: User,
+    now: datetime,
+    confirmed: bool,
+) -> int:
+    if not confirmed:
+        raise ValidationError(
+            {"confirmed": "Bulk attendance marking requires confirmation."}
+        )
+
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("coach__user")
+        .get(pk=lesson_id)
+    )
+    _validate_lesson_for_attendance(
+        lesson=lesson,
+        actor=actor,
+        now=now,
+    )
+
+    expected_student_ids = (
+        LessonResponse.objects.filter(
+            lesson_id=lesson.id,
+            status=LessonResponse.Status.YES,
+            student_id__in=LessonRosterEntry.objects.filter(
+                lesson_id=lesson.id,
+                is_active=True,
+            ).values("student_id"),
+        )
+        .exclude(
+            student_id__in=Attendance.objects.filter(
+                lesson_id=lesson.id,
+            ).values("student_id")
+        )
+        .order_by("student_id")
+        .values_list("student_id", flat=True)
+    )
+
+    count = 0
+    for student_id in list(expected_student_ids):
+        set_attendance(
+            lesson_id=lesson.id,
+            student_id=student_id,
+            status=Attendance.Status.PRESENT,
+            actor=actor,
+            now=now,
+        )
+        count += 1
+
+    return count
 
 
 @transaction.atomic
