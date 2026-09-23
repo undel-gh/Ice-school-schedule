@@ -110,6 +110,7 @@ from scheduling.selectors import (
 )
 from scheduling.services import (
     add_lesson_enrollment,
+    create_group_membership,
     cancel_lesson,
     confirm_lesson,
     evaluate_lesson_viability,
@@ -1022,3 +1023,90 @@ def test_coach_schedule_excludes_draft(
     )
 
     assert result == ()
+
+
+
+@pytest.mark.django_db
+def test_group_membership_service_rejects_overlapping_interval(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    create_group_membership(
+        student_id=student.id,
+        group_id=group.id,
+        starts_on=date(2026, 1, 1),
+        ends_on=date(2026, 6, 30),
+        actor=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        create_group_membership(
+            student_id=student.id,
+            group_id=group.id,
+            starts_on=date(2026, 6, 15),
+            ends_on=date(2026, 8, 31),
+            actor=admin,
+        )
+
+
+@pytest.mark.django_db
+def test_reschedule_copies_active_enrollments_without_rsvp(
+    school_context,
+    student,
+    guardian,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        25,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonEnrollment.objects.create(
+        lesson=source,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+    LessonResponse.objects.create(
+        lesson=source,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+
+    replacement = reschedule_lesson(
+        lesson_id=source.id,
+        new_starts_at=starts_at + timedelta(days=1),
+        new_ends_at=starts_at + timedelta(days=1, hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    copied = LessonEnrollment.objects.get(
+        lesson=replacement,
+        student=student,
+    )
+    assert copied.reason == LessonEnrollment.Reason.GUEST
+    assert not LessonResponse.objects.filter(
+        lesson=replacement,
+        student=student,
+    ).exists()
