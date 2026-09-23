@@ -1374,6 +1374,13 @@ class AbsenceJustification(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+
+    revocation_reason = models.CharField(
+        max_length=32,
+        choices=["attendance_correction", "administrative"],
+        null=True,
+        blank=True,
+    )
 ```
 
 Никаких полей:
@@ -1393,7 +1400,8 @@ file
 ```python
 models.UniqueConstraint(
     fields=["student", "lesson", "type"],
-    name="absencejust_student_lesson_type_uniq",
+    condition=models.Q(status__in=["pending", "verified"]),
+    name="absence_active_student_lesson_uq",
 )
 ```
 
@@ -1422,6 +1430,7 @@ models.CheckConstraint(
             status=Status.REVOKED,
             reviewed_at__isnull=False,
             revoked_at__isnull=False,
+            revocation_reason__isnull=False,
         )
     ),
     name="absencejust_status_metadata_consistency",
@@ -2559,9 +2568,11 @@ PENDING
 MEDICAL
 ```
 
-Если для того же `student + lesson + MEDICAL` уже существует REVOKED
-justification и Attendance снова ABSENT, она переводится обратно в PENDING.
-Это redeclare той же уникальной записи; предыдущая история остаётся в audit.
+Если предыдущая justification была автоматически отозвана из-за коррекции
+Attendance в PRESENT и Attendance снова становится ABSENT, создаётся **новая**
+PENDING justification с новым UUID. Старые REVOKED/REJECTED строки не
+перезаписываются. Административно REVOKED justification автоматически заново
+не заявляется.
 
 Справку в систему не загружаем.
 
@@ -2575,7 +2586,9 @@ Lock order для коррекции/верификации:
 Lesson → Attendance → AbsenceJustification → entitlement/allowance
 ```
 
-При VERIFIED определяется конкретный `SubscriptionAllowance` категории исходного Lesson, который мог покрыть пропуск. Если allowance найден, создаётся MakeupEntitlement на него. Если это повторная верификация после REVOKED → PENDING, ранее отменённый medical MakeupEntitlement реактивируется. Если подходящего allowance нет, justification остаётся VERIFIED, но entitlement не создаётся.
+При VERIFIED определяется конкретный `SubscriptionAllowance` категории исходного Lesson, который мог покрыть пропуск. Если allowance найден, создаётся MakeupEntitlement на него. При повторном заявлении создаётся новая justification, а новая верификация
+создаёт новый MakeupEntitlement. Отменённый entitlement не реактивируется и
+сохраняет прежние даты/статус как историческую запись. Если подходящего allowance нет, justification остаётся VERIFIED, но entitlement не создаётся.
 
 ---
 
