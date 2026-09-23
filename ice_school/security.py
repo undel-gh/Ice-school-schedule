@@ -15,14 +15,27 @@ def _parse_ip(value: str | None):
         return None
 
 
+def _normalize_network(network):
+    mapped = getattr(network.network_address, "ipv4_mapped", None)
+    if mapped is None:
+        return network
+    if network.prefixlen < 96:
+        return network
+    return ip_network(
+        f"{mapped}/{network.prefixlen - 96}",
+        strict=False,
+    )
+
+
 @lru_cache(maxsize=32)
 def _trusted_proxy_networks(values: tuple[str, ...]):
     networks = []
     for value in values:
         try:
-            networks.append(ip_network(value.strip(), strict=False))
+            network = ip_network(value.strip(), strict=False)
         except ValueError:
             continue
+        networks.append(_normalize_network(network))
     return tuple(networks)
 
 
