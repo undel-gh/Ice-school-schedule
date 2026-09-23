@@ -12,6 +12,7 @@ from django.utils import timezone
 from accounts.models import Student
 from attendance.models import Attendance
 from audit.models import AuditEvent
+from scheduling.models import Lesson
 
 from .models import (
     AttendanceCoverage,
