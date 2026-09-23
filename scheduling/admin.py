@@ -1,5 +1,7 @@
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.core.exceptions import PermissionDenied, ValidationError
 
+from attendance.services import reopen_attendance
 from core.admin import ReadOnlyAdmin
 
 from .models import (
@@ -26,6 +28,33 @@ admin.site.register(GroupMembership)
 class LessonAdmin(ReadOnlyAdmin):
     list_display = ("starts_at", "group", "lesson_type", "coach", "status")
     list_filter = ("status", "lesson_type")
+    actions = ("reopen_selected_attendance",)
+
+    @admin.action(description="Reopen attendance for selected closed lessons")
+    def reopen_selected_attendance(self, request, queryset):
+        reopened = 0
+        for lesson in queryset:
+            try:
+                reopen_attendance(
+                    lesson_id=lesson.id,
+                    actor=request.user,
+                    reason="Reopened from Django Admin",
+                )
+            except (PermissionDenied, ValidationError) as exc:
+                self.message_user(
+                    request,
+                    f"{lesson.id}: {exc}",
+                    level=messages.ERROR,
+                )
+            else:
+                reopened += 1
+
+        if reopened:
+            self.message_user(
+                request,
+                f"Reopened {reopened} lesson(s).",
+                level=messages.SUCCESS,
+            )
 
 
 @admin.register(LessonEnrollment)
