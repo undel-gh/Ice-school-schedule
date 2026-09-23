@@ -178,6 +178,11 @@ python manage.py version_schedule_template \
   --effective-from 2026-10-01 \
   --start-time 19:00 \
   --actor <username>
+
+python manage.py skip_template_occurrence \
+  --template <schedule-template-uuid> \
+  --date 2026-10-29 \
+  --actor <username>
 ```
 
 The named actor must possess the Django model permission required by the
@@ -308,8 +313,17 @@ monitoring can alert an operator instead of silently dropping the lesson.
 
 If the template already has its own concrete lesson for the exact slot,
 including a CANCELLED lesson, that concrete lesson is authoritative for the
-slot and no generation conflict is reported. Repeated unresolved conflicts still fail the cron command, but the same
+slot and no generation conflict is reported. Repeated unresolved conflicts
+still fail the cron command, but the same
 template/expected-start/conflicting-lesson audit event is recorded only once.
-If the school intentionally replaces a future regular occurrence, operators
-can cancel that template-owned lesson while it is still DRAFT; the cancelled
-own occurrence then becomes the authoritative decision for that slot.
+
+If a cross-type overlap is intentional and the template occurrence has not
+been generated yet, accept that decision explicitly with
+`skip_template_occurrence`. The command creates the template-owned occurrence
+directly as CANCELLED even while the conflicting lesson remains in place.
+Future generation then sees the template-owned CANCELLED occurrence as the
+authoritative decision for that slot.
+
+Direct cancellation of a DRAFT lesson is rejected when it has an active
+`LessonEnrollment` or active `OneTimeEntitlement`. Use
+`reschedule_lesson` instead so bookings can move to the replacement lesson.
