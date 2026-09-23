@@ -1184,6 +1184,26 @@ VERIFIED
 
 Сам документ не сохраняется.
 
+Если после VERIFIED тренер исправляет Attendance с ABSENT на PRESENT:
+
+```text
+VERIFIED → REVOKED
+```
+
+неиспользованный medical MakeupEntitlement отменяется.
+
+Если затем Attendance снова исправлен на ABSENT, пользователь может повторно
+заявить медицинское основание. Для сохранения уникальности
+`(student, lesson, type)` используется та же justification-запись:
+
+```text
+REVOKED → PENDING
+```
+
+При redeclare текущие reviewed/revoked metadata очищаются, а предыдущая история
+остаётся в AuditEvent. При новой верификации ранее отменённый medical
+MakeupEntitlement реактивируется вместо создания дубликата.
+
 ---
 
 # 52. Почему я не рекомендую загружать справки в MVP
