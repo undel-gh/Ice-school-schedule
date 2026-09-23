@@ -101,29 +101,28 @@ def _active_coverage(
     ).first()
 
 
-def _cancel_unused_medical_makeups_for_present_correction(
+def _revoke_verified_medical_justifications_for_present_correction(
     *,
     attendance: Attendance,
     actor: User,
     now: datetime,
     correlation_id: UUID,
 ) -> None:
-    verified_justification_ids = list(
-        AbsenceJustification.objects.select_for_update()
-        .filter(
+    justifications = list(
+        AbsenceJustification.objects.select_for_update().filter(
             student_id=attendance.student_id,
             lesson_id=attendance.lesson_id,
             type=AbsenceJustification.Type.MEDICAL,
             status=AbsenceJustification.Status.VERIFIED,
         )
-        .values_list("id", flat=True)
     )
-    if not verified_justification_ids:
+    if not justifications:
         return
 
+    justification_ids = [item.id for item in justifications]
     entitlements = list(
         MakeupEntitlement.objects.select_for_update().filter(
-            source_justification_id__in=verified_justification_ids,
+            source_justification_id__in=justification_ids,
             reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
             cancelled_at__isnull=True,
         )
@@ -160,6 +159,31 @@ def _cancel_unused_medical_makeups_for_present_correction(
                 "attendance_id": str(attendance.id),
                 "cancelled_at": now.isoformat(),
                 "reason": "attendance_corrected_to_present",
+            },
+        )
+
+    for justification in justifications:
+        justification.status = AbsenceJustification.Status.REVOKED
+        justification.revoked_at = now
+        justification.revoked_by = actor
+        justification.save(
+            update_fields=["status", "revoked_at", "revoked_by"]
+        )
+        record_event(
+            event_type="AbsenceJustificationRevoked",
+            actor=actor,
+            aggregate_type="AbsenceJustification",
+            aggregate_id=justification.id,
+            correlation_id=correlation_id,
+            payload={
+                "student_id": str(justification.student_id),
+                "lesson_id": str(justification.lesson_id),
+                "reason": "attendance_corrected_to_present",
+                "cancelled_makeup_count": sum(
+                    1
+                    for entitlement in entitlements
+                    if entitlement.source_justification_id == justification.id
+                ),
             },
         )
 
@@ -305,7 +329,7 @@ def set_attendance(
         previous_status == Attendance.Status.ABSENT
         and status == Attendance.Status.PRESENT
     ):
-        _cancel_unused_medical_makeups_for_present_correction(
+        _revoke_verified_medical_justifications_for_present_correction(
             attendance=attendance,
             actor=actor,
             now=now,
@@ -640,6 +664,34 @@ def declare_medical_absence(
         .first()
     )
     if existing is not None:
+        if existing.status == AbsenceJustification.Status.REVOKED:
+            existing.status = AbsenceJustification.Status.PENDING
+            existing.reviewed_at = None
+            existing.reviewed_by = None
+            existing.revoked_at = None
+            existing.revoked_by = None
+            existing.declared_by = actor
+            existing.save(
+                update_fields=[
+                    "status",
+                    "reviewed_at",
+                    "reviewed_by",
+                    "revoked_at",
+                    "revoked_by",
+                    "declared_by",
+                ]
+            )
+            record_event(
+                event_type="AbsenceJustificationRedeclared",
+                actor=actor,
+                aggregate_type="AbsenceJustification",
+                aggregate_id=existing.id,
+                payload={
+                    "student_id": str(student_id),
+                    "lesson_id": str(lesson_id),
+                    "type": existing.type,
+                },
+            )
         return existing
 
     justification = AbsenceJustification.objects.create(
@@ -677,6 +729,19 @@ def verify_medical_absence(
     _assert_medical_reviewer(actor)
     reviewed_at = now or timezone.now()
 
+    justification_ref = AbsenceJustification.objects.only(
+        "lesson_id",
+        "student_id",
+    ).get(pk=justification_id)
+    Lesson.objects.select_for_update().get(pk=justification_ref.lesson_id)
+    attendance = (
+        Attendance.objects.select_for_update()
+        .filter(
+            lesson_id=justification_ref.lesson_id,
+            student_id=justification_ref.student_id,
+        )
+        .first()
+    )
     justification = (
         AbsenceJustification.objects.select_for_update()
         .select_related("lesson__lesson_type")
@@ -695,14 +760,6 @@ def verify_medical_absence(
             }
         )
 
-    attendance = (
-        Attendance.objects.select_for_update()
-        .filter(
-            lesson_id=justification.lesson_id,
-            student_id=justification.student_id,
-        )
-        .first()
-    )
     if attendance is None or attendance.status != Attendance.Status.ABSENT:
         raise ValidationError(
             {
