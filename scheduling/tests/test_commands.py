@@ -377,16 +377,20 @@ def test_generate_lessons_command_fails_on_cross_type_conflict(
         lambda value: date(2026, 10, 29),
     )
 
-    with pytest.raises(CommandError) as exc_info:
-        call_command(
-            "generate_lessons",
-            "--all-active",
-            "--horizon-days",
-            "0",
-        )
+    for _ in range(2):
+        with pytest.raises(CommandError) as exc_info:
+            call_command(
+                "generate_lessons",
+                "--all-active",
+                "--horizon-days",
+                "0",
+            )
+        assert "generation conflict" in str(exc_info.value)
 
-    assert "generation conflict" in str(exc_info.value)
-    assert AuditEvent.objects.filter(
-        event_type="LessonGenerationConflict",
-        aggregate_type="ScheduleTemplate",
-    ).exists()
+    assert (
+        AuditEvent.objects.filter(
+            event_type="LessonGenerationConflict",
+            aggregate_type="ScheduleTemplate",
+        ).count()
+        == 1
+    )
