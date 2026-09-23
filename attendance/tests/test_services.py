@@ -8,7 +8,7 @@ from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import models
 
 from accounts.models import CoachProfile, Student, StudentAccess
-from attendance.models import Attendance
+from attendance.models import AbsenceJustification, Attendance
 from audit.models import AuditEvent
 from attendance.services import (
     declare_medical_absence,
