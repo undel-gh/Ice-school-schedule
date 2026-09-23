@@ -8,7 +8,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 
 from core.permissions import (
@@ -391,19 +391,45 @@ def version_schedule_template(
             }
         )
 
+    draft_ids = [
+        lesson.id
+        for lesson in affected_lessons
+        if lesson.status == Lesson.Status.DRAFT
+    ]
+    booking_state = {
+        row["id"]: (
+            row["has_active_enrollment"],
+            row["has_active_one_time"],
+        )
+        for row in (
+            Lesson.objects.filter(id__in=draft_ids)
+            .annotate(
+                has_active_enrollment=Exists(
+                    Lesson.objects.filter(
+                        pk=OuterRef("pk"),
+                        enrollments__cancelled_at__isnull=True,
+                    )
+                ),
+                has_active_one_time=Exists(
+                    Lesson.objects.filter(
+                        pk=OuterRef("pk"),
+                        one_time_entitlements__cancelled_at__isnull=True,
+                    )
+                ),
+            )
+            .values(
+                "id",
+                "has_active_enrollment",
+                "has_active_one_time",
+            )
+        )
+    }
     booked_draft = next(
         (
             lesson
             for lesson in affected_lessons
             if lesson.status == Lesson.Status.DRAFT
-            and (
-                lesson.enrollments.filter(
-                    cancelled_at__isnull=True
-                ).exists()
-                or lesson.one_time_entitlements.filter(
-                    cancelled_at__isnull=True
-                ).exists()
-            )
+            and any(booking_state.get(lesson.id, (False, False)))
         ),
         None,
     )
@@ -412,8 +438,9 @@ def version_schedule_template(
             {
                 "effective_from": (
                     "Template versioning would cancel a DRAFT lesson with "
-                    "an active enrollment or one-time entitlement. "
-                    f"Reschedule it explicitly first: {booked_draft.id}."
+                    "an active enrollment or one-time entitlement. Use the "
+                    "reschedule_lesson command to move that booked lesson "
+                    f"to an explicit exception slot first: {booked_draft.id}."
                 )
             }
         )
@@ -1147,13 +1174,14 @@ def reschedule_lesson(
         .get(pk=lesson_id)
     )
     if source.status not in {
+        Lesson.Status.DRAFT,
         Lesson.Status.RSVP_OPEN,
         Lesson.Status.CONFIRMED,
     }:
         raise ValidationError(
             {
                 "lesson": (
-                    "Only RSVP_OPEN or CONFIRMED lessons can be "
+                    "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can be "
                     "rescheduled."
                 )
             }
