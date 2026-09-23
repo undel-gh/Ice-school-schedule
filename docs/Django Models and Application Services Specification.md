@@ -2897,3 +2897,23 @@ TrainingGroup и запрещает пересекающийся replacement.
 
 Безопасные DRAFT без броней отменяются с audit event, после чего новая версия
 может генерироваться начиная с `effective_from`.
+
+
+---
+
+# 92. Lesson generation conflicts
+
+`generate_lessons()` сериализуется по `TrainingGroup` и проверяет пересечение
+интервалов `[starts_at, ends_at)` с неотменёнными Lesson той же группы.
+
+Правила:
+
+- overlap + тот же `lesson_type` → существующий Lesson считается покрывающим
+  регулярный слот и новый Lesson не создаётся;
+- overlap + другой `lesson_type` → создаётся audit event
+  `LessonGenerationConflict`, слот не считается успешно сгенерированным;
+- management command собирает такие конфликты и завершает запуск
+  `CommandError`, не откатывая audit event.
+
+Таким образом ручной перенос ICE в новый ICE-слот не создаёт дубль, но ICE не
+может молча вытеснить регулярный HALL и наоборот.
