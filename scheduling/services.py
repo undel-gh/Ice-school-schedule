@@ -8,20 +8,13 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Q
 from django.utils import timezone
 
 from core.time import make_school_aware, school_date as get_school_date
 
 from accounts.models import StudentAccess
-from audit.models import AuditEvent
-from subscriptions.models import (
-    MakeupEntitlement,
-    Subscription,
-    SubscriptionAllowance,
-    SubscriptionLedgerEntry,
-)
-
+from audit.services import record_event
 from .models import (
     GroupMembership,
     ScheduleTemplate,
@@ -181,12 +174,12 @@ def _audit_lesson(
     actor: User | None,
     payload: dict | None = None,
 ) -> None:
-    AuditEvent.objects.create(
+    record_event(
         event_type=event_type,
         actor=actor,
         aggregate_type="Lesson",
         aggregate_id=lesson.id,
-        payload=payload or {},
+        payload=payload,
     )
 
 
@@ -266,7 +259,7 @@ def generate_lessons(
         current += timedelta(days=1)
 
     if created_ids:
-        AuditEvent.objects.create(
+        record_event(
             event_type="LessonsGenerated",
             actor=actor,
             aggregate_type="ScheduleTemplate",
@@ -388,7 +381,7 @@ def add_lesson_enrollment(
                 ]
             )
 
-    AuditEvent.objects.create(
+    record_event(
         event_type="LessonEnrollmentAdded",
         actor=actor,
         aggregate_type="LessonEnrollment",
@@ -576,7 +569,7 @@ def set_lesson_response(
             update_fields=["status", "updated_by", "updated_at"]
         )
 
-    AuditEvent.objects.create(
+    record_event(
         event_type="LessonResponseChanged",
         actor=actor,
         aggregate_type="LessonResponse",
@@ -767,59 +760,6 @@ def cancel_lesson(
     return lesson
 
 
-def _locked_source_allowance_for_reschedule(
-    *,
-    student_id: UUID,
-    category: str,
-    source_date,
-) -> tuple[SubscriptionAllowance, Subscription, int] | None:
-    candidate_ids = list(
-        SubscriptionAllowance.objects.filter(
-            subscription__student_id=student_id,
-            category=category,
-            subscription__cancelled_at__isnull=True,
-            subscription__valid_from__lte=source_date,
-            subscription__valid_until__gte=source_date,
-        )
-        .order_by(
-            "subscription__valid_until",
-            "subscription__valid_from",
-            "subscription__created_at",
-            "id",
-        )
-        .values_list("id", flat=True)
-    )
-
-    for allowance_id in candidate_ids:
-        allowance = SubscriptionAllowance.objects.select_for_update().get(
-            pk=allowance_id
-        )
-        subscription = Subscription.objects.get(
-            pk=allowance.subscription_id
-        )
-        balance = SubscriptionLedgerEntry.objects.filter(
-            allowance=allowance
-        ).aggregate(balance=Sum("delta"))["balance"]
-        balance = int(balance or 0)
-
-        if subscription.cancelled_at is not None:
-            continue
-        if allowance.category != category:
-            continue
-        if not (
-            subscription.valid_from
-            <= source_date
-            <= subscription.valid_until
-        ):
-            continue
-        if balance <= 0:
-            continue
-
-        return allowance, subscription, balance
-
-    return None
-
-
 @transaction.atomic
 def reschedule_lesson(
     *,
@@ -905,48 +845,6 @@ def reschedule_lesson(
         ]
     )
 
-    source_date = get_school_date(source.starts_at)
-    replacement_date = get_school_date(replacement.starts_at)
-    category = source.lesson_type.subscription_category
-
-    yes_student_ids = list(
-        LessonResponse.objects.filter(
-            lesson=source,
-            status=LessonResponse.Status.YES,
-        ).values_list("student_id", flat=True)
-    )
-
-    makeup_count = 0
-    for student_id in yes_student_ids:
-        selected = _locked_source_allowance_for_reschedule(
-            student_id=student_id,
-            category=category,
-            source_date=source_date,
-        )
-        if selected is None:
-            continue
-
-        allowance, subscription, _ = selected
-        if (
-            subscription.valid_from
-            <= replacement_date
-            <= subscription.valid_until
-        ):
-            continue
-
-        MakeupEntitlement.objects.create(
-            student_id=student_id,
-            source_lesson=source,
-            source_subscription_allowance=allowance,
-            category=category,
-            reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
-            valid_from=replacement_date,
-            valid_until=replacement_date,
-            target_lesson=replacement,
-            created_by=actor,
-        )
-        makeup_count += 1
-
     _audit_lesson(
         event_type="LessonRescheduled",
         lesson=source,
@@ -956,7 +854,6 @@ def reschedule_lesson(
             "old_starts_at": source.starts_at.isoformat(),
             "new_starts_at": new_starts_at.isoformat(),
             "reason": reason,
-            "makeup_entitlements_created": makeup_count,
         },
     )
     return replacement
