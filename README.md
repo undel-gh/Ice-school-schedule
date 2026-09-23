@@ -93,11 +93,58 @@ python manage.py process_subscription_lifecycle --date 2026-09-23
 
 These commands call the same application services used by the web/admin layer.
 
-Administrative operations that still require a dedicated UI/command in a
-follow-up slice include issuing/cancelling subscriptions, confirming/cancelling
-or rescheduling lessons, administrative makeup grants, coverage rebinds, and
-medical justification verification/revocation. They must not be performed by
-editing lifecycle/ledger rows directly in Django Admin.
+Additional administrative commands are available for explicit,
+permission-checked operations:
+
+```bash
+python manage.py issue_subscription \
+  --student <student-uuid> \
+  --plan <plan-uuid> \
+  --valid-from 2026-09-01 \
+  --valid-until 2026-09-30 \
+  --actor <username>
+
+python manage.py cancel_subscription \
+  --subscription <subscription-uuid> \
+  --actor <username>
+
+python manage.py confirm_lesson \
+  --lesson <lesson-uuid> \
+  --actor <username>
+
+python manage.py cancel_lesson \
+  --lesson <lesson-uuid> \
+  --reason administrative \
+  --actor <username>
+
+python manage.py reschedule_lesson \
+  --lesson <lesson-uuid> \
+  --starts-at 2026-10-02T18:00:00 \
+  --ends-at 2026-10-02T19:00:00 \
+  --reason administrative \
+  --actor <username>
+
+python manage.py verify_medical_absence \
+  --justification <justification-uuid> \
+  --valid-until 2026-10-31 \
+  --actor <username>
+
+python manage.py reject_medical_absence \
+  --justification <justification-uuid> \
+  --actor <username>
+
+python manage.py revoke_medical_absence \
+  --justification <justification-uuid> \
+  --actor <username>
+```
+
+The named actor must possess the Django model permission required by the
+underlying application service. Direct editing of lifecycle/ledger rows in
+Django Admin remains prohibited.
+
+Administrative makeup grants, coverage rebinds and one-time entitlement
+administration currently remain service-level operations and are intended for a
+dedicated administrative UI rather than direct model editing.
 
 ## Production checks
 
