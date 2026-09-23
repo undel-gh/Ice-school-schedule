@@ -1,11 +1,12 @@
 import pytest
 from axes.helpers import get_client_ip_address, get_client_parameters
 from django.conf import settings
-from django.test import RequestFactory
+from django.test import RequestFactory, override_settings
 from django.urls import reverse
 
 
-def test_axes_proxy_ip_uses_x_real_ip_and_ignores_x_forwarded_for():
+@override_settings(TRUSTED_PROXY_IPS=("127.0.0.1",))
+def test_axes_trusted_proxy_uses_x_real_ip_and_ignores_x_forwarded_for():
     request = RequestFactory().get(
         "/accounts/login/",
         REMOTE_ADDR="127.0.0.1",
@@ -16,11 +17,13 @@ def test_axes_proxy_ip_uses_x_real_ip_and_ignores_x_forwarded_for():
     assert get_client_ip_address(request) == "203.0.113.7"
 
 
-def test_axes_direct_request_falls_back_to_remote_addr():
+@override_settings(TRUSTED_PROXY_IPS=())
+def test_axes_direct_request_ignores_spoofed_x_real_ip():
     request = RequestFactory().get(
         "/accounts/login/",
         REMOTE_ADDR="203.0.113.7",
-        HTTP_X_FORWARDED_FOR="1.2.3.4",
+        HTTP_X_REAL_IP="1.2.3.4",
+        HTTP_X_FORWARDED_FOR="9.9.9.9",
     )
 
     assert get_client_ip_address(request) == "203.0.113.7"
@@ -65,6 +68,7 @@ def test_logout_is_post(client, django_user_model):
 
 
 
+@override_settings(TRUSTED_PROXY_IPS=("127.0.0.1",))
 def test_axes_builds_combined_username_ip_and_ip_only_filters():
     request = RequestFactory().get(
         "/accounts/login/",
