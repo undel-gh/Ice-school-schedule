@@ -350,7 +350,7 @@ def test_generate_lessons_command_fails_on_cross_type_conflict(
         is_active=True,
     )
     conflict_start = datetime(
-        2026, 10, 29, 16, 0, tzinfo=dt_timezone.utc
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
     )
     Lesson.objects.create(
         group=group,
