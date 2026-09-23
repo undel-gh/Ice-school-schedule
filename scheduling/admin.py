@@ -21,7 +21,6 @@ admin.site.register(TrainingGroup)
 admin.site.register(Venue)
 admin.site.register(LessonType)
 admin.site.register(ScheduleTemplate)
-admin.site.register(GroupMembership)
 
 
 @admin.register(Lesson)
@@ -70,3 +69,9 @@ class LessonRosterEntryAdmin(ReadOnlyAdmin):
 @admin.register(LessonResponse)
 class LessonResponseAdmin(ReadOnlyAdmin):
     list_display = ("lesson", "student", "status", "updated_at")
+
+
+@admin.register(GroupMembership)
+class GroupMembershipAdmin(ReadOnlyAdmin):
+    list_display = ("student", "group", "starts_on", "ends_on", "created_at")
+    list_filter = ("group",)
