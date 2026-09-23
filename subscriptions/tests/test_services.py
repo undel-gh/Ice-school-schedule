@@ -1580,3 +1580,70 @@ def test_process_subscription_lifecycle_emits_makeup_expired_once(
         event_type="MakeupEntitlementExpired",
         aggregate_id=makeup.id,
     ).count() == 1
+
+
+
+@pytest.mark.django_db
+def test_rebind_rejects_closed_lesson(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-closed", ice=2)
+    first = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    second = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    first_allowance = first.allowances.get()
+    second_allowance = second.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    lesson.status = Lesson.Status.COMPLETED
+    lesson.save(update_fields=["status"])
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert coverage.subscription_allowance_id == first_allowance.id
+
+    lesson.status = Lesson.Status.CLOSED
+    lesson.save(update_fields=["status"])
+
+    with pytest.raises(ValidationError):
+        rebind_attendance_coverage(
+            attendance_id=attendance.id,
+            actor=actor,
+            subscription_allowance_id=second_allowance.id,
+        )
+
+    coverage.refresh_from_db()
+    assert coverage.reversed_at is None
+    assert allowance_balance(first_allowance.id) == 1
+    assert allowance_balance(second_allowance.id) == 2
