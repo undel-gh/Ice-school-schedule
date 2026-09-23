@@ -12,6 +12,7 @@ from django.utils import timezone
 from accounts.models import Student
 from attendance.models import Attendance
 from audit.models import AuditEvent
+from core.time import school_date
 from scheduling.models import Lesson
 
 from .models import (
@@ -36,13 +37,6 @@ def _locked_allowance_balance(
         allowance_id=allowance.id
     ).aggregate(balance=Sum("delta"))["balance"]
     return allowance, int(balance or 0)
-
-
-def _lesson_date(attendance: Attendance) -> date:
-    starts_at = attendance.lesson.starts_at
-    if timezone.is_aware(starts_at):
-        return timezone.localtime(starts_at).date()
-    return starts_at.date()
 
 
 def _audit(
@@ -512,7 +506,7 @@ def assign_attendance_coverage(
         return existing
 
     category = attendance.lesson.lesson_type.subscription_category
-    lesson_date = _lesson_date(attendance)
+    lesson_date = school_date(attendance.lesson.starts_at)
 
     coverage = _try_one_time_coverage(
         attendance=attendance,
@@ -762,11 +756,7 @@ def grant_administrative_makeup(
                     )
                 }
             )
-        target_date = (
-            timezone.localtime(target_lesson.starts_at).date()
-            if timezone.is_aware(target_lesson.starts_at)
-            else target_lesson.starts_at.date()
-        )
+        target_date = school_date(target_lesson.starts_at)
         if not (valid_from <= target_date <= valid_until):
             raise ValidationError(
                 {
@@ -928,7 +918,7 @@ def rebind_attendance_coverage(
         return old_coverage
 
     category = attendance.lesson.lesson_type.subscription_category
-    lesson_date = _lesson_date(attendance)
+    lesson_date = school_date(attendance.lesson.starts_at)
 
     target_one_time = None
     target_makeup = None
