@@ -1922,3 +1922,156 @@ def test_generate_lessons_reports_cross_type_overlap_conflict(
         aggregate_type="ScheduleTemplate",
         aggregate_id=template.id,
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_respects_cancelled_own_slot_over_cross_type_overlap(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-cancelled-own",
+        name="Hall cancelled own",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    cancelled = Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CANCELLED,
+        cancelled_at=starts_at - timedelta(days=1),
+        cancelled_by=admin,
+        cancellation_reason=Lesson.CancellationReason.ADMINISTRATIVE,
+    )
+    ice_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=ice_start,
+        ends_at=ice_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=ice_start - timedelta(hours=2),
+        decision_deadline=ice_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    first = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    second = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert first.lessons == (cancelled,)
+    assert second.lessons == (cancelled,)
+    assert first.conflicts == ()
+    assert second.conflicts == ()
+    assert not AuditEvent.objects.filter(
+        event_type="LessonGenerationConflict",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_generation_conflict_audit_is_idempotent_per_template_slot(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-conflict-idempotent",
+        name="Hall conflict idempotent",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    ice_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=ice_start,
+        ends_at=ice_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=ice_start - timedelta(hours=2),
+        decision_deadline=ice_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    first = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    second = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert len(first.conflicts) == 1
+    assert len(second.conflicts) == 1
+    events = AuditEvent.objects.filter(
+        event_type="LessonGenerationConflict",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        payload__expected_starts_at=(
+            datetime(
+                2026,
+                10,
+                29,
+                17,
+                30,
+                tzinfo=dt_timezone.utc,
+            ).isoformat()
+        ),
+    )
+    assert events.count() == 1
