@@ -240,12 +240,18 @@ client IP
 This avoids username-only denial of service while still limiting password
 spraying from one address.
 
-The application deliberately ignores `X-Forwarded-For`. It resolves the
-client address from `X-Real-IP` first and falls back to `REMOTE_ADDR`.
-The production reverse proxy **must overwrite** `X-Real-IP` with the direct
+The application deliberately ignores `X-Forwarded-For`.
+`X-Real-IP` is trusted **only** when the request's `REMOTE_ADDR` is present
+in the comma-separated `TRUSTED_PROXY_IPS` setting. With the default empty
+list, client-supplied `X-Real-IP` is ignored and Axes uses `REMOTE_ADDR`.
+The production reverse proxy must overwrite `X-Real-IP` with the direct
 client address rather than forwarding a client-supplied value.
 
-For nginx:
+For nginx, configure the proxy address in Django and overwrite the header:
+
+```bash
+TRUSTED_PROXY_IPS=127.0.0.1
+```
 
 ```nginx
 proxy_set_header X-Real-IP $remote_addr;
@@ -259,3 +265,11 @@ header_up X-Real-IP {remote_host}
 
 The regression suite verifies this exact Axes configuration, including that a
 spoofed `X-Forwarded-For` value is ignored.
+
+The IP-only lockout currently uses the same `AXES_FAILURE_LIMIT` (5 by
+default) as the combined username+IP scope. This means several failed logins
+from users sharing one NAT/public Wi-Fi address can temporarily block that
+address for everyone. This is an explicit MVP trade-off against password
+spraying; if it proves too aggressive in production, use a custom Axes
+lockout policy with a higher IP-only threshold rather than removing the
+username+IP scope.
