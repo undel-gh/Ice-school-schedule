@@ -1,29 +1,32 @@
+{% load static %}
 <!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
   <title>{% block title %}Ice School{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'scheduling/app.css' %}">
 </head>
 <body>
-  <header>
-    <nav>
-      <a href="{% url 'scheduling:home' %}">Главная</a>
+  <header class="site-header">
+    <nav class="site-nav" aria-label="Основная навигация">
+      <a class="site-nav__home" href="{% url 'scheduling:home' %}">Ice School</a>
       {% if request.user.is_authenticated %}
-        <span>{{ request.user.username }}</span>
+        <span class="site-nav__user">{{ request.user.username }}</span>
       {% endif %}
     </nav>
   </header>
 
   {% if messages %}
-    <ul>
+    <ul class="messages" aria-live="polite">
       {% for message in messages %}
         <li>{{ message }}</li>
       {% endfor %}
     </ul>
   {% endif %}
 
-  <main>
+  <main class="page">
     {% block content %}{% endblock %}
   </main>
 </body>
