@@ -25,9 +25,5 @@ class AuditEvent(UUIDModel):
         indexes = [
             models.Index(fields=["aggregate_type", "aggregate_id", "occurred_at"], name="audit_aggregate_time_idx"),
             models.Index(fields=["event_type", "occurred_at"], name="audit_event_time_idx"),
-            models.Index(
-                fields=["event_type", "aggregate_type", "aggregate_id"],
-                name="audit_event_aggregate_idx",
-            ),
             models.Index(fields=["correlation_id"], name="audit_correlation_idx"),
         ]
