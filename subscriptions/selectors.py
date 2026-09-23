@@ -10,11 +10,24 @@ from scheduling.models import Lesson
 
 from .models import (
     AttendanceCoverage,
+    Subscription,
     MakeupEntitlement,
     OneTimeEntitlement,
     SubscriptionAllowance,
     SubscriptionLedgerEntry,
 )
+
+
+class SubscriptionState:
+    UPCOMING = "upcoming"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class AllowanceState:
+    AVAILABLE = "available"
+    EXHAUSTED = "exhausted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,3 +188,35 @@ def get_available_makeups(
         )
     )
     return tuple(usable)
+
+
+
+def subscription_state(
+    *,
+    subscription: Subscription,
+    as_of: date,
+) -> str:
+    if subscription.cancelled_at is not None:
+        return SubscriptionState.CANCELLED
+    if as_of < subscription.valid_from:
+        return SubscriptionState.UPCOMING
+    if as_of > subscription.valid_until:
+        return SubscriptionState.EXPIRED
+    return SubscriptionState.ACTIVE
+
+
+def allowance_state(
+    *,
+    allowance: SubscriptionAllowance,
+    as_of: date,
+) -> str:
+    if subscription_state(
+        subscription=allowance.subscription,
+        as_of=as_of,
+    ) != SubscriptionState.ACTIVE:
+        return AllowanceState.EXHAUSTED
+    return (
+        AllowanceState.AVAILABLE
+        if allowance_balance(allowance.id) > 0
+        else AllowanceState.EXHAUSTED
+    )
