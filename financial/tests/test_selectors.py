@@ -220,3 +220,63 @@ def test_expired_unused_report_returns_positive_balances_and_makeups(
     assert report[0].balances[0].allowance.id == allowance.id
     assert report[0].balances[0].balance == 2
     assert len(report[0].available_makeups) == 1
+
+
+
+@pytest.mark.django_db
+def test_expired_unused_report_excludes_used_makeup(
+    actor,
+    school_context,
+):
+    student = Student.objects.create(display_name="Used makeup")
+    plan = make_plan(code="expired-used-makeup", visits=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    source_lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.COMPLETED,
+        starts_at=datetime(
+            2026, 8, 20, 15, 0, tzinfo=dt_timezone.utc
+        ),
+    )
+    target_lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.COMPLETED,
+        starts_at=datetime(
+            2026, 9, 10, 15, 0, tzinfo=dt_timezone.utc
+        ),
+    )
+    makeup = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        target_lesson=target_lesson,
+        created_by=actor,
+    )
+    attendance = Attendance.objects.create(
+        lesson=target_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+    AttendanceCoverage.objects.create(
+        attendance=attendance,
+        subscription_allowance=allowance,
+        makeup_entitlement=makeup,
+        created_by=actor,
+    )
+
+    report = get_expired_unused_report(as_of=date(2026, 9, 15))
+
+    assert len(report) == 1
+    assert report[0].available_makeups == ()
