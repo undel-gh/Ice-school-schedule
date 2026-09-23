@@ -7,7 +7,7 @@ import threading
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db import close_old_connections, connection
+from django.db import close_old_connections, connection, connections
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
@@ -669,7 +669,11 @@ def test_concurrent_last_visit_is_consumed_at_most_once(
             )
             return result.id if result else None
         finally:
-            close_old_connections()
+            # Worker threads own their own Django connection wrappers.
+            # close_old_connections() only closes unusable/obsolete
+            # connections; healthy PostgreSQL sessions may otherwise stay
+            # attached to the temporary test database until process exit.
+            connections.close_all()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(
