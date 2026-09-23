@@ -305,3 +305,9 @@ matches. A cross-type overlap (for example ICE covering a scheduled HALL slot)
 creates a `LessonGenerationConflict` audit event and makes
 `generate_lessons --all-active` finish with `CommandError`, so cron or
 monitoring can alert an operator instead of silently dropping the lesson.
+
+If the template already has its own concrete lesson for the exact slot,
+including a CANCELLED lesson, that concrete lesson is authoritative for the
+slot and no generation conflict is reported. Repeated unresolved conflicts
+still fail the cron command, but the same template/expected-start audit event
+is recorded only once.
