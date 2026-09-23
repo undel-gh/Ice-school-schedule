@@ -8,6 +8,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
@@ -156,8 +157,7 @@ def set_rsvp(
         messages.success(request, "Ответ сохранён.")
 
     return redirect(
-        f"{request.build_absolute_uri('/schedule/').split(request.get_host())[-1]}"
-        f"?student={student_id}"
+        f"{reverse('scheduling:student_schedule')}?student={student_id}"
     )
 
 
