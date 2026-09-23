@@ -2854,3 +2854,35 @@ Server-rendered presentation layer должен соблюдать UX-контр
 Mobile/desktop responsive presentation не меняет domain semantics: views/templates не создают и не изменяют Lesson lifecycle, Attendance, Coverage, Ledger или entitlements напрямую; пользовательские действия вызывают application services.
 
 Критическую цепочку `Attendance → AttendanceCoverage → optional Ledger` необходимо покрыть transaction tests до разработки финансового UI.
+
+
+---
+
+# 91. Versioning ScheduleTemplate
+
+ScheduleTemplate, который уже используется для генерации, не редактируется
+in-place. Для изменения используется:
+
+```python
+version_schedule_template(
+    *,
+    template_id: UUID,
+    effective_from: date,
+    actor: User,
+    now: datetime,
+    ...new_values,
+) -> ScheduleTemplate
+```
+
+Старая версия сохраняет `is_active=True`, но получает
+`valid_until = effective_from - 1`, поэтому cron продолжает генерировать
+занятия старой версии до границы периода.
+
+Операция блокируется, если в затрагиваемом диапазоне существуют:
+
+- RSVP_OPEN / CONFIRMED / COMPLETED / CLOSED lessons;
+- DRAFT lesson с активным LessonEnrollment;
+- DRAFT lesson с активным OneTimeEntitlement.
+
+Безопасные DRAFT без броней отменяются с audit event, после чего новая версия
+может генерироваться начиная с `effective_from`.
