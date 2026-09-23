@@ -572,10 +572,12 @@ def reopen_attendance(
 
 
 def _assert_medical_reviewer(actor: User) -> None:
-    if actor.is_staff or actor.is_superuser:
+    if actor.is_superuser or actor.has_perm(
+        "attendance.change_absencejustification"
+    ):
         return
     raise PermissionDenied(
-        "Only an administrator may review medical absence justifications."
+        "Medical absence review permission is required."
     )
 
 
