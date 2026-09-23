@@ -1850,3 +1850,62 @@ def test_generate_lessons_treats_overlapping_group_lesson_as_occupied(
         .count()
         == 1
     )
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_reports_cross_type_overlap_conflict(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-conflict",
+        name="Hall conflict",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    conflict_start = datetime(
+        2026, 10, 29, 16, 0, tzinfo=dt_timezone.utc
+    )
+    ice_lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=conflict_start,
+        ends_at=conflict_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=conflict_start - timedelta(hours=2),
+        decision_deadline=conflict_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    result = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert list(result) == []
+    assert len(result.conflicts) == 1
+    conflict = result.conflicts[0]
+    assert conflict.conflicting_lesson_id == ice_lesson.id
+    assert conflict.expected_lesson_type_id == hall_type.id
+    assert conflict.conflicting_lesson_type_id == ice_type.id
+    assert AuditEvent.objects.filter(
+        event_type="LessonGenerationConflict",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    ).exists()
