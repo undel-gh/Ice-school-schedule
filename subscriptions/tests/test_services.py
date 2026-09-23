@@ -6,7 +6,7 @@ import threading
 
 import pytest
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import close_old_connections, connection, connections
 
 from accounts.models import CoachProfile, Student
@@ -1729,3 +1729,25 @@ def test_used_makeup_is_not_marked_expired(
         event_type="MakeupEntitlementExpired",
         aggregate_id=makeup.id,
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_issue_subscription_rejects_staff_without_model_permission(
+    student,
+):
+    actor = User.objects.create_user(
+        username="limited-staff",
+        password="test",
+        is_staff=True,
+    )
+    plan = make_plan(code="permission-plan", ice=1)
+
+    with pytest.raises(PermissionDenied):
+        issue_subscription(
+            student_id=student.id,
+            plan_id=plan.id,
+            valid_from=date(2026, 9, 1),
+            valid_until=date(2026, 9, 30),
+            actor=actor,
+        )
