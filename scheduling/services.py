@@ -22,6 +22,7 @@ from accounts.models import Student
 from audit.services import record_event
 from .models import (
     GroupMembership,
+    TrainingGroup,
     ScheduleTemplate,
     Lesson,
     LessonEnrollment,
