@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from accounts.models import StudentAccess
 from audit.models import AuditEvent
+from core.time import school_date
 from scheduling.models import Lesson, LessonResponse, LessonRosterEntry
 from subscriptions.models import (
     AttendanceCoverage,
@@ -578,19 +579,12 @@ def _assert_medical_reviewer(actor: User) -> None:
     )
 
 
-def _lesson_school_date(lesson: Lesson) -> date:
-    starts_at = lesson.starts_at
-    if timezone.is_aware(starts_at):
-        return timezone.localtime(starts_at).date()
-    return starts_at.date()
-
-
 def _find_medical_source_allowance(
     *,
     student_id: UUID,
     lesson: Lesson,
 ) -> tuple[SubscriptionAllowance, Subscription] | None:
-    source_date = _lesson_school_date(lesson)
+    source_date = school_date(lesson.starts_at)
     category = lesson.lesson_type.subscription_category
 
     candidate_ids = list(
