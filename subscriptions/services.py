@@ -706,11 +706,6 @@ def apply_school_reschedule_entitlements(
     replacement_lesson_id: UUID,
     actor: User,
 ) -> tuple[MakeupEntitlement, ...]:
-    require_permission(
-        actor,
-        "subscriptions.add_makeupentitlement",
-        "School reschedule make-up permission is required.",
-    )
     source = (
         Lesson.objects.select_for_update()
         .select_related("lesson_type")
@@ -795,6 +790,11 @@ def apply_school_reschedule_entitlements(
         ):
             continue
 
+        require_permission(
+            actor,
+            "subscriptions.add_makeupentitlement",
+            "School reschedule make-up permission is required.",
+        )
         entitlement, was_created = MakeupEntitlement.objects.get_or_create(
             student_id=student_id,
             source_lesson=source,
