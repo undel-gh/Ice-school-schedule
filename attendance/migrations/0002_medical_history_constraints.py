@@ -1,6 +1,21 @@
 from django.db import migrations, models
 
 
+def backfill_revocation_reason(apps, schema_editor):
+    AbsenceJustification = apps.get_model(
+        "attendance",
+        "AbsenceJustification",
+    )
+    AbsenceJustification.objects.filter(
+        status="revoked",
+        revocation_reason__isnull=True,
+    ).update(revocation_reason="administrative")
+
+
+def noop_reverse(apps, schema_editor):
+    pass
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -28,6 +43,10 @@ class Migration(migrations.Migration):
                 max_length=32,
                 null=True,
             ),
+        ),
+        migrations.RunPython(
+            backfill_revocation_reason,
+            noop_reverse,
         ),
         migrations.AddConstraint(
             model_name="absencejustification",
