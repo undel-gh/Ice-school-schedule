@@ -1,5 +1,5 @@
 import pytest
-from axes.helpers import get_client_ip_address
+from axes.helpers import get_client_ip_address, get_client_parameters
 from django.conf import settings
 from django.test import RequestFactory
 from django.urls import reverse
@@ -62,3 +62,26 @@ def test_logout_is_post(client, django_user_model):
     post_response = client.post(reverse("logout"))
     assert post_response.status_code == 302
     assert post_response.url == reverse("login")
+
+
+
+def test_axes_builds_combined_username_ip_and_ip_only_filters():
+    request = RequestFactory().get(
+        "/accounts/login/",
+        REMOTE_ADDR="127.0.0.1",
+        HTTP_X_REAL_IP="203.0.113.7",
+    )
+
+    parameters = get_client_parameters(
+        "victim",
+        "203.0.113.7",
+        "test-agent",
+        request,
+    )
+
+    assert {
+        "username": "victim",
+        "ip_address": "203.0.113.7",
+    } in parameters
+    assert {"ip_address": "203.0.113.7"} in parameters
+    assert {"username": "victim"} not in parameters
