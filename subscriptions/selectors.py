@@ -8,6 +8,7 @@ from django.db.models import Exists, OuterRef, Q, Sum
 
 from scheduling.models import Lesson
 
+from .balances import ledger_balance
 from .models import (
     AttendanceCoverage,
     Subscription,
@@ -38,11 +39,8 @@ class EligibleAllowance:
 
 def allowance_balance(allowance_id: UUID) -> int:
     """Return the authoritative ledger balance for one allowance."""
-    allowance = SubscriptionAllowance.objects.only("id").get(pk=allowance_id)
-    value = SubscriptionLedgerEntry.objects.filter(allowance=allowance).aggregate(
-        balance=Sum("delta")
-    )["balance"]
-    return int(value or 0)
+    SubscriptionAllowance.objects.only("id").get(pk=allowance_id)
+    return ledger_balance(allowance_id)
 
 
 def subscription_balances(subscription_id: UUID) -> dict[str, int]:
