@@ -44,6 +44,109 @@ class LessonViabilityResult:
 
 
 
+def _membership_overlaps(
+    *,
+    starts_on: date,
+    ends_on: date | None,
+    other: GroupMembership,
+) -> bool:
+    effective_end = ends_on or date.max
+    other_end = other.ends_on or date.max
+    return starts_on <= other_end and other.starts_on <= effective_end
+
+
+@transaction.atomic
+def create_group_membership(
+    *,
+    student_id: UUID,
+    group_id: UUID,
+    starts_on: date,
+    ends_on: date | None,
+    actor: User | None,
+) -> GroupMembership:
+    if ends_on is not None and ends_on < starts_on:
+        raise ValidationError(
+            {"ends_on": "Membership end date cannot precede start date."}
+        )
+
+    existing = list(
+        GroupMembership.objects.select_for_update().filter(
+            student_id=student_id,
+            group_id=group_id,
+        )
+    )
+    if any(
+        _membership_overlaps(
+            starts_on=starts_on,
+            ends_on=ends_on,
+            other=membership,
+        )
+        for membership in existing
+    ):
+        raise ValidationError(
+            {
+                "membership": (
+                    "Membership interval overlaps an existing interval "
+                    "for this student and group."
+                )
+            }
+        )
+
+    return GroupMembership.objects.create(
+        student_id=student_id,
+        group_id=group_id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+        created_by=actor,
+    )
+
+
+@transaction.atomic
+def update_group_membership(
+    *,
+    membership_id: UUID,
+    starts_on: date,
+    ends_on: date | None,
+) -> GroupMembership:
+    if ends_on is not None and ends_on < starts_on:
+        raise ValidationError(
+            {"ends_on": "Membership end date cannot precede start date."}
+        )
+
+    membership = GroupMembership.objects.select_for_update().get(
+        pk=membership_id
+    )
+    others = list(
+        GroupMembership.objects.select_for_update()
+        .filter(
+            student_id=membership.student_id,
+            group_id=membership.group_id,
+        )
+        .exclude(pk=membership.id)
+    )
+    if any(
+        _membership_overlaps(
+            starts_on=starts_on,
+            ends_on=ends_on,
+            other=other,
+        )
+        for other in others
+    ):
+        raise ValidationError(
+            {
+                "membership": (
+                    "Membership interval overlaps an existing interval "
+                    "for this student and group."
+                )
+            }
+        )
+
+    membership.starts_on = starts_on
+    membership.ends_on = ends_on
+    membership.save(update_fields=["starts_on", "ends_on"])
+    return membership
+
+
 def _validate_deadline_policy() -> tuple[int, int]:
     rsvp_minutes = settings.SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START
     decision_minutes = settings.SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START
