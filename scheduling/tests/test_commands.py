@@ -429,3 +429,66 @@ def test_cancel_lesson_command_allows_draft(ops_context):
     lesson.refresh_from_db()
     assert lesson.status == Lesson.Status.CANCELLED
     assert "cancelled" in out.getvalue().lower()
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_command_resolves_generation_conflict(
+    ops_context,
+):
+    actor, coach, group, venue, ice_type = ops_context
+    hall_type = LessonType.objects.create(
+        code="hall-command-skip",
+        name="Hall command skip",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2099, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2099, 10, 1),
+        is_active=True,
+    )
+    conflict_start = datetime(
+        2099, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=conflict_start,
+        ends_at=conflict_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=conflict_start - timedelta(hours=2),
+        decision_deadline=conflict_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    out = StringIO()
+    call_command(
+        "skip_template_occurrence",
+        "--template",
+        str(template.id),
+        "--date",
+        "2099-10-29",
+        "--actor",
+        actor.username,
+        stdout=out,
+    )
+
+    skipped = Lesson.objects.get(source_template=template)
+    assert skipped.status == Lesson.Status.CANCELLED
+    assert "skipped" in out.getvalue().lower()
+
+    result = generate_lessons(
+        template_id=template.id,
+        from_date=date(2099, 10, 29),
+        until_date=date(2099, 10, 29),
+        actor=actor,
+    )
+    assert result.conflicts == ()
+    assert result.lessons == (skipped,)
