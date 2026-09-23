@@ -30,7 +30,7 @@ class LessonAdmin(ReadOnlyAdmin):
     list_filter = ("status", "lesson_type")
     actions = ("reopen_selected_attendance",)
 
-    @admin.action(description="Reopen attendance for selected closed lessons")
+    @admin.action(permissions=["service"], description="Reopen attendance for selected closed lessons")
     def reopen_selected_attendance(self, request, queryset):
         reopened = 0
         for lesson in queryset:
