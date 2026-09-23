@@ -115,6 +115,7 @@ from scheduling.selectors import (
 from scheduling.services import (
     add_lesson_enrollment,
     create_group_membership,
+    update_group_membership,
     cancel_lesson,
     confirm_lesson,
     evaluate_lesson_viability,
