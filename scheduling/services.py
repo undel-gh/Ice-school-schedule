@@ -42,6 +42,27 @@ class LessonViabilityResult:
     minimum_met: bool
 
 
+@dataclass(frozen=True, slots=True)
+class LessonGenerationConflict:
+    template_id: UUID
+    conflicting_lesson_id: UUID
+    expected_lesson_type_id: UUID
+    conflicting_lesson_type_id: UUID
+    starts_at: datetime
+    ends_at: datetime
+
+
+class LessonGenerationResult(list[Lesson]):
+    def __init__(
+        self,
+        lessons=(),
+        *,
+        conflicts: tuple[LessonGenerationConflict, ...] = (),
+    ):
+        super().__init__(lessons)
+        self.conflicts = conflicts
+
+
 
 def _membership_overlaps(
     *,
@@ -559,7 +580,7 @@ def generate_lessons(
     from_date: date,
     until_date: date,
     actor: User | None = None,
-) -> list[Lesson]:
+) -> LessonGenerationResult:
     if until_date < from_date:
         raise ValidationError(
             {"until_date": "until_date must be on or after from_date."}
@@ -582,10 +603,11 @@ def generate_lessons(
         effective_until = min(effective_until, template.valid_until)
 
     if effective_until < effective_from:
-        return []
+        return LessonGenerationResult()
 
     rsvp_minutes, decision_minutes = _validate_deadline_policy()
     created_or_existing: list[Lesson] = []
+    conflicts: list[LessonGenerationConflict] = []
     created_ids: list[str] = []
 
     current = effective_from
@@ -618,7 +640,45 @@ def generate_lessons(
             .first()
         )
         if occupying_lesson is not None:
-            created_or_existing.append(occupying_lesson)
+            if occupying_lesson.lesson_type_id == template.lesson_type_id:
+                created_or_existing.append(occupying_lesson)
+            else:
+                conflict = LessonGenerationConflict(
+                    template_id=template.id,
+                    conflicting_lesson_id=occupying_lesson.id,
+                    expected_lesson_type_id=template.lesson_type_id,
+                    conflicting_lesson_type_id=(
+                        occupying_lesson.lesson_type_id
+                    ),
+                    starts_at=starts_at,
+                    ends_at=ends_at,
+                )
+                conflicts.append(conflict)
+                record_event(
+                    event_type="LessonGenerationConflict",
+                    actor=actor,
+                    aggregate_type="ScheduleTemplate",
+                    aggregate_id=template.id,
+                    payload={
+                        "conflicting_lesson_id": str(
+                            occupying_lesson.id
+                        ),
+                        "expected_lesson_type_id": str(
+                            template.lesson_type_id
+                        ),
+                        "conflicting_lesson_type_id": str(
+                            occupying_lesson.lesson_type_id
+                        ),
+                        "expected_starts_at": starts_at.isoformat(),
+                        "expected_ends_at": ends_at.isoformat(),
+                        "conflicting_starts_at": (
+                            occupying_lesson.starts_at.isoformat()
+                        ),
+                        "conflicting_ends_at": (
+                            occupying_lesson.ends_at.isoformat()
+                        ),
+                    },
+                )
             current += timedelta(days=1)
             continue
 
@@ -654,7 +714,10 @@ def generate_lessons(
                 "lesson_ids": created_ids,
             },
         )
-    return created_or_existing
+    return LessonGenerationResult(
+        created_or_existing,
+        conflicts=tuple(conflicts),
+    )
 
 
 def publish_daily_schedule(
