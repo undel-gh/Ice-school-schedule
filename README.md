@@ -153,14 +153,22 @@ python manage.py update_group_membership \
   --starts-on 2026-09-01 \
   --ends-on 2027-05-31 \
   --actor <username>
+
+python manage.py grant_administrative_makeup \
+  --allowance <allowance-uuid> \
+  --source-lesson <lesson-uuid> \
+  --valid-from 2026-10-01 \
+  --valid-until 2026-10-31 \
+  --reason 'Administrative correction' \
+  --actor <username>
 ```
 
 The named actor must possess the Django model permission required by the
 underlying application service. Direct editing of lifecycle/ledger rows in
 Django Admin remains prohibited.
 
-Administrative makeup grants, coverage rebinds and one-time entitlement
-administration currently remain service-level operations and are intended for a
+Coverage rebinds and one-time entitlement administration currently remain
+service-level operations and are intended for a
 dedicated administrative UI rather than direct model editing.
 
 ## Production checks
