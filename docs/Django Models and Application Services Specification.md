@@ -2884,5 +2884,11 @@ version_schedule_template(
 - DRAFT lesson с активным LessonEnrollment;
 - DRAFT lesson с активным OneTimeEntitlement.
 
+Для забронированного DRAFT доступен
+`ice_school.workflows.reschedule_lesson_with_entitlements()`: DRAFT входит в
+разрешённые source states, активные enrollment копируются, а неиспользованные
+one-time entitlement переносятся на replacement. Это операторский путь
+разблокировки versioning без досрочной публикации дня.
+
 Безопасные DRAFT без броней отменяются с audit event, после чего новая версия
 может генерироваться начиная с `effective_from`.
