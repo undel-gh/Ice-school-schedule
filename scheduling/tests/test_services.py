@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.utils import timezone
 
-from core.workflows import reschedule_lesson_with_entitlements
+from ice_school.workflows import reschedule_lesson_with_entitlements
 
 from accounts.models import CoachProfile
 from attendance.models import Attendance
