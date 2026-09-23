@@ -828,6 +828,12 @@ def reschedule_lesson(
     reason: str,
     now: datetime,
 ) -> Lesson:
+    """Low-level scheduling transition.
+
+    Interactive callers must use
+    ice_school.workflows.reschedule_lesson_with_entitlements() so financial
+    entitlements are migrated atomically with the lesson replacement.
+    """
     require_permission(
         actor,
         "scheduling.change_lesson",
