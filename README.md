@@ -295,3 +295,13 @@ address for everyone. This is an explicit MVP trade-off against password
 spraying; if it proves too aggressive in production, use a custom Axes
 lockout policy with a higher IP-only threshold rather than removing the
 username+IP scope.
+
+
+### Schedule generation conflicts
+
+Lesson generation treats an overlapping non-cancelled lesson of the same
+training group as an existing regular slot only when the lesson type also
+matches. A cross-type overlap (for example ICE covering a scheduled HALL slot)
+creates a `LessonGenerationConflict` audit event and makes
+`generate_lessons --all-active` finish with `CommandError`, so cron or
+monitoring can alert an operator instead of silently dropping the lesson.
