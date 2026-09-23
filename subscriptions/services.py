@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -52,14 +52,18 @@ def _audit(
     aggregate_id: UUID,
     actor: User | None,
     payload: dict | None = None,
+    correlation_id: UUID | None = None,
 ) -> None:
-    AuditEvent.objects.create(
-        event_type=event_type,
-        actor=actor,
-        aggregate_type=aggregate_type,
-        aggregate_id=aggregate_id,
-        payload=payload or {},
-    )
+    values = {
+        "event_type": event_type,
+        "actor": actor,
+        "aggregate_type": aggregate_type,
+        "aggregate_id": aggregate_id,
+        "payload": payload or {},
+    }
+    if correlation_id is not None:
+        values["correlation_id"] = correlation_id
+    AuditEvent.objects.create(**values)
 
 
 @transaction.atomic
@@ -156,6 +160,7 @@ def _try_one_time_coverage(
     attendance: Attendance,
     category: str,
     actor: User | None,
+    correlation_id: UUID,
 ) -> AttendanceCoverage | None:
     candidate_ids = list(
         OneTimeEntitlement.objects.filter(
@@ -196,6 +201,19 @@ def _try_one_time_coverage(
                 "one_time_entitlement_id": str(entitlement.id),
                 "category": category,
             },
+            correlation_id=correlation_id,
+        )
+        _audit(
+            event_type="OneTimeEntitlementUsed",
+            aggregate_type="OneTimeEntitlement",
+            aggregate_id=entitlement.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(coverage.id),
+                "category": category,
+            },
+            correlation_id=correlation_id,
         )
         return coverage
 
@@ -236,6 +254,7 @@ def _try_makeup_coverage(
     category: str,
     lesson_date: date,
     actor: User | None,
+    correlation_id: UUID,
 ) -> AttendanceCoverage | None:
     base = MakeupEntitlement.objects.filter(
         student_id=attendance.student_id,
@@ -309,6 +328,33 @@ def _try_makeup_coverage(
                 "makeup_entitlement_id": str(makeup.id),
                 "category": category,
             },
+            correlation_id=correlation_id,
+        )
+        _audit(
+            event_type="SubscriptionAllowanceConsumed",
+            aggregate_type="SubscriptionAllowance",
+            aggregate_id=allowance.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(coverage.id),
+                "allowance_id": str(allowance.id),
+                "category": category,
+                "delta": -1,
+            },
+            correlation_id=correlation_id,
+        )
+        _audit(
+            event_type="MakeupEntitlementUsed",
+            aggregate_type="MakeupEntitlement",
+            aggregate_id=makeup.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(coverage.id),
+                "allowance_id": str(allowance.id),
+            },
+            correlation_id=correlation_id,
         )
         return coverage
 
@@ -321,6 +367,7 @@ def _try_ordinary_allowance_coverage(
     category: str,
     lesson_date: date,
     actor: User | None,
+    correlation_id: UUID,
 ) -> AttendanceCoverage | None:
     candidate_ids = list(
         SubscriptionAllowance.objects.filter(
@@ -384,6 +431,21 @@ def _try_ordinary_allowance_coverage(
                 "allowance_id": str(allowance.id),
                 "category": category,
             },
+            correlation_id=correlation_id,
+        )
+        _audit(
+            event_type="SubscriptionAllowanceConsumed",
+            aggregate_type="SubscriptionAllowance",
+            aggregate_id=allowance.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(coverage.id),
+                "allowance_id": str(allowance.id),
+                "category": category,
+                "delta": -1,
+            },
+            correlation_id=correlation_id,
         )
         return coverage
 
@@ -395,7 +457,9 @@ def assign_attendance_coverage(
     *,
     attendance_id: UUID,
     actor: User | None = None,
+    correlation_id: UUID | None = None,
 ) -> AttendanceCoverage | None:
+    correlation_id = correlation_id or uuid4()
     attendance = (
         Attendance.objects.select_for_update()
         .select_related("lesson__lesson_type", "student")
@@ -422,6 +486,7 @@ def assign_attendance_coverage(
         attendance=attendance,
         category=category,
         actor=actor,
+        correlation_id=correlation_id,
     )
     if coverage is not None:
         return coverage
@@ -431,6 +496,7 @@ def assign_attendance_coverage(
         category=category,
         lesson_date=lesson_date,
         actor=actor,
+        correlation_id=correlation_id,
     )
     if coverage is not None:
         return coverage
@@ -440,6 +506,7 @@ def assign_attendance_coverage(
         category=category,
         lesson_date=lesson_date,
         actor=actor,
+        correlation_id=correlation_id,
     )
 
 
@@ -448,7 +515,9 @@ def reverse_attendance_coverage(
     *,
     coverage_id: UUID,
     actor: User | None = None,
+    correlation_id: UUID | None = None,
 ) -> AttendanceCoverage:
+    correlation_id = correlation_id or uuid4()
     coverage = AttendanceCoverage.objects.select_for_update().get(
         pk=coverage_id
     )
@@ -478,7 +547,22 @@ def reverse_attendance_coverage(
         aggregate_id=coverage.id,
         actor=actor,
         payload={"attendance_id": str(coverage.attendance_id)},
+        correlation_id=correlation_id,
     )
+    if coverage.subscription_allowance_id is not None:
+        _audit(
+            event_type="SubscriptionAllowanceRestored",
+            aggregate_type="SubscriptionAllowance",
+            aggregate_id=coverage.subscription_allowance_id,
+            actor=actor,
+            payload={
+                "attendance_id": str(coverage.attendance_id),
+                "coverage_id": str(coverage.id),
+                "allowance_id": str(coverage.subscription_allowance_id),
+                "delta": 1,
+            },
+            correlation_id=correlation_id,
+        )
     return coverage
 
 
