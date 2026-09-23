@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
+from core.permissions import require_lesson_coach_or_permission
 from core.time import school_date as get_school_date
 from django.views.decorators.http import require_POST
 
@@ -63,14 +64,15 @@ def _coach_for_user(request: HttpRequest) -> CoachProfile:
 
 
 def _assert_lesson_actor(request: HttpRequest, lesson: Lesson) -> None:
-    if request.user.is_staff or request.user.is_superuser:
-        return
-    try:
-        coach = request.user.coach_profile
-    except CoachProfile.DoesNotExist as exc:
-        raise PermissionDenied("Coach access required.") from exc
-    if not coach.is_active or lesson.coach_id != coach.id:
-        raise PermissionDenied("This lesson belongs to another coach.")
+    require_lesson_coach_or_permission(
+        actor=request.user,
+        lesson=lesson,
+        permission="attendance.change_attendance",
+        message=(
+            "Only the lesson coach or a user with attendance change "
+            "permission may access this lesson."
+        ),
+    )
 
 
 @login_required
@@ -353,6 +355,7 @@ def coach_complete_lesson(
         complete_lesson(
             lesson_id=lesson.id,
             now=timezone.now(),
+            actor=request.user,
         )
     except ValidationError as exc:
         messages.error(request, " ".join(exc.messages))
