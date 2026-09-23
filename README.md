@@ -247,10 +247,15 @@ list, client-supplied `X-Real-IP` is ignored and Axes uses `REMOTE_ADDR`.
 The production reverse proxy must overwrite `X-Real-IP` with the direct
 client address rather than forwarding a client-supplied value.
 
-For nginx, configure the proxy address in Django and overwrite the header:
+For nginx, configure the proxy address or CIDR in Django and overwrite the
+header:
 
 ```bash
+# reverse proxy on the same host
 TRUSTED_PROXY_IPS=127.0.0.1
+
+# example Docker Compose network
+TRUSTED_PROXY_IPS=172.18.0.0/16
 ```
 
 ```nginx
@@ -265,6 +270,11 @@ header_up X-Real-IP {remote_host}
 
 The regression suite verifies this exact Axes configuration, including that a
 spoofed `X-Forwarded-For` value is ignored.
+
+`python manage.py check --deploy` emits `ice_school.W002` when production
+settings leave `TRUSTED_PROXY_IPS` empty and `ice_school.W001` for invalid
+IP/CIDR entries. An empty list is valid only for a deliberately direct
+deployment where no reverse-proxy client IP header is used.
 
 The IP-only lockout currently uses the same `AXES_FAILURE_LIMIT` (5 by
 default) as the combined username+IP scope. This means several failed logins
