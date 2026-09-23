@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Моё расписание{% endblock %}
+{% block content %}
+<h1>{{ selected_student.display_name }}</h1>
+
+{% if students|length > 1 %}
+<form method="get">
+  <label for="student">Ученик</label>
+  <select id="student" name="student" onchange="this.form.submit()">
+    {% for student in students %}
+      <option value="{{ student.id }}" {% if student.id == selected_student.id %}selected{% endif %}>
+        {{ student.display_name }}
+      </option>
+    {% endfor %}
+  </select>
+</form>
+{% endif %}
+
+<p>{{ from_date }} — {{ until_date }}</p>
+
+{% for item in lessons %}
+  <article>
+    <h2>{{ item.lesson.lesson_type.name }}</h2>
+    <p>
+      {{ item.lesson.starts_at|date:"d.m.Y H:i" }}–{{ item.lesson.ends_at|date:"H:i" }}
+      · {{ item.lesson.coach.display_name }}
+      · {{ item.lesson.venue.name }}
+    </p>
+
+    {% if item.lesson.status == "cancelled" %}
+      <strong>Занятие отменено</strong>
+    {% else %}
+      <p>RSVP: {{ item.response_status|default:"—" }}</p>
+      {% if item.lesson.status == "rsvp_open" or item.lesson.status == "confirmed" %}
+        {% if now <= item.lesson.rsvp_deadline %}
+          <form method="post" action="{% url 'scheduling:set_rsvp' selected_student.id item.lesson.id %}">
+            {% csrf_token %}
+            <button type="submit" name="status" value="yes">+ Буду</button>
+            <button type="submit" name="status" value="no">− Не буду</button>
+          </form>
+        {% endif %}
+      {% endif %}
+    {% endif %}
+
+    {% if item.attendance_status %}
+      <p>Посещение: {{ item.attendance_status }}</p>
+    {% endif %}
+  </article>
+{% empty %}
+  <p>Занятий в выбранном периоде нет.</p>
+{% endfor %}
+{% endblock %}
