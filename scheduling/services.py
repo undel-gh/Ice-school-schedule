@@ -14,6 +14,7 @@ from django.utils import timezone
 from core.permissions import require_permission, require_student_access
 from core.time import make_school_aware, school_date as get_school_date
 
+from accounts.models import Student
 from audit.services import record_event
 from .models import (
     GroupMembership,
@@ -67,6 +68,7 @@ def create_group_membership(
             {"ends_on": "Membership end date cannot precede start date."}
         )
 
+    Student.objects.select_for_update().get(pk=student_id)
     existing = list(
         GroupMembership.objects.select_for_update().filter(
             student_id=student_id,
@@ -120,6 +122,7 @@ def update_group_membership(
     membership = GroupMembership.objects.select_for_update().get(
         pk=membership_id
     )
+    Student.objects.select_for_update().get(pk=membership.student_id)
     others = list(
         GroupMembership.objects.select_for_update()
         .filter(
