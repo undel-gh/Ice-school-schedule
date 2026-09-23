@@ -9,7 +9,15 @@ from django.core.management.base import CommandError
 
 from accounts.models import CoachProfile, Student
 from audit.models import AuditEvent
-from scheduling.models import (GroupMembership, Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue)
+from scheduling.models import (
+    GroupMembership,
+    Lesson,
+    LessonType,
+    ScheduleTemplate,
+    TrainingGroup,
+    Venue,
+)
+from scheduling.services import LessonGenerationResult
 
 
 @pytest.fixture
@@ -263,7 +271,7 @@ def test_generate_lessons_all_active_continues_after_template_error(
             from django.core.exceptions import ValidationError
 
             raise ValidationError("broken template")
-        return []
+        return LessonGenerationResult()
 
     monkeypatch.setattr(
         "scheduling.management.commands.generate_lessons.generate_lessons",
