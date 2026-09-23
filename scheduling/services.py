@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -583,6 +583,10 @@ def skip_template_occurrence(
                 )
             }
         )
+    if occurrence_date < get_school_date(now):
+        raise ValidationError(
+            {"date": "Past template occurrences cannot be skipped."}
+        )
     if occurrence_date < template.valid_from or (
         template.valid_until is not None
         and occurrence_date > template.valid_until
@@ -643,16 +647,30 @@ def skip_template_occurrence(
         cancelled_by=actor,
         cancellation_reason=Lesson.CancellationReason.ADMINISTRATIVE,
     )
+    correlation_id = uuid4()
     record_event(
         event_type="ScheduleTemplateOccurrenceSkipped",
         actor=actor,
         aggregate_type="ScheduleTemplate",
         aggregate_id=template.id,
+        correlation_id=correlation_id,
         payload={
             "lesson_id": str(lesson.id),
             "occurrence_date": occurrence_date.isoformat(),
             "starts_at": starts_at.isoformat(),
             "ends_at": ends_at.isoformat(),
+        },
+    )
+    _audit_lesson(
+        event_type="LessonCancelled",
+        lesson=lesson,
+        actor=actor,
+        correlation_id=correlation_id,
+        payload={
+            "cancelled_at": now.isoformat(),
+            "reason": Lesson.CancellationReason.ADMINISTRATIVE,
+            "source": "schedule_template_occurrence_skipped",
+            "source_template_id": str(template.id),
         },
     )
     return lesson
@@ -664,6 +682,7 @@ def _audit_lesson(
     lesson: Lesson,
     actor: User | None,
     payload: dict | None = None,
+    correlation_id: UUID | None = None,
 ) -> None:
     record_event(
         event_type=event_type,
@@ -671,6 +690,7 @@ def _audit_lesson(
         aggregate_type="Lesson",
         aggregate_id=lesson.id,
         payload=payload,
+        correlation_id=correlation_id,
     )
 
 
