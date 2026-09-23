@@ -33,6 +33,8 @@ from scheduling.models import (
 from subscriptions.models import (
     AttendanceCoverage,
     MakeupEntitlement,
+    Subscription,
+    SubscriptionAllowance,
     SubscriptionLedgerEntry,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
@@ -149,19 +151,28 @@ def issue_one_ice(
         code=f"one-ice-{student.id}",
         name="One ICE",
     )
-    SubscriptionPlanAllowance.objects.create(
+    subscription = Subscription.objects.create(
+        student=student,
         plan=plan,
-        category=SubscriptionCategory.ICE,
-        visit_limit=1,
-    )
-    subscription = issue_subscription(
-        student_id=student.id,
-        plan_id=plan.id,
+        plan_code_snapshot=plan.code,
+        plan_name_snapshot=plan.name,
         valid_from=date(2026, 9, 1),
         valid_until=date(2026, 9, 30),
-        actor=actor,
+        created_by=actor,
     )
-    return subscription.allowances.get()
+    allowance = SubscriptionAllowance.objects.create(
+        subscription=subscription,
+        category=SubscriptionCategory.ICE,
+        visit_limit_snapshot=1,
+    )
+    SubscriptionLedgerEntry.objects.create(
+        allowance=allowance,
+        entry_type=SubscriptionLedgerEntry.EntryType.GRANT,
+        delta=1,
+        reason="Test setup grant",
+        created_by=actor,
+    )
+    return allowance
 
 
 @pytest.mark.django_db
