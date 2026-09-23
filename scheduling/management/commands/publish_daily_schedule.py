@@ -5,6 +5,8 @@ from datetime import date
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from core.time import school_date
+
 from scheduling.services import publish_daily_schedule
 
 
@@ -22,7 +24,7 @@ class Command(BaseCommand):
             except ValueError as exc:
                 raise CommandError("--date must use YYYY-MM-DD format.") from exc
         else:
-            school_date = timezone.localdate()
+            school_date = school_date(timezone.now())
 
         lessons = publish_daily_schedule(
             school_date=school_date,
