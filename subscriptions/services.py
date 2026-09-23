@@ -823,6 +823,7 @@ def rebind_attendance_coverage(
     subscription_allowance_id: UUID | None = None,
     makeup_entitlement_id: UUID | None = None,
 ) -> AttendanceCoverage:
+    correlation_id = uuid4()
     _assert_entitlement_admin(actor)
 
     primary_count = sum(
@@ -1069,6 +1070,7 @@ def rebind_attendance_coverage(
             "attendance_id": str(attendance.id),
             "reason": "rebind",
         },
+        correlation_id=correlation_id,
     )
     _audit(
         event_type="AttendanceCoverageAssigned",
@@ -1101,6 +1103,7 @@ def rebind_attendance_coverage(
             ),
             "category": category,
         },
+        correlation_id=correlation_id,
     )
     _audit(
         event_type="AttendanceCoverageRebound",
@@ -1112,5 +1115,70 @@ def rebind_attendance_coverage(
             "old_coverage_id": str(old_coverage.id),
             "new_coverage_id": str(new_coverage.id),
         },
+        correlation_id=correlation_id,
     )
+
+    if old_allowance is not None:
+        _audit(
+            event_type="SubscriptionAllowanceRestored",
+            aggregate_type="SubscriptionAllowance",
+            aggregate_id=old_allowance.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(old_coverage.id),
+                "allowance_id": str(old_allowance.id),
+                "delta": 1,
+                "reason": "rebind",
+            },
+            correlation_id=correlation_id,
+        )
+
+    if target_allowance is not None:
+        _audit(
+            event_type="SubscriptionAllowanceConsumed",
+            aggregate_type="SubscriptionAllowance",
+            aggregate_id=target_allowance.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(new_coverage.id),
+                "allowance_id": str(target_allowance.id),
+                "category": category,
+                "delta": -1,
+                "reason": "rebind",
+            },
+            correlation_id=correlation_id,
+        )
+
+    if target_one_time is not None:
+        _audit(
+            event_type="OneTimeEntitlementUsed",
+            aggregate_type="OneTimeEntitlement",
+            aggregate_id=target_one_time.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(new_coverage.id),
+                "category": category,
+                "reason": "rebind",
+            },
+            correlation_id=correlation_id,
+        )
+
+    if target_makeup is not None:
+        _audit(
+            event_type="MakeupEntitlementUsed",
+            aggregate_type="MakeupEntitlement",
+            aggregate_id=target_makeup.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(attendance.id),
+                "coverage_id": str(new_coverage.id),
+                "allowance_id": str(target_allowance.id),
+                "reason": "rebind",
+            },
+            correlation_id=correlation_id,
+        )
+
     return new_coverage
