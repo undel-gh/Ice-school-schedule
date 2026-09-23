@@ -262,3 +262,69 @@ def test_coach_attendance_post_uses_service(client, web_context):
         lesson=lesson,
         student=web_context["student"],
     ).status == Attendance.Status.PRESENT
+
+
+
+@pytest.mark.django_db
+def test_student_schedule_renders_mobile_touch_controls(client, web_context):
+    lesson = make_lesson(context=web_context)
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=web_context["student"],
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=web_context["coach_user"],
+    )
+
+    client.force_login(web_context["guardian"])
+    response = client.get(
+        reverse("scheduling:student_schedule"),
+        {
+            "from": "2026-09-25",
+            "until": "2026-09-25",
+        },
+    )
+
+    body = response.content.decode()
+    assert 'class="lesson-card"' in body
+    assert "✓ Буду" in body
+    assert "Не буду" in body
+
+
+@pytest.mark.django_db
+def test_coach_lesson_renders_mobile_cards_and_bulk_actions(
+    client,
+    web_context,
+):
+    lesson = make_lesson(
+        context=web_context,
+        status=Lesson.Status.CONFIRMED,
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=web_context["student"],
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=web_context["coach_user"],
+    )
+
+    client.force_login(web_context["coach_user"])
+    response = client.get(
+        reverse(
+            "scheduling:coach_lesson",
+            kwargs={"lesson_id": lesson.id},
+        )
+    )
+
+    body = response.content.decode()
+    assert 'class="student-card"' in body
+    assert "<table" not in body
+    assert 'class="bulk-actions"' in body
+    assert "✓ Пришёл" in body
+    assert "Оставшиеся отсутствуют" in body
