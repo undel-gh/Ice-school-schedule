@@ -674,6 +674,7 @@ def generate_lessons(
                     aggregate_id=template.id,
                     payload_filters={
                         "expected_starts_at": expected_starts_at,
+                        "conflicting_lesson_id": str(cross_type.id),
                     },
                 ):
                     record_event(
@@ -1201,13 +1202,15 @@ def cancel_lesson(
     _validate_cancellation_reason(reason)
     lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
     if lesson.status not in {
+        Lesson.Status.DRAFT,
         Lesson.Status.RSVP_OPEN,
         Lesson.Status.CONFIRMED,
     }:
         raise ValidationError(
             {
                 "lesson": (
-                    "Only RSVP_OPEN or CONFIRMED lessons can be cancelled."
+                    "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can be "
+                    "cancelled."
                 )
             }
         )
