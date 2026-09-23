@@ -1728,13 +1728,17 @@ def test_medical_justification_can_be_redeclared_after_present_correction(
         actor=admin_user,
     )
 
-    assert redeclared.id == justification.id
+    assert redeclared.id != justification.id
     assert redeclared.status == AbsenceJustification.Status.PENDING
-    assert redeclared.reviewed_at is None
-    assert redeclared.revoked_at is None
+    justification.refresh_from_db()
+    assert justification.status == AbsenceJustification.Status.REVOKED
+    assert (
+        justification.revocation_reason
+        == AbsenceJustification.RevocationReason.ATTENDANCE_CORRECTION
+    )
     assert AuditEvent.objects.filter(
         event_type="AbsenceJustificationRedeclared",
-        aggregate_id=justification.id,
+        aggregate_id=redeclared.id,
     ).exists()
 
     verify_medical_absence(
@@ -1743,13 +1747,83 @@ def test_medical_justification_can_be_redeclared_after_present_correction(
         valid_until=date(2026, 10, 20),
         now=starts_at + timedelta(days=4),
     )
-    reactivated = MakeupEntitlement.objects.get(
+    replacement_makeup = MakeupEntitlement.objects.get(
         source_justification=redeclared,
     )
-    assert reactivated.id == original_makeup.id
-    assert reactivated.cancelled_at is None
-    assert reactivated.valid_until == date(2026, 10, 20)
-    assert AuditEvent.objects.filter(
-        event_type="MakeupEntitlementReactivated",
-        aggregate_id=reactivated.id,
-    ).exists()
+    original_makeup.refresh_from_db()
+    assert replacement_makeup.id != original_makeup.id
+    assert original_makeup.cancelled_at is not None
+    assert replacement_makeup.cancelled_at is None
+    assert replacement_makeup.valid_until == date(2026, 10, 20)
+    assert MakeupEntitlement.objects.filter(
+        student=student,
+        source_lesson=lesson,
+        reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+    ).count() == 2
+
+
+
+@pytest.mark.django_db
+def test_administratively_revoked_medical_absence_cannot_be_redeclared(
+    student,
+    coach_user,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=admin_user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+    justification = declare_medical_absence(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        actor=admin_user,
+    )
+    verify_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        valid_until=date(2026, 10, 15),
+        now=starts_at + timedelta(days=1),
+    )
+    revoke_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        now=starts_at + timedelta(days=2),
+    )
+
+    justification.refresh_from_db()
+    assert (
+        justification.revocation_reason
+        == AbsenceJustification.RevocationReason.ADMINISTRATIVE
+    )
+    with pytest.raises(ValidationError):
+        declare_medical_absence(
+            student_id=student.id,
+            lesson_id=lesson.id,
+            actor=admin_user,
+        )
