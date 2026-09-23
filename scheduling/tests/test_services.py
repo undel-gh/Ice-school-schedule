@@ -125,6 +125,7 @@ from scheduling.services import (
     publish_lesson,
     reschedule_lesson,
     set_lesson_response,
+    skip_template_occurrence,
 )
 from subscriptions.models import (
     AttendanceCoverage,
@@ -2006,6 +2007,184 @@ def test_generate_lessons_respects_cancelled_own_slot_over_cross_type_overlap(
     ).exists()
 
 
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_resolves_cross_type_generation_conflict(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-skip-conflict",
+        name="Hall skip conflict",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    ice_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    ice_lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=ice_start,
+        ends_at=ice_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=ice_start - timedelta(hours=2),
+        decision_deadline=ice_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    before = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    assert len(before.conflicts) == 1
+
+    skipped = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc),
+    )
+
+    assert skipped.status == Lesson.Status.CANCELLED
+    assert skipped.source_template_id == template.id
+    assert Lesson.objects.get(pk=ice_lesson.id).status == Lesson.Status.DRAFT
+
+    after = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    assert after.lessons == (skipped,)
+    assert after.conflicts == ()
+    assert AuditEvent.objects.filter(
+        event_type="ScheduleTemplateOccurrenceSkipped",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_is_idempotent(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc)
+
+    first = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=now,
+    )
+    second = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=now + timedelta(minutes=1),
+    )
+
+    assert second.id == first.id
+    assert (
+        AuditEvent.objects.filter(
+            event_type="ScheduleTemplateOccurrenceSkipped",
+            aggregate_type="ScheduleTemplate",
+            aggregate_id=template.id,
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_rejects_wrong_weekday(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+
+    with pytest.raises(ValidationError):
+        skip_template_occurrence(
+            template_id=template.id,
+            occurrence_date=date(2026, 10, 30),
+            actor=admin,
+            now=datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc),
+        )
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_rejects_existing_non_cancelled_occurrence(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    generated = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    ).lessons[0]
+
+    with pytest.raises(ValidationError):
+        skip_template_occurrence(
+            template_id=template.id,
+            occurrence_date=date(2026, 10, 29),
+            actor=admin,
+            now=datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc),
+        )
+
+    generated.refresh_from_db()
+    assert generated.status == Lesson.Status.DRAFT
+
 @pytest.mark.django_db
 def test_generation_conflict_audit_is_idempotent_per_template_slot(
     school_context,
@@ -2106,6 +2285,89 @@ def test_cancel_lesson_allows_draft(
     )
 
 
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_rejects_booked_draft_enrollment(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    LessonEnrollment.objects.create(
+        lesson=lesson,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        cancel_lesson(
+            lesson_id=lesson.id,
+            actor=admin,
+            reason=Lesson.CancellationReason.ADMINISTRATIVE,
+            now=starts_at - timedelta(days=1),
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.status == Lesson.Status.DRAFT
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_rejects_draft_with_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        cancel_lesson(
+            lesson_id=lesson.id,
+            actor=admin,
+            reason=Lesson.CancellationReason.ADMINISTRATIVE,
+            now=starts_at - timedelta(days=1),
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.status == Lesson.Status.DRAFT
 
 @pytest.mark.django_db
 def test_generation_conflict_dedup_key_includes_conflicting_lesson(
