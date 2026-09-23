@@ -11,7 +11,11 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from core.permissions import require_permission, require_student_access
+from core.permissions import (
+    require_lesson_coach_or_permission,
+    require_permission,
+    require_student_access,
+)
 from core.time import make_school_aware, school_date as get_school_date
 
 from accounts.models import Student
@@ -161,8 +165,6 @@ def update_group_membership(
             }
         )
 
-    membership.starts_on = starts_on
-    membership.ends_on = ends_on
     previous_starts_on = membership.starts_on
     previous_ends_on = membership.ends_on
     membership.starts_on = starts_on
@@ -946,8 +948,6 @@ def complete_lesson(
         .get(pk=lesson_id)
     )
     if actor is not None:
-        from core.permissions import require_lesson_coach_or_permission
-
         require_lesson_coach_or_permission(
             actor=actor,
             lesson=lesson,
