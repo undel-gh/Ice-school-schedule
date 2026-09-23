@@ -1,52 +1,105 @@
 {% extends "base.html" %}
 {% block title %}Моё расписание{% endblock %}
 {% block content %}
-<h1>{{ selected_student.display_name }}</h1>
+<header class="page-header">
+  <h1>{{ selected_student.display_name }}</h1>
+  <div class="page-header__meta">Моё расписание</div>
+</header>
 
-{% if students|length > 1 %}
-<form method="get">
-  <label for="student">Ученик</label>
-  <select id="student" name="student" onchange="this.form.submit()">
-    {% for student in students %}
-      <option value="{{ student.id }}" {% if student.id == selected_student.id %}selected{% endif %}>
-        {{ student.display_name }}
-      </option>
-    {% endfor %}
-  </select>
+<form class="filter-form" method="get">
+  {% if students|length > 1 %}
+    <div class="field">
+      <label for="student">Ученик</label>
+      <select id="student" name="student">
+        {% for student in students %}
+          <option value="{{ student.id }}" {% if student.id == selected_student.id %}selected{% endif %}>
+            {{ student.display_name }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+  {% else %}
+    <input type="hidden" name="student" value="{{ selected_student.id }}">
+  {% endif %}
+
+  <div class="field">
+    <label for="from">С</label>
+    <input id="from" type="date" name="from" value="{{ from_date|date:'Y-m-d' }}">
+  </div>
+
+  <div class="field">
+    <label for="until">По</label>
+    <input id="until" type="date" name="until" value="{{ until_date|date:'Y-m-d' }}">
+  </div>
+
+  <button class="btn-secondary" type="submit">Показать</button>
 </form>
-{% endif %}
 
-<p>{{ from_date }} — {{ until_date }}</p>
-
+<div class="card-list">
 {% for item in lessons %}
-  <article>
-    <h2>{{ item.lesson.lesson_type.name }}</h2>
-    <p>
-      {{ item.lesson.starts_at|date:"d.m.Y H:i" }}–{{ item.lesson.ends_at|date:"H:i" }}
-      · {{ item.lesson.coach.display_name }}
-      · {{ item.lesson.venue.name }}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <div class="lesson-card__time">
+          {{ item.lesson.starts_at|date:"d.m · H:i" }}–{{ item.lesson.ends_at|date:"H:i" }}
+        </div>
+        <h2>{{ item.lesson.lesson_type.name }}</h2>
+      </div>
+
+      {% if item.lesson.status == "cancelled" %}
+        <span class="badge badge--cancelled">Отменено</span>
+      {% elif item.response_status == "yes" %}
+        <span class="badge badge--yes">Буду</span>
+      {% elif item.response_status == "no" %}
+        <span class="badge badge--no">Не буду</span>
+      {% else %}
+        <span class="badge badge--unknown">Нет ответа</span>
+      {% endif %}
+    </div>
+
+    <p class="lesson-card__meta">
+      {{ item.lesson.coach.display_name }} · {{ item.lesson.venue.name }}
     </p>
 
-    {% if item.lesson.status == "cancelled" %}
-      <strong>Занятие отменено</strong>
-    {% else %}
-      <p>RSVP: {{ item.response_status|default:"—" }}</p>
+    {% if item.lesson.status != "cancelled" %}
       {% if item.lesson.status == "rsvp_open" or item.lesson.status == "confirmed" %}
         {% if now <= item.lesson.rsvp_deadline %}
-          <form method="post" action="{% url 'scheduling:set_rsvp' selected_student.id item.lesson.id %}">
+          <form class="action-row" method="post" action="{% url 'scheduling:set_rsvp' selected_student.id item.lesson.id %}">
             {% csrf_token %}
-            <button type="submit" name="status" value="yes">+ Буду</button>
-            <button type="submit" name="status" value="no">− Не буду</button>
+            <button
+              class="btn-present {% if item.response_status == 'yes' %}is-active{% endif %}"
+              type="submit"
+              name="status"
+              value="yes"
+            >✓ Буду</button>
+            <button
+              class="btn-absent {% if item.response_status == 'no' %}is-active{% endif %}"
+              type="submit"
+              name="status"
+              value="no"
+            >Не буду</button>
           </form>
         {% endif %}
       {% endif %}
     {% endif %}
 
     {% if item.attendance_status %}
-      <p>Посещение: {{ item.attendance_status }}</p>
+      <div class="student-card__state">
+        {% if item.attendance_status == "present" %}
+          <span class="badge badge--present">Пришёл</span>
+          {% if item.coverage %}
+            <span class="badge badge--covered">Покрыто</span>
+          {% else %}
+            <span class="badge badge--uncovered">Без покрытия</span>
+          {% endif %}
+        {% else %}
+          <span class="badge badge--absent">Отсутствовал</span>
+        {% endif %}
+      </div>
     {% endif %}
   </article>
 {% empty %}
-  <p>Занятий в выбранном периоде нет.</p>
+  <div class="empty-state">Занятий в выбранном периоде нет.</div>
 {% endfor %}
+</div>
 {% endblock %}
