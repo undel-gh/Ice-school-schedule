@@ -324,3 +324,57 @@ def test_version_schedule_template_command(ops_context):
     assert template.valid_until == date(2099, 1, 31)
     assert replacement.start_time.hour == 19
     assert "version created" in out.getvalue().lower()
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_command_fails_on_cross_type_conflict(
+    monkeypatch,
+    ops_context,
+):
+    actor, coach, group, venue, ice_type = ops_context
+    hall_type = LessonType.objects.create(
+        code="hall-command-conflict",
+        name="Hall command conflict",
+        subscription_category="hall",
+    )
+    ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    conflict_start = datetime(
+        2026, 10, 29, 16, 0, tzinfo=dt_timezone.utc
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=conflict_start,
+        ends_at=conflict_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=conflict_start - timedelta(hours=2),
+        decision_deadline=conflict_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    monkeypatch.setattr(
+        "scheduling.management.commands.generate_lessons.school_date",
+        lambda value: date(2026, 10, 29),
+    )
+
+    with pytest.raises(CommandError) as exc_info:
+        call_command(
+            "generate_lessons",
+            "--all-active",
+            "--horizon-days",
+            "0",
+        )
+
+    assert "generation conflict" in str(exc_info.value)
