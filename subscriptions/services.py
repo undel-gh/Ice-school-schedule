@@ -12,9 +12,16 @@ from django.utils import timezone
 from accounts.models import Student
 from attendance.models import Attendance
 from audit.models import AuditEvent
+from audit.services import event_exists, record_event
+from core.permissions import require_permission
 from core.time import school_date
 from scheduling.models import Lesson
 
+from .balances import (
+    ledger_balance,
+    locked_allowance_balance,
+    locked_eligible_source_allowance,
+)
 from .models import (
     AttendanceCoverage,
     MakeupEntitlement,
@@ -27,16 +34,6 @@ from .models import (
 )
 
 User = get_user_model()
-
-
-def _locked_allowance_balance(
-    allowance_id: UUID,
-) -> tuple[SubscriptionAllowance, int]:
-    allowance = SubscriptionAllowance.objects.select_for_update().get(pk=allowance_id)
-    balance = SubscriptionLedgerEntry.objects.filter(
-        allowance_id=allowance.id
-    ).aggregate(balance=Sum("delta"))["balance"]
-    return allowance, int(balance or 0)
 
 
 def _audit(
@@ -57,7 +54,7 @@ def _audit(
     }
     if correlation_id is not None:
         values["correlation_id"] = correlation_id
-    AuditEvent.objects.create(**values)
+    record_event(**values)
 
 
 @transaction.atomic
@@ -284,7 +281,7 @@ def _try_makeup_coverage(
         ).exists():
             continue
 
-        allowance, balance = _locked_allowance_balance(
+        allowance, balance = locked_allowance_balance(
             makeup.source_subscription_allowance_id
         )
         source_subscription = _validate_makeup_source(
@@ -397,7 +394,7 @@ def _try_ordinary_allowance_coverage(
     )
 
     for allowance_id in candidate_ids:
-        allowance, balance = _locked_allowance_balance(allowance_id)
+        allowance, balance = locked_allowance_balance(allowance_id)
 
         subscription = Subscription.objects.get(
             pk=allowance.subscription_id
@@ -551,7 +548,7 @@ def reverse_attendance_coverage(
         return coverage
 
     if coverage.subscription_allowance_id is not None:
-        allowance, _ = _locked_allowance_balance(
+        allowance, _ = locked_allowance_balance(
             coverage.subscription_allowance_id
         )
         SubscriptionLedgerEntry.objects.create(
@@ -609,7 +606,7 @@ def adjust_allowance(
             {"reason": "Adjustment reason is required."}
         )
 
-    allowance, balance = _locked_allowance_balance(allowance_id)
+    allowance, balance = locked_allowance_balance(allowance_id)
     if balance + delta < 0:
         raise ValidationError(
             {
@@ -680,11 +677,100 @@ def cancel_subscription(
 
 
 def _assert_entitlement_admin(actor: User) -> None:
-    if actor.is_staff or actor.is_superuser:
-        return
-    raise PermissionDenied(
-        "Only an administrator may manage administrative entitlements."
+    require_permission(
+        actor,
+        "subscriptions.change_makeupentitlement",
+        "Administrative entitlement permission is required.",
     )
+
+
+@transaction.atomic
+def grant_school_reschedule_makeups(
+    *,
+    source_lesson_id: UUID,
+    replacement_lesson_id: UUID,
+    actor: User,
+) -> tuple[MakeupEntitlement, ...]:
+    source = (
+        Lesson.objects.select_for_update()
+        .select_related("lesson_type")
+        .get(pk=source_lesson_id)
+    )
+    replacement = Lesson.objects.select_for_update().get(
+        pk=replacement_lesson_id
+    )
+    if source.replacement_lesson_id != replacement.id:
+        raise ValidationError(
+            {
+                "replacement_lesson": (
+                    "Replacement lesson is not linked from the source lesson."
+                )
+            }
+        )
+
+    source_date = school_date(source.starts_at)
+    replacement_date = school_date(replacement.starts_at)
+    category = source.lesson_type.subscription_category
+
+    yes_student_ids = list(
+        source.responses.filter(
+            status="yes",
+        ).values_list("student_id", flat=True)
+    )
+
+    created: list[MakeupEntitlement] = []
+    for student_id in yes_student_ids:
+        selected = locked_eligible_source_allowance(
+            student_id=student_id,
+            category=category,
+            source_date=source_date,
+        )
+        if selected is None:
+            continue
+
+        allowance, subscription, _ = selected
+        if (
+            subscription.valid_from
+            <= replacement_date
+            <= subscription.valid_until
+        ):
+            continue
+
+        entitlement, was_created = MakeupEntitlement.objects.get_or_create(
+            student_id=student_id,
+            source_lesson=source,
+            reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
+            defaults={
+                "source_subscription_allowance": allowance,
+                "category": category,
+                "valid_from": replacement_date,
+                "valid_until": replacement_date,
+                "target_lesson": replacement,
+                "created_by": actor,
+            },
+        )
+        if not was_created:
+            continue
+
+        record_event(
+            event_type="MakeupEntitlementGranted",
+            aggregate_type="MakeupEntitlement",
+            aggregate_id=entitlement.id,
+            actor=actor,
+            payload={
+                "student_id": str(student_id),
+                "source_lesson_id": str(source.id),
+                "replacement_lesson_id": str(replacement.id),
+                "source_allowance_id": str(allowance.id),
+                "category": category,
+                "valid_from": replacement_date.isoformat(),
+                "valid_until": replacement_date.isoformat(),
+                "reason": entitlement.reason,
+            },
+        )
+        created.append(entitlement)
+
+    return tuple(created)
 
 
 @transaction.atomic
@@ -709,7 +795,7 @@ def grant_administrative_makeup(
             {"reason": "Administrative reason is required."}
         )
 
-    allowance, balance = _locked_allowance_balance(
+    allowance, balance = locked_allowance_balance(
         source_subscription_allowance_id
     )
     subscription = Subscription.objects.select_for_update().get(
@@ -1076,10 +1162,7 @@ def rebind_attendance_coverage(
     old_coverage.save(update_fields=["reversed_at", "reversed_by"])
 
     if target_allowance is not None:
-        target_balance = SubscriptionLedgerEntry.objects.filter(
-            allowance=target_allowance
-        ).aggregate(balance=Sum("delta"))["balance"]
-        target_balance = int(target_balance or 0)
+        target_balance = ledger_balance(target_allowance.id)
         if target_balance <= 0:
             raise ValidationError(
                 {
@@ -1364,19 +1447,6 @@ def cancel_one_time_entitlement(
 
 
 
-def _audit_event_exists(
-    *,
-    event_type: str,
-    aggregate_type: str,
-    aggregate_id: UUID,
-) -> bool:
-    return AuditEvent.objects.filter(
-        event_type=event_type,
-        aggregate_type=aggregate_type,
-        aggregate_id=aggregate_id,
-    ).exists()
-
-
 @transaction.atomic
 def _process_one_subscription_lifecycle(
     *,
@@ -1397,7 +1467,7 @@ def _process_one_subscription_lifecycle(
 
     if (
         subscription.valid_from <= as_of
-        and not _audit_event_exists(
+        and not event_exists(
             event_type="SubscriptionActivated",
             aggregate_type="Subscription",
             aggregate_id=subscription.id,
@@ -1429,7 +1499,7 @@ def _process_one_subscription_lifecycle(
         )
     }
 
-    if not _audit_event_exists(
+    if not event_exists(
         event_type="SubscriptionExpired",
         aggregate_type="Subscription",
         aggregate_id=subscription.id,
@@ -1450,7 +1520,7 @@ def _process_one_subscription_lifecycle(
 
     if (
         any(balance > 0 for balance in balances.values())
-        and not _audit_event_exists(
+        and not event_exists(
             event_type="SubscriptionExpiredWithUnusedBalance",
             aggregate_type="Subscription",
             aggregate_id=subscription.id,
@@ -1488,7 +1558,7 @@ def _process_one_makeup_expiry(
         reversed_at__isnull=True,
     ).exists():
         return 0
-    if _audit_event_exists(
+    if event_exists(
         event_type="MakeupEntitlementExpired",
         aggregate_type="MakeupEntitlement",
         aggregate_id=makeup.id,
