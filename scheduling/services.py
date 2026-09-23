@@ -8,7 +8,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from core.permissions import (
@@ -398,29 +398,29 @@ def version_schedule_template(
     ]
     booking_state = {
         row["id"]: (
-            row["has_active_enrollment"],
-            row["has_active_one_time"],
+            row["active_enrollment_count"] > 0,
+            row["active_one_time_count"] > 0,
         )
         for row in (
             Lesson.objects.filter(id__in=draft_ids)
             .annotate(
-                has_active_enrollment=Exists(
-                    Lesson.objects.filter(
-                        pk=OuterRef("pk"),
-                        enrollments__cancelled_at__isnull=True,
-                    )
+                active_enrollment_count=Count(
+                    "enrollments",
+                    filter=Q(enrollments__cancelled_at__isnull=True),
+                    distinct=True,
                 ),
-                has_active_one_time=Exists(
-                    Lesson.objects.filter(
-                        pk=OuterRef("pk"),
-                        one_time_entitlements__cancelled_at__isnull=True,
-                    )
+                active_one_time_count=Count(
+                    "one_time_entitlements",
+                    filter=Q(
+                        one_time_entitlements__cancelled_at__isnull=True
+                    ),
+                    distinct=True,
                 ),
             )
             .values(
                 "id",
-                "has_active_enrollment",
-                "has_active_one_time",
+                "active_enrollment_count",
+                "active_one_time_count",
             )
         )
     }
