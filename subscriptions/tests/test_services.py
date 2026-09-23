@@ -1647,3 +1647,80 @@ def test_rebind_rejects_closed_lesson(
     assert coverage.reversed_at is None
     assert allowance_balance(first_allowance.id) == 1
     assert allowance_balance(second_allowance.id) == 2
+
+
+
+@pytest.mark.django_db
+def test_used_makeup_is_not_marked_expired(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="used-makeup-expiry", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            8,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            5,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson.status = Lesson.Status.COMPLETED
+    target_lesson.save(update_fields=["status"])
+    makeup = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 10),
+        target_lesson=target_lesson,
+        created_by=actor,
+    )
+    attendance = make_present_attendance(
+        lesson=target_lesson,
+        student=student,
+        actor=actor,
+    )
+    AttendanceCoverage.objects.create(
+        attendance=attendance,
+        subscription_allowance=allowance,
+        makeup_entitlement=makeup,
+        created_by=actor,
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+
+    assert result["makeup_expired"] == 0
+    assert not AuditEvent.objects.filter(
+        event_type="MakeupEntitlementExpired",
+        aggregate_id=makeup.id,
+    ).exists()
