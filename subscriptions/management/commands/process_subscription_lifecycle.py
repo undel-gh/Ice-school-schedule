@@ -5,6 +5,7 @@ from datetime import date
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from core.management import command_errors
 from core.time import school_date
 
 from subscriptions.services import process_subscription_lifecycle
@@ -23,6 +24,7 @@ class Command(BaseCommand):
             help="Business date in YYYY-MM-DD format. Defaults to local date.",
         )
 
+    @command_errors
     def handle(self, *args, **options):
         raw_date = options["as_of"]
         if raw_date:
