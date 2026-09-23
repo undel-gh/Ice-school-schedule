@@ -1,6 +1,7 @@
 import pytest
 from axes.helpers import get_client_ip_address, get_client_parameters
 from django.conf import settings
+from django.core.checks import run_checks, Tags
 from django.test import RequestFactory, override_settings
 from django.urls import reverse
 
@@ -89,3 +90,43 @@ def test_axes_builds_combined_username_ip_and_ip_only_filters():
     } in parameters
     assert {"ip_address": "203.0.113.7"} in parameters
     assert {"username": "victim"} not in parameters
+
+
+
+@override_settings(TRUSTED_PROXY_IPS=("172.18.0.0/16",))
+def test_axes_trusted_proxy_supports_cidr():
+    request = RequestFactory().get(
+        "/accounts/login/",
+        REMOTE_ADDR="172.18.0.5",
+        HTTP_X_REAL_IP="203.0.113.7",
+    )
+
+    assert get_client_ip_address(request) == "203.0.113.7"
+
+
+@override_settings(TRUSTED_PROXY_IPS=("::ffff:10.0.0.1",))
+def test_axes_trusted_proxy_normalizes_ipv6_addresses():
+    request = RequestFactory().get(
+        "/accounts/login/",
+        REMOTE_ADDR="::ffff:a00:1",
+        HTTP_X_REAL_IP="2001:db8::7",
+    )
+
+    assert get_client_ip_address(request) == "2001:db8::7"
+
+
+@override_settings(DEBUG=False, TRUSTED_PROXY_IPS=())
+def test_production_check_warns_when_trusted_proxy_list_is_empty():
+    warnings = run_checks(tags=[Tags.security])
+
+    assert any(item.id == "ice_school.W002" for item in warnings)
+
+
+@override_settings(
+    DEBUG=False,
+    TRUSTED_PROXY_IPS=("172.18.0.0/16", "not-a-network"),
+)
+def test_production_check_warns_about_invalid_trusted_proxy_entry():
+    warnings = run_checks(tags=[Tags.security])
+
+    assert any(item.id == "ice_school.W001" for item in warnings)
