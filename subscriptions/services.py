@@ -1491,11 +1491,17 @@ def process_subscription_lifecycle(
             )
             counts["expired_with_unused"] += 1
 
+    active_makeup_usage = AttendanceCoverage.objects.filter(
+        makeup_entitlement_id=OuterRef("pk"),
+        reversed_at__isnull=True,
+    )
     makeup_ids = list(
         MakeupEntitlement.objects.filter(
             valid_until__lt=as_of,
             cancelled_at__isnull=True,
         )
+        .annotate(is_used=Exists(active_makeup_usage))
+        .filter(is_used=False)
         .order_by("id")
         .values_list("id", flat=True)
     )
