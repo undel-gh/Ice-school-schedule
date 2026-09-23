@@ -877,6 +877,25 @@ def rebind_attendance_coverage(
             "Make-up entitlement requires a subscription allowance target."
         )
 
+    attendance_ref = (
+        Attendance.objects.select_related("lesson__lesson_type")
+        .get(pk=attendance_id)
+    )
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("lesson_type")
+        .get(pk=attendance_ref.lesson_id)
+    )
+    if lesson.status != Lesson.Status.COMPLETED:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Attendance coverage can only be rebound while the "
+                    "lesson is COMPLETED. Reopen CLOSED attendance first."
+                )
+            }
+        )
+
     attendance = (
         Attendance.objects.select_for_update()
         .select_related("lesson__lesson_type")
