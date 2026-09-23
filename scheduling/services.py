@@ -358,9 +358,13 @@ def version_schedule_template(
     cutoff = make_school_aware(
         datetime.combine(effective_from, datetime.min.time())
     )
-    affected = Lesson.objects.select_for_update().filter(
-        source_template=template,
-        starts_at__gte=cutoff,
+    affected_lessons = list(
+        Lesson.objects.select_for_update()
+        .filter(
+            source_template=template,
+            starts_at__gte=cutoff,
+        )
+        .order_by("starts_at", "id")
     )
     blocking_statuses = {
         Lesson.Status.RSVP_OPEN,
@@ -368,9 +372,14 @@ def version_schedule_template(
         Lesson.Status.COMPLETED,
         Lesson.Status.CLOSED,
     }
-    blocking_lesson = affected.filter(
-        status__in=blocking_statuses,
-    ).order_by("starts_at", "id").first()
+    blocking_lesson = next(
+        (
+            lesson
+            for lesson in affected_lessons
+            if lesson.status in blocking_statuses
+        ),
+        None,
+    )
     if blocking_lesson is not None:
         raise ValidationError(
             {
@@ -382,15 +391,21 @@ def version_schedule_template(
             }
         )
 
-    booked_draft = (
-        affected.filter(status=Lesson.Status.DRAFT)
-        .filter(
-            Q(enrollments__cancelled_at__isnull=True)
-            | Q(one_time_entitlements__cancelled_at__isnull=True)
-        )
-        .distinct()
-        .order_by("starts_at", "id")
-        .first()
+    booked_draft = next(
+        (
+            lesson
+            for lesson in affected_lessons
+            if lesson.status == Lesson.Status.DRAFT
+            and (
+                lesson.enrollments.filter(
+                    cancelled_at__isnull=True
+                ).exists()
+                or lesson.one_time_entitlements.filter(
+                    cancelled_at__isnull=True
+                ).exists()
+            )
+        ),
+        None,
     )
     if booked_draft is not None:
         raise ValidationError(
@@ -414,15 +429,11 @@ def version_schedule_template(
         is_active=True,
     )
 
-    draft_lessons = list(
-        Lesson.objects.select_for_update()
-        .filter(
-            source_template=template,
-            status=Lesson.Status.DRAFT,
-            starts_at__gte=cutoff,
-        )
-        .order_by("starts_at", "id")
-    )
+    draft_lessons = [
+        lesson
+        for lesson in affected_lessons
+        if lesson.status == Lesson.Status.DRAFT
+    ]
     cancelled_ids = []
     for lesson in draft_lessons:
         lesson.status = Lesson.Status.CANCELLED
