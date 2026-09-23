@@ -97,6 +97,69 @@ def _active_coverage(
     ).first()
 
 
+def _cancel_unused_medical_makeups_for_present_correction(
+    *,
+    attendance: Attendance,
+    actor: User,
+    now: datetime,
+    correlation_id: UUID,
+) -> None:
+    verified_justification_ids = list(
+        AbsenceJustification.objects.select_for_update()
+        .filter(
+            student_id=attendance.student_id,
+            lesson_id=attendance.lesson_id,
+            type=AbsenceJustification.Type.MEDICAL,
+            status=AbsenceJustification.Status.VERIFIED,
+        )
+        .values_list("id", flat=True)
+    )
+    if not verified_justification_ids:
+        return
+
+    entitlements = list(
+        MakeupEntitlement.objects.select_for_update().filter(
+            source_justification_id__in=verified_justification_ids,
+            reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+            cancelled_at__isnull=True,
+        )
+    )
+    for entitlement in entitlements:
+        if AttendanceCoverage.objects.filter(
+            makeup_entitlement=entitlement,
+            reversed_at__isnull=True,
+        ).exists():
+            raise ValidationError(
+                {
+                    "attendance": (
+                        "Нельзя исправить отсутствие на присутствие: "
+                        "медицинская отработка уже использована. "
+                        "Сначала нужно перепривязать или отменить её покрытие."
+                    )
+                }
+            )
+
+    for entitlement in entitlements:
+        entitlement.cancelled_at = now
+        entitlement.cancelled_by = actor
+        entitlement.save(update_fields=["cancelled_at", "cancelled_by"])
+        AuditEvent.objects.create(
+            event_type="MakeupEntitlementCancelled",
+            actor=actor,
+            aggregate_type="MakeupEntitlement",
+            aggregate_id=entitlement.id,
+            correlation_id=correlation_id,
+            payload={
+                "source_justification_id": str(
+                    entitlement.source_justification_id
+                ),
+                "attendance_id": str(attendance.id),
+                "cancelled_at": now.isoformat(),
+                "reason": "attendance_corrected_to_present",
+            },
+        )
+
+
 @transaction.atomic
 def set_attendance(
     *,
@@ -111,7 +174,8 @@ def set_attendance(
         raise ValidationError({"status": "Unsupported attendance status."})
 
     lesson = (
-        Lesson.objects.select_related("coach__user")
+        Lesson.objects.select_for_update()
+        .select_related("coach__user")
         .get(pk=lesson_id)
     )
     _validate_lesson_for_attendance(
@@ -198,8 +262,6 @@ def set_attendance(
         return attendance
 
     if attendance.status == status:
-        attendance.updated_by = actor
-        attendance.save(update_fields=["updated_by", "updated_at"])
         return attendance
 
     previous_status = attendance.status
@@ -239,6 +301,13 @@ def set_attendance(
         previous_status == Attendance.Status.ABSENT
         and status == Attendance.Status.PRESENT
     ):
+        _cancel_unused_medical_makeups_for_present_correction(
+            attendance=attendance,
+            actor=actor,
+            now=now,
+            correlation_id=correlation_id,
+        )
+
         attendance.status = Attendance.Status.PRESENT
         attendance.updated_by = actor
         attendance.save(
@@ -839,6 +908,20 @@ def revoke_medical_absence(
             cancelled_at__isnull=True,
         )
     )
+    for entitlement in entitlements:
+        if AttendanceCoverage.objects.filter(
+            makeup_entitlement=entitlement,
+            reversed_at__isnull=True,
+        ).exists():
+            raise ValidationError(
+                {
+                    "justification": (
+                        "Medical make-up is already used by an active "
+                        "coverage; reverse or rebind it before revocation."
+                    )
+                }
+            )
+
     for entitlement in entitlements:
         entitlement.cancelled_at = revoked_at
         entitlement.cancelled_by = actor
