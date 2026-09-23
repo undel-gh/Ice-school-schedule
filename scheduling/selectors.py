@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from uuid import UUID
 
-from django.utils import timezone
+from django.conf import settings
+
+from core.time import make_school_aware
 
 from attendance.models import Attendance
 from subscriptions.models import AttendanceCoverage
@@ -40,10 +42,9 @@ def _date_range_bounds(
     start = datetime.combine(from_date, time.min)
     end = datetime.combine(until_date + timedelta(days=1), time.min)
 
-    if timezone.is_aware(timezone.now()):
-        current_tz = timezone.get_current_timezone()
-        start = timezone.make_aware(start, current_tz)
-        end = timezone.make_aware(end, current_tz)
+    if settings.USE_TZ:
+        start = make_school_aware(start)
+        end = make_school_aware(end)
 
     return start, end
 
