@@ -104,14 +104,38 @@ editing lifecycle/ledger rows directly in Django Admin.
 Production defaults are closed: `DJANGO_DEBUG` defaults to off and
 `DJANGO_SECRET_KEY` is mandatory outside debug mode.
 
-Before deployment run:
+Before deployment, generate a real secret rather than using an example value:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(64))"
+```
+
+Then run the deployment checks with production-like settings:
 
 ```bash
 DJANGO_DEBUG=0 \
-DJANGO_SECRET_KEY='<strong-secret>' \
+DJANGO_SECRET_KEY='<generated-random-secret>' \
 DJANGO_ALLOWED_HOSTS='school.example' \
+DJANGO_SECURE_SSL_REDIRECT=1 \
+DJANGO_SECURE_HSTS_SECONDS=3600 \
 python manage.py check --deploy
 ```
+
+A `security.W021` warning is expected during an initial staged HSTS rollout
+while `DJANGO_SECURE_HSTS_PRELOAD=0`. Do not enable preload merely to silence
+the check. HSTS applies to the domain and can make HTTPS certificate/configuration
+mistakes difficult to recover from.
+
+Only after the final production hostname and all affected subdomains are
+confirmed to be HTTPS-only should the deployment consider:
+
+```bash
+DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=1
+DJANGO_SECURE_HSTS_PRELOAD=1
+```
+
+The preload directive is a deployment policy decision, not a requirement for
+the application to function.
 
 Login attempts are rate-limited with `django-axes`; the default failure limit
 is controlled by `AXES_FAILURE_LIMIT` (5 by default).
