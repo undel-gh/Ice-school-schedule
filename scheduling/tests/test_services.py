@@ -1876,7 +1876,7 @@ def test_generate_lessons_reports_cross_type_overlap_conflict(
         is_active=True,
     )
     conflict_start = datetime(
-        2026, 10, 29, 16, 0, tzinfo=dt_timezone.utc
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
     )
     ice_lesson = Lesson.objects.create(
         group=group,
