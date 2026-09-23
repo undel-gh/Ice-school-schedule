@@ -11,6 +11,8 @@ from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
+from core.time import make_school_aware, school_date
+
 from accounts.models import StudentAccess
 from audit.models import AuditEvent
 from subscriptions.models import (
@@ -65,14 +67,8 @@ def _aware_datetime_for_school_date(
 ) -> datetime:
     naive = datetime.combine(school_date, local_time)
     if settings.USE_TZ:
-        return timezone.make_aware(naive, timezone.get_current_timezone())
+        return make_school_aware(naive)
     return naive
-
-
-def _lesson_date(lesson: Lesson):
-    if timezone.is_aware(lesson.starts_at):
-        return timezone.localtime(lesson.starts_at).date()
-    return lesson.starts_at.date()
 
 
 def _audit_lesson(
@@ -187,7 +183,7 @@ def publish_daily_schedule(
     for lesson in Lesson.objects.filter(status=Lesson.Status.DRAFT).only(
         "id", "starts_at"
     ):
-        if _lesson_date(lesson) == school_date:
+        if school_date(lesson.starts_at) == school_date:
             lesson_ids.append(lesson.id)
 
     published = []
@@ -299,7 +295,7 @@ def publish_lesson(
             {"lesson": "Only a DRAFT lesson can be published."}
         )
 
-    lesson_date = _lesson_date(lesson)
+    lesson_date = school_date(lesson.starts_at)
 
     memberships = (
         GroupMembership.objects.filter(
@@ -768,8 +764,8 @@ def reschedule_lesson(
         ]
     )
 
-    source_date = _lesson_date(source)
-    replacement_date = _lesson_date(replacement)
+    source_date = school_date(source.starts_at)
+    replacement_date = school_date(replacement.starts_at)
     category = source.lesson_type.subscription_category
 
     yes_student_ids = list(
