@@ -11,7 +11,7 @@ from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from core.time import make_school_aware, school_date
+from core.time import make_school_aware, school_date as get_school_date
 
 from accounts.models import StudentAccess
 from audit.models import AuditEvent
@@ -176,11 +176,11 @@ def generate_lessons(
 
 def publish_daily_schedule(
     *,
-    school_date_value: date,
+    school_date: date,
     now: datetime,
 ) -> list[Lesson]:
     start = make_school_aware(
-        datetime.combine(school_date_value, datetime.min.time())
+        datetime.combine(school_date, datetime.min.time())
     )
     end = start + timedelta(days=1)
     lesson_ids = list(
@@ -309,7 +309,7 @@ def publish_lesson(
             {"lesson": "Only a DRAFT lesson can be published."}
         )
 
-    lesson_date = school_date(lesson.starts_at)
+    lesson_date = get_school_date(lesson.starts_at)
 
     memberships = (
         GroupMembership.objects.filter(
@@ -797,8 +797,8 @@ def reschedule_lesson(
         ]
     )
 
-    source_date = school_date(source.starts_at)
-    replacement_date = school_date(replacement.starts_at)
+    source_date = get_school_date(source.starts_at)
+    replacement_date = get_school_date(replacement.starts_at)
     category = source.lesson_type.subscription_category
 
     yes_student_ids = list(
