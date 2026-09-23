@@ -24,9 +24,11 @@ from subscriptions.models import (
 from subscriptions.selectors import allowance_balance, subscription_balances
 from subscriptions.services import (
     adjust_allowance,
+    grant_administrative_makeup,
     assign_attendance_coverage,
     cancel_subscription,
     issue_subscription,
+    rebind_attendance_coverage,
     reverse_attendance_coverage,
 )
 
@@ -689,3 +691,233 @@ def test_concurrent_last_visit_is_consumed_at_most_once(
         allowance=allowance,
         entry_type=SubscriptionLedgerEntry.EntryType.CONSUME,
     ).count() == 1
+
+
+
+@pytest.mark.django_db
+def test_grant_administrative_makeup_does_not_change_balance(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="admin-makeup", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    entitlement = grant_administrative_makeup(
+        source_subscription_allowance_id=allowance.id,
+        source_lesson_id=source_lesson.id,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 15),
+        actor=actor,
+        reason="Goodwill extension",
+    )
+
+    assert entitlement.reason == MakeupEntitlement.Reason.ADMINISTRATIVE
+    assert entitlement.source_subscription_allowance_id == allowance.id
+    assert allowance_balance(allowance.id) == 2
+    assert SubscriptionLedgerEntry.objects.filter(
+        allowance=allowance,
+        entry_type=SubscriptionLedgerEntry.EntryType.GRANT,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_rebind_allowance_to_allowance_restores_old_and_consumes_new(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-two", ice=1)
+    first = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    second = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    first_allowance = first.allowances.get()
+    second_allowance = second.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert old_coverage.subscription_allowance_id == first_allowance.id
+
+    new_coverage = rebind_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        subscription_allowance_id=second_allowance.id,
+    )
+
+    old_coverage.refresh_from_db()
+    assert old_coverage.reversed_at is not None
+    assert new_coverage.subscription_allowance_id == second_allowance.id
+    assert allowance_balance(first_allowance.id) == 1
+    assert allowance_balance(second_allowance.id) == 0
+
+
+@pytest.mark.django_db
+def test_rebind_allowance_to_one_time_restores_allowance(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-one-time", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+
+    new_coverage = rebind_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        one_time_entitlement_id=entitlement.id,
+    )
+
+    assert new_coverage.one_time_entitlement_id == entitlement.id
+    assert new_coverage.subscription_allowance_id is None
+    assert allowance_balance(allowance.id) == 1
+    assert SubscriptionLedgerEntry.objects.filter(
+        coverage=new_coverage,
+    ).count() == 0
+
+
+@pytest.mark.django_db
+def test_rebind_one_time_to_allowance_consumes_target_allowance(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-from-one-time", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert old_coverage.one_time_entitlement_id == entitlement.id
+
+    new_coverage = rebind_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        subscription_allowance_id=allowance.id,
+    )
+
+    assert new_coverage.subscription_allowance_id == allowance.id
+    assert new_coverage.one_time_entitlement_id is None
+    assert allowance_balance(allowance.id) == 0
