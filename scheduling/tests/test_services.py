@@ -2067,3 +2067,143 @@ def test_generation_conflict_audit_is_idempotent_per_template_slot(
         payload__expected_starts_at=expected_starts_at,
     )
     assert events.count() == 1
+
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_allows_draft(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    cancelled = cancel_lesson(
+        lesson_id=lesson.id,
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(days=1),
+    )
+
+    assert cancelled.status == Lesson.Status.CANCELLED
+    assert cancelled.cancelled_at is not None
+    assert cancelled.cancellation_reason == (
+        Lesson.CancellationReason.ADMINISTRATIVE
+    )
+
+
+
+@pytest.mark.django_db
+def test_generation_conflict_dedup_key_includes_conflicting_lesson(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-conflict-new-lesson",
+        name="Hall conflict new lesson",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    first_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    first_conflict = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=first_start,
+        ends_at=first_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=first_start - timedelta(hours=2),
+        decision_deadline=first_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    first_conflict.status = Lesson.Status.CANCELLED
+    first_conflict.cancelled_at = first_start + timedelta(minutes=1)
+    first_conflict.cancelled_by = admin
+    first_conflict.cancellation_reason = (
+        Lesson.CancellationReason.ADMINISTRATIVE
+    )
+    first_conflict.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+            "cancellation_reason",
+            "updated_at",
+        ]
+    )
+
+    second_start = datetime(
+        2026, 10, 29, 17, 10, tzinfo=dt_timezone.utc
+    )
+    second_conflict = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=second_start,
+        ends_at=second_start + timedelta(minutes=50),
+        minimum_attendees=1,
+        rsvp_deadline=second_start - timedelta(hours=2),
+        decision_deadline=second_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    result = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert len(result.conflicts) == 1
+    assert result.conflicts[0].conflicting_lesson_id == second_conflict.id
+    assert (
+        AuditEvent.objects.filter(
+            event_type="LessonGenerationConflict",
+            aggregate_type="ScheduleTemplate",
+            aggregate_id=template.id,
+        ).count()
+        == 2
+    )
