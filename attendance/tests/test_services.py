@@ -24,6 +24,7 @@ from attendance.services import (
 from core.choices import SubscriptionCategory
 from scheduling.models import (
     Lesson,
+    LessonResponse,
     LessonRosterEntry,
     LessonType,
     TrainingGroup,
