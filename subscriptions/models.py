@@ -169,7 +169,8 @@ class MakeupEntitlement(UUIDModel):
             ),
             models.UniqueConstraint(
                 fields=["student", "source_lesson", "reason"],
-                name="makeup_student_lesson_uq",
+                condition=models.Q(cancelled_at__isnull=True),
+                name="makeup_active_student_lesson_uq",
             ),
             models.CheckConstraint(
                 condition=~models.Q(reason="medical")
