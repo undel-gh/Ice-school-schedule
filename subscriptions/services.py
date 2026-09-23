@@ -700,7 +700,7 @@ def _assert_entitlement_admin(actor: User) -> None:
 
 
 @transaction.atomic
-def grant_school_reschedule_makeups(
+def apply_school_reschedule_entitlements(
     *,
     source_lesson_id: UUID,
     replacement_lesson_id: UUID,
@@ -731,6 +731,45 @@ def grant_school_reschedule_makeups(
     source_date = school_date(source.starts_at)
     replacement_date = school_date(replacement.starts_at)
     category = source.lesson_type.subscription_category
+
+    one_time_ids = list(
+        OneTimeEntitlement.objects.filter(
+            lesson=source,
+            category=category,
+            cancelled_at__isnull=True,
+        )
+        .order_by("created_at", "id")
+        .values_list("id", flat=True)
+    )
+    for entitlement_id in one_time_ids:
+        entitlement = OneTimeEntitlement.objects.select_for_update().get(
+            pk=entitlement_id
+        )
+        if AttendanceCoverage.objects.filter(
+            one_time_entitlement=entitlement,
+            reversed_at__isnull=True,
+        ).exists():
+            continue
+        require_permission(
+            actor,
+            "subscriptions.change_onetimeentitlement",
+            "One-time entitlement transfer permission is required.",
+        )
+        entitlement.lesson = replacement
+        entitlement.save(update_fields=["lesson"])
+        record_event(
+            event_type="OneTimeEntitlementTransferred",
+            aggregate_type="OneTimeEntitlement",
+            aggregate_id=entitlement.id,
+            actor=actor,
+            payload={
+                "student_id": str(entitlement.student_id),
+                "source_lesson_id": str(source.id),
+                "replacement_lesson_id": str(replacement.id),
+                "category": entitlement.category,
+                "entitlement_type": entitlement.entitlement_type,
+            },
+        )
 
     yes_student_ids = list(
         source.responses.filter(
