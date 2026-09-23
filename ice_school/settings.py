@@ -115,6 +115,10 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+LOGIN_URL = "login"
+LOGIN_REDIRECT_URL = "scheduling:home"
+LOGOUT_REDIRECT_URL = "login"
+
 
 SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START = int(
     os.environ.get(
@@ -165,15 +169,12 @@ AUTHENTICATION_BACKENDS = [
 AXES_FAILURE_LIMIT = int(os.environ.get("AXES_FAILURE_LIMIT", "5"))
 AXES_COOLOFF_TIME = 1
 AXES_RESET_ON_SUCCESS = True
-AXES_LOCKOUT_PARAMETERS = ["username", "ip_address"]
-AXES_IPWARE_PROXY_COUNT = int(
-    os.environ.get("AXES_IPWARE_PROXY_COUNT", "1" if not DEBUG else "0")
-)
+AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"], "ip_address"]
+# Production reverse proxy must overwrite X-Real-IP with the direct client's
+# address. X-Forwarded-For is intentionally ignored because append-style
+# proxy configurations can preserve attacker-supplied values.
+AXES_IPWARE_PROXY_COUNT = 0
 AXES_IPWARE_META_PRECEDENCE_ORDER = (
-    "HTTP_X_FORWARDED_FOR",
+    "HTTP_X_REAL_IP",
     "REMOTE_ADDR",
-)
-AXES_IPWARE_PROXY_ORDER = os.environ.get(
-    "AXES_IPWARE_PROXY_ORDER",
-    "left-most",
 )
