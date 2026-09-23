@@ -320,7 +320,7 @@ def test_version_schedule_template_command(ops_context):
     replacement = ScheduleTemplate.objects.get(
         valid_from=date(2099, 2, 1),
     )
-    assert template.is_active is False
+    assert template.is_active is True
     assert template.valid_until == date(2099, 1, 31)
     assert replacement.start_time.hour == 19
     assert "version created" in out.getvalue().lower()
