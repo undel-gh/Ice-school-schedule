@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone as dt_timezone
 
 import pytest
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.utils import timezone
 
 from core.workflows import reschedule_lesson_with_entitlements
@@ -288,7 +288,7 @@ def test_set_lesson_response_requires_student_access(
         added_by=coach_user,
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(PermissionDenied):
         set_lesson_response(
             actor=guardian,
             student_id=student.id,
