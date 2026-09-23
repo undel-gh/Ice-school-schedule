@@ -855,720 +855,357 @@ ATTENDANCE_CHANGED_TO_PRESENT
 
 ---
 
-# 32. Абонементы
+# 32. Абонементы и категории посещений
 
-В системе существует две **категории** абонементов:
+В системе существуют две категории посещений, которые расходуют независимые лимиты:
 
 ```text
 ICE
 HALL
 ```
 
-### ICE
+`ICE` используется для занятий на льду. `HALL` используется для ОФП и хореографии.
 
-Покрывает занятия:
-
-```text
-Лёд
-```
-
-### HALL
-
-Покрывает:
-
-```text
-ОФП
-Хореография
-```
+Абонемент не обязан относиться только к одной категории. Смешанный тариф является **одним `Subscription`**, внутри которого существуют один или два независимых `SubscriptionAllowance`.
 
 ---
 
-# 33. SubscriptionPlan
+# 33. Текущая тарифная матрица
 
-`SubscriptionPlan` — тип продаваемого/выдаваемого абонемента.
+Текущие месячные планы:
+
+| План | ICE | HALL |
+|---|---:|---:|
+| 4 зала | 0 | 4 |
+| 8 льдов | 8 | 0 |
+| 8 льдов + 8 залов | 8 | 8 |
+| 8 льдов + 12 залов | 8 | 12 |
+| 12 льдов | 12 | 0 |
+| 12 льдов + 8 залов | 12 | 8 |
+| 12 льдов + 12 залов | 12 | 12 |
+| 12 льдов + 16 залов | 12 | 16 |
+| 16 льдов + 16 залов | 16 | 16 |
+| 20 льдов + 16 залов | 20 | 16 |
+| 20 льдов + 20 залов | 20 | 20 |
+| 20 льдов + 24 зала | 20 | 24 |
+| 24 льда + 24 зала | 24 | 24 |
+
+Все текущие планы действуют один месяц.
+
+---
+
+# 34. SubscriptionPlan
+
+`SubscriptionPlan` описывает продаваемый месячный пакет целиком:
 
 ```text
 SubscriptionPlan
-
 id
-
+code
 name
-
-category:
-    ICE
-    HALL
-
-visit_limit
-
-duration_months = 1
-
+validity_months = 1
 is_active
 ```
 
-Например:
+Категория и количество занятий находятся в дочерних `SubscriptionPlanAllowance`.
+
+---
+
+# 35. SubscriptionPlanAllowance
 
 ```text
-8 занятий на льду
-category = ICE
-visit_limit = 8
-duration_months = 1
+SubscriptionPlanAllowance
+id
+plan_id
+category: ICE | HALL
+visit_limit
 ```
 
-или:
+Инварианты:
 
 ```text
-8 занятий в зале
-category = HALL
-visit_limit = 8
-duration_months = 1
+UNIQUE(plan_id, category)
+visit_limit > 0
 ```
 
 ---
 
-# 34. Почему количество занятий относится к Plan
+# 36. Subscription
 
-Даже если сейчас стандарт:
-
-```text
-8 занятий
-```
-
-лучше не зашивать цифру `8` в код.
-
-Например позднее могут появиться:
-
-```text
-4 занятия
-8 занятий
-12 занятий
-```
-
-при той же категории:
-
-```text
-ICE
-```
-
----
-
-# 35. Subscription
-
-Конкретный абонемент конкретного ученика.
+`Subscription` — конкретно выданный ученику экземпляр плана:
 
 ```text
 Subscription
-
 id: UUID
-
 student_id
 plan_id
-
-category_snapshot
-visit_limit_snapshot
-
+plan_code_snapshot
+plan_name_snapshot
 valid_from
 valid_until
-
 cancelled_at nullable
-
 created_at
 created_by
 ```
 
+Один `Subscription` соответствует одному выданному тарифу, даже если тариф смешанный.
+
 ---
 
-# 36. Snapshot параметров тарифа
+# 37. SubscriptionAllowance
 
-В Subscription сохраняются:
+При выдаче `Subscription` allowances плана копируются в snapshot:
 
 ```text
-category_snapshot
+SubscriptionAllowance
+id
+subscription_id
+category: ICE | HALL
 visit_limit_snapshot
 ```
 
-чтобы изменение `SubscriptionPlan` в будущем не изменяло уже выданные абонементы.
-
-Например:
+Инварианты:
 
 ```text
-раньше:
-8 занятий
-
-позже тариф изменили:
-10 занятий
+UNIQUE(subscription_id, category)
+visit_limit_snapshot > 0
 ```
 
-старый абонемент должен остаться:
-
-```text
-8 занятий
-```
+Изменение `SubscriptionPlan` не изменяет ранее выданные allowances.
 
 ---
 
-# 37. Срок действия
+# 38. Срок действия
 
-Все текущие абонементы имеют продолжительность:
-
-```text
-1 месяц
-```
-
-При этом в `Subscription` всё равно сохраняются конкретные:
-
-```text
-valid_from
-valid_until
-```
-
-Эти даты являются источником истины.
-
-Это позволит избежать пересчёта старых абонементов при изменении правил в будущем.
+Все текущие абонементы имеют продолжительность один месяц. Конкретный `Subscription` хранит явные `valid_from` и `valid_until`; именно они являются источником истины.
 
 ---
 
-# 38. Определение месяца
-
-Для domain model важно не вычислять срок действия «на лету».
-
-При создании Subscription система вычисляет период согласно правилу школы и сохраняет результат:
+# 39. Смешанный абонемент
 
 ```text
-valid_from
-valid_until
-```
-
-После создания эти даты не зависят от `SubscriptionPlan`.
-
-Таким образом дальнейшее уточнение:
-
-- календарный месяц;
-- месяц с момента покупки;
-- месяц с первого занятия
-
-не потребует менять структуру базы.
-
-Для MVP бизнес-правило должно быть одно для всей школы.
-
----
-
-# 39. Одновременно два типа абонемента
-
-У Student могут одновременно существовать:
-
-```text
-ICE subscription
-
-и
-
-HALL subscription
-```
-
-Например:
-
-```text
-Маша
-
-Лёд:
-5 из 8 осталось
-
-Зал:
-3 из 8 осталось
-```
-
----
-
-# 40. Последовательные абонементы
-
-У одного Student также может быть несколько абонементов одной категории.
-
-Например:
-
-```text
-ICE
+Subscription «8 ICE + 12 HALL»
 01.09–30.09
 
-ICE
-01.10–31.10
+├── ICE allowance  = 8
+└── HALL allowance = 12
 ```
 
-Допускается и техническое пересечение периодов.
+Лимиты расходуются независимо.
 
-Поэтому алгоритм выбора абонемента должен быть детерминированным.
+---
+
+# 40. Несколько абонементов
+
+У Student могут одновременно существовать несколько `Subscription`, включая пересекающиеся по датам планы. Выбор конкретного allowance должен быть детерминированным.
 
 ---
 
 # 41. SubscriptionLedgerEntry
 
-Количество оставшихся занятий не должно быть вручную изменяемым числом.
-
-Используется immutable ledger.
+Ledger относится к конкретному allowance:
 
 ```text
 SubscriptionLedgerEntry
-
 id
-
-subscription_id
-
-type:
-    GRANT
-    CONSUME
-    RESTORE
-    ADJUSTMENT
-
+allowance_id
+entry_type: GRANT | CONSUME | RESTORE | ADJUSTMENT
 delta
-
+attendance_coverage_id nullable
+reason nullable
 created_at
 created_by_user_id
-
-reason nullable
 ```
 
-Пример:
+Авторитетный баланс категории:
 
 ```text
-+8 GRANT
--1 CONSUME
--1 CONSUME
-+1 RESTORE
-```
-
-Баланс:
-
-```text
-7
+SUM(delta) WHERE allowance_id = ...
 ```
 
 ---
 
 # 42. Начальная выдача
 
-При создании:
+При выдаче смешанного тарифа создаётся отдельный `GRANT` для каждого allowance:
 
 ```text
-Subscription
+ICE allowance:  GRANT +8
+HALL allowance: GRANT +12
 ```
 
-автоматически создаётся:
-
-```text
-LedgerEntry
-
-GRANT
-+8
-```
+Общего числового баланса `Subscription` нет.
 
 ---
 
-# 43. SubscriptionUsage
+# 43. OneTimeEntitlement
 
-Необходимо явно хранить связь:
-
-> какое фактическое посещение было оплачено каким абонементом.
-
-Для этого вводится:
+Разовые, пробные, индивидуальные и мини-групповые посещения не моделируются как абонементы на одно занятие:
 
 ```text
-SubscriptionUsage
-
+OneTimeEntitlement
 id
-
-attendance_id
-subscription_id
-
-consume_ledger_entry_id
-
+student_id
+lesson_id
+entitlement_type:
+    SINGLE_ICE
+    SINGLE_HALL
+    INDIVIDUAL_ICE
+    MINI_GROUP_ICE
+    TRIAL_ICE
+category: ICE | HALL
+cancelled_at nullable
 created_at
+created_by
+```
 
+`TRIAL_HALL` отсутствует.
+
+---
+
+# 44. AttendanceCoverage
+
+`AttendanceCoverage` хранит, каким правом покрыто конкретное `Attendance=PRESENT`:
+
+```text
+AttendanceCoverage
+id
+attendance_id
+subscription_allowance_id nullable
+one_time_entitlement_id nullable
+makeup_entitlement_id nullable
+created_at
+created_by
 reversed_at nullable
-restore_ledger_entry_id nullable
+reversed_by nullable
 ```
+
+Ровно один основной источник покрытия:
+
+```text
+subscription_allowance XOR one_time_entitlement
+```
+
+`makeup_entitlement` только разрешает исключительное использование исходного allowance.
 
 ---
 
-# 44. Зачем нужен SubscriptionUsage
+# 45. Зачем нужен AttendanceCoverage
 
-Без него имеется только:
-
-```text
-Subscription -1
-```
-
-но сложно ответить:
-
-> за какое именно занятие было сделано списание?
-
-С `SubscriptionUsage` имеется:
-
-```text
-Attendance
-14 сентября
-Лёд
-Маша
-
-       │
-       ▼
-
-SubscriptionUsage
-
-       │
-       ▼
-
-ICE Subscription #123
-```
+Он позволяет корректно выполнить возврат, отличить месячный абонемент от отдельно оплаченного занятия и сохранить аудит медицинских/административных переносов. Для одного Attendance может существовать не более одного активного coverage.
 
 ---
 
-# 45. Ограничение одного списания
+# 46. Выбор покрытия
 
-Для одного Attendance может существовать только одно активное использование абонемента.
-
-То есть:
+При `Attendance=PRESENT` порядок такой:
 
 ```text
-Attendance #A
+1. OneTimeEntitlement, привязанный к Lesson
+2. target-specific MakeupEntitlement
+3. другой действующий MakeupEntitlement с ближайшим окончанием
+4. обычный SubscriptionAllowance с ближайшим окончанием родительского Subscription
+5. UNCOVERED
 ```
 
-не может одновременно списать:
-
-```text
-Subscription #1
-и
-Subscription #2
-```
-
----
-
-# 46. Списание
-
-Списание происходит только когда:
-
-```text
-Attendance.status = PRESENT
-```
-
-Алгоритм:
-
-```text
-Trainer marks PRESENT
-        ↓
-Determine Lesson subscription category
-        ↓
-Find eligible Subscription
-        ↓
-Create SubscriptionUsage
-        ↓
-Create LedgerEntry CONSUME -1
-```
+Так отдельно оплаченное разовое/индивидуальное/пробное занятие не расходует месячный allowance.
 
 ---
 
 # 47. Категория определяется занятием
 
-Например:
-
-```text
-LessonType = ICE
-
-subscription_category = ICE
-```
-
-значит можно использовать только:
-
-```text
-Subscription.category = ICE
-```
-
-Для:
-
-```text
-PHYSICAL
-CHOREOGRAPHY
-```
-
-ищется:
-
-```text
-HALL
-```
+Категория берётся из `Lesson.lesson_type.subscription_category`. `ICE` расходует только ICE allowance/entitlement; `PHYSICAL` и `CHOREOGRAPHY` — только HALL.
 
 ---
 
 # 48. Проверка срока
 
-Абонемент должен быть действующим **на дату занятия**, а не на момент, когда тренер поставил отметку.
-
-Например:
-
-```text
-Lesson:
-30 сентября
-
-Subscription:
-до 30 сентября
-
-Тренер отметил:
-1 октября
-```
-
-абонемент подходит.
+Для обычного `SubscriptionAllowance` срок проверяется по `Subscription.valid_from/valid_until` относительно даты Lesson. `MakeupEntitlement` может разрешить использование конкретного исходного allowance за пределами обычного срока.
 
 ---
 
 # 49. Выбор из нескольких абонементов
 
-Если существует несколько подходящих абонементов, используется порядок:
+Для нескольких обычных allowances одной категории порядок родительских `Subscription`:
 
-1. абонемент с ближайшим окончанием срока;
-2. затем с наиболее ранней датой начала;
-3. затем наиболее ранний созданный.
-
-То есть система расходует первым тот абонемент, который раньше закончится.
+1. ближайший `valid_until`;
+2. затем наиболее ранний `valid_from`;
+3. затем наиболее ранний `created_at`.
 
 ---
 
 # 50. Остаток
 
-Авторитетный остаток:
+Остаток существует по каждому allowance отдельно:
 
 ```text
-SUM(SubscriptionLedgerEntry.delta)
+allowance_balance = SUM(SubscriptionLedgerEntry.delta)
 ```
 
-Например:
-
-```text
-+8
--1
--1
--1
-=
-5
-```
-
-Поле:
-
-```text
-remaining_visits
-```
-
-не является источником истины.
+Полей `remaining_visits` и общего `subscription_balance` как источников истины нет.
 
 ---
 
-# 51. Исчерпанный абонемент
+# 51. Исчерпанный allowance
 
-Если:
-
-```text
-balance = 0
-```
-
-абонемент больше нельзя использовать.
-
-Однако сама запись Subscription сохраняется в истории.
+Если баланс одного allowance равен нулю, только эта категория считается исчерпанной. Другой allowance того же смешанного `Subscription` может оставаться доступным.
 
 ---
 
-# 52. Истёкший абонемент
+# 52. Истёкший Subscription
 
-Если срок действия закончился, неиспользованные занятия не удаляются из исторического баланса.
-
-Например:
-
-```text
-выдано 8
-использовано 6
-остаток 2
-```
-
-История должна показывать:
-
-```text
-использовано 6 из 8
-```
-
-даже после окончания действия.
-
-Просто эти два оставшихся посещения больше нельзя использовать.
+После `valid_until` обычное использование allowances прекращается. Остатки сохраняются исторически и не обнуляются фиктивной операцией `BURNED`.
 
 ---
 
-# 53. Посещение без абонемента
+# 53. Посещение без покрытия
 
-Отсутствие подходящего абонемента никогда не мешает тренеру отметить:
-
-```text
-PRESENT
-```
-
-Поскольку Attendance описывает реальность.
-
-Сценарий:
+Отсутствие подходящего allowance или one-time entitlement не мешает сохранить `Attendance=PRESENT`.
 
 ```text
-Маша действительно пришла
-        ↓
-Trainer → PRESENT
-        ↓
-подходящего Subscription нет
-        ↓
-Attendance сохраняется
-        ↓
-SubscriptionUsage не создаётся
-```
-
-Такое посещение считается:
-
-```text
-UNCOVERED
+UNCOVERED = Attendance=PRESENT AND active AttendanceCoverage отсутствует
 ```
 
 ---
 
-# 54. Uncovered Attendance
+# 54. Исправление PRESENT → ABSENT
 
-Это не отдельный статус Attendance.
-
-Он вычисляется:
-
-```text
-Attendance = PRESENT
-AND
-active SubscriptionUsage отсутствует
-```
-
-Такой список показывается администратору.
+Для allowance-backed coverage создаётся `RESTORE +1` в тот же allowance. Для one-time coverage ledger не меняется: entitlement снова становится доступным после reversal. Использованный `MakeupEntitlement` также освобождается.
 
 ---
 
-# 55. Исправление PRESENT → ABSENT
+# 55. Исправление ABSENT → PRESENT
 
-Было:
-
-```text
-Attendance = PRESENT
-
-SubscriptionUsage
-Subscription #123
-
-CONSUME -1
-```
-
-Тренер исправляет:
-
-```text
-Attendance = ABSENT
-```
-
-Система создаёт:
-
-```text
-RESTORE +1
-```
-
-в тот же Subscription.
-
-`SubscriptionUsage` помечается как reversed.
-
-Исходный `CONSUME -1` не удаляется.
+Система повторно выполняет `assign_attendance_coverage()`.
 
 ---
 
-# 56. Исправление ABSENT → PRESENT
+# 56. Переназначение покрытия
 
-При изменении:
+Перепривязка allowance-backed coverage выполняется компенсирующе:
 
 ```text
-ABSENT
-    ↓
-PRESENT
+старый allowance: RESTORE +1
+старый AttendanceCoverage: reversed
+новый AttendanceCoverage: created
+новый allowance: CONSUME -1
 ```
-
-система снова выполняет обычный алгоритм подбора действующего абонемента.
-
-Важно:
-
-подбор производится относительно даты Lesson.
 
 ---
 
-# 57. Переназначение списания
+# 57. MakeupEntitlement и allowance
 
-Администратору в будущем можно позволить операцию:
-
-```text
-Перенести посещение
-с Subscription A
-на Subscription B
-```
-
-Она должна выглядеть как:
-
-```text
-Subscription A:
-RESTORE +1
-
-Subscription B:
-CONSUME -1
-```
-
-Исходные операции не удаляются.
-
-Для MVP специальный UI для этого необязателен.
+`MakeupEntitlement` ссылается на `source_subscription_allowance_id`, а не на `Subscription` целиком. Медицинский перенос ICE не может использовать HALL-остаток и наоборот.
 
 ---
 
 # 58. Derived status Subscription
 
-Необязательно постоянно хранить:
-
-```text
-ACTIVE
-EXPIRED
-EXHAUSTED
-```
-
-Эти состояния можно вычислять.
-
-### UPCOMING
-
-```text
-lesson_date < valid_from
-```
-
-### ACTIVE
-
-```text
-date в периоде
-AND balance > 0
-AND not cancelled
-```
-
-### EXHAUSTED
-
-```text
-balance <= 0
-```
-
-### EXPIRED
-
-```text
-date > valid_until
-```
-
-### CANCELLED
-
-```text
-cancelled_at IS NOT NULL
-```
+Статус `Subscription` вычисляется из дат и cancellation. `EXHAUSTED` для смешанного плана означает, что все его allowances исчерпаны. Для UI статус каждого allowance вычисляется отдельно.
 
 ---
 
 # 59. Центральные Aggregate Roots
-
-Domain можно логически разделить на следующие aggregates.
 
 ## Student Aggregate
 
@@ -1590,152 +1227,75 @@ Lesson
 
 ```text
 Subscription
- ├── SubscriptionLedgerEntry
- └── SubscriptionUsage
+ └── SubscriptionAllowance
+      └── SubscriptionLedgerEntry
 ```
+
+`AttendanceCoverage` связывает Attendance с конкретным entitlement и является отдельной связующей сущностью.
 
 ---
 
 # 60. Взаимодействие aggregates
 
-Основная цепочка:
-
 ```text
-Student
-   │
-   │ membership
-   ▼
-TrainingGroup
-   │
-   ▼
-Lesson
-   │
-   ├──── RSVP
-   │
-   ▼
-Attendance
-   │
-   │ PRESENT
-   ▼
-SubscriptionUsage
-   │
-   ▼
-Subscription
-   │
-   ▼
-Ledger
+Student → TrainingGroup → Lesson → Attendance
+                              │
+                              ▼
+                    AttendanceCoverage
+                      /             \\
+     SubscriptionAllowance      OneTimeEntitlement
+              │
+              ▼
+            Ledger
 ```
+
+`MakeupEntitlement` при необходимости модифицирует использование конкретного `SubscriptionAllowance`.
 
 ---
 
 # 61. Полная схема отношений
 
 ```text
-                       UserAccount
-                       /    |    \
-                      /     |     \
-                     ▼      ▼      ▼
-           ExternalIdentity │   CoachProfile
-                            │
-                            ▼
-                      StudentAccess
-                            │
-                            ▼
-                          Student
-                         /       \
-                        /         \
-                       ▼           ▼
-              GroupMembership   Subscription
-                       │         /       \
-                       ▼        ▼         ▼
-                TrainingGroup Ledger    Usage
-                       │                  ▲
-                       ▼                  │
-                     Lesson ───────► Attendance
-                    /      \
-                   ▼        ▼
-                RSVP      LessonType
+UserAccount → StudentAccess → Student
                               │
-                              ▼
-                   SubscriptionCategory
-                       ICE / HALL
+                ┌─────────────┴──────────────┐
+                ▼                            ▼
+        GroupMembership                 Subscription
+                │                            │
+                ▼                            ▼
+        TrainingGroup              SubscriptionAllowance
+                │                            │
+                ▼                            ▼
+             Lesson ──► Attendance ──► AttendanceCoverage
+                │                            │
+                ▼                 ┌──────────┴───────────┐
+           LessonType             ▼                      ▼
+                │        SubscriptionAllowance   OneTimeEntitlement
+                ▼
+      SubscriptionCategory
+           ICE / HALL
 ```
 
 ---
 
 # 62. Ключевые domain invariants
 
-## INV-01
-
-`UserAccount` и `Student` являются разными сущностями.
-
-## INV-02
-
-Один Student может иметь несколько `StudentAccess`.
-
-## INV-03
-
-SELF и GUARDIAN могут менять RSVP, но никогда Attendance.
-
-## INV-04
-
-Attendance может изменять только авторизованный тренер или администратор.
-
-## INV-05
-
-Attendance является источником истины о фактическом посещении.
-
-## INV-06
-
-RSVP не влияет непосредственно на баланс абонемента.
-
-## INV-07
-
-Только `Attendance=PRESENT` может породить `SubscriptionUsage`.
-
-## INV-08
-
-Одно фактическое посещение не может одновременно расходовать два абонемента.
-
-## INV-09
-
-ICE Lesson может расходовать только ICE Subscription.
-
-## INV-10
-
-PHYSICAL и CHOREOGRAPHY расходуют HALL Subscription.
-
-## INV-11
-
-Абонемент должен быть действующим на дату занятия.
-
-## INV-12
-
-Абонемент с нулевым балансом нельзя использовать.
-
-## INV-13
-
-Отсутствие абонемента не препятствует сохранению Attendance.
-
-## INV-14
-
-Изменение PRESENT → ABSENT возвращает ранее списанное занятие.
-
-## INV-15
-
-Ledger entries после создания не редактируются и не удаляются.
-
-## INV-16
-
-Корректировки выполняются компенсирующими операциями.
-
-## INV-17
-
-Изменение SubscriptionPlan не изменяет ранее созданные Subscription.
-
-## INV-18
-
-Изменение ScheduleTemplate не изменяет историю уже проведённых Lesson.
+1. `UserAccount` и `Student` — разные сущности.
+2. SELF/GUARDIAN могут менять RSVP, но не Attendance.
+3. Attendance тренера/администратора — источник истины о фактическом посещении.
+4. RSVP не расходует entitlement.
+5. Только `Attendance=PRESENT` может создать активный `AttendanceCoverage`.
+6. На один Attendance допускается не более одного активного coverage.
+7. Смешанный Subscription содержит независимые ICE/HALL allowances.
+8. Категория Lesson обязана совпадать с категорией выбранного allowance/one-time entitlement.
+9. Обычный allowance должен быть действующим на дату Lesson и иметь положительный баланс.
+10. `OneTimeEntitlement` имеет приоритет над месячным allowance для привязанного Lesson.
+11. `MakeupEntitlement` не увеличивает купленное количество, а только расширяет допустимое использование исходного allowance.
+12. Отсутствие покрытия не препятствует `Attendance=PRESENT`.
+13. `PRESENT → ABSENT` обращает именно использованное покрытие.
+14. Ledger entries immutable; исправления компенсирующие.
+15. Изменение plan не меняет snapshot уже выданного Subscription.
+16. Изменение ScheduleTemplate не меняет историю уже проведённых Lesson.
 
 ---
 
@@ -1812,167 +1372,80 @@ Student «Маша»
 
 # 66. Пример списания льда
 
-У Маши:
+У Маши план `8 ICE + 12 HALL`; в ICE allowance осталось 5.
 
 ```text
-ICE Subscription
-01.09–30.09
-8 занятий
-
-остаток = 5
-```
-
-Занятие:
-
-```text
-22 сентября
-ICE
-```
-
-Тренер ставит:
-
-```text
-PRESENT
-```
-
-Система создаёт:
-
-```text
-Attendance
-        │
-        ▼
-SubscriptionUsage
-        │
-        ▼
-ICE Subscription
-        │
-        ▼
+22 сентября / ICE
+Trainer → PRESENT
+        ↓
+AttendanceCoverage
+        ↓
+SubscriptionAllowance(ICE)
+        ↓
 CONSUME -1
 ```
 
-Новый баланс:
-
-```text
-4
-```
+Новый ICE-баланс — 4. HALL-баланс не меняется.
 
 ---
 
 # 67. Пример занятия в зале
 
-Занятие:
+`CHOREOGRAPHY` и `PHYSICAL` имеют `subscription_category=HALL` и расходуют HALL allowance. ICE allowance смешанного тарифа остаётся неизменным.
 
-```text
-CHOREOGRAPHY
-```
-
-имеет:
-
-```text
-subscription_category = HALL
-```
-
-Поэтому расходуется:
-
-```text
-HALL Subscription
-```
-
-Точно такой же абонемент используется для:
-
-```text
-PHYSICAL
-```
+Если на конкретный Lesson заранее создан `OneTimeEntitlement(SINGLE_HALL)`, используется он, а месячный HALL allowance не расходуется.
 
 ---
 
 # 68. Что не должно находиться в domain model MVP
 
-На этом этапе я бы не добавлял:
+В MVP не требуется полноценный billing: `Payment`, `Invoice`, банковские данные и `Refund` остаются будущим bounded context. При этом доменная модель уже поддерживает тарифные entitlements, необходимые для разовых, пробных, индивидуальных и мини-групповых занятий.
 
-- Payment;
-- Invoice;
-- банковские данные;
-- бонусные счета;
-- заморозку;
-- перенос занятий;
-- no-show штрафы;
-- автоматическое продление;
-- семейный баланс;
-- отдельные медицинские сведения;
-- фотографии учеников;
-- точные даты рождения.
-
-Это можно добавить позже, не ломая описанную модель.
+`SKATE_RENTAL` является add-on услугой и не создаёт entitlement на посещение.
 
 ---
 
 # 69. Рекомендуемый набор Django models
 
-Первая реализация должна содержать примерно следующие модели:
-
 ```text
 User
-
 ExternalIdentity
-
 Student
 StudentAccess
-
 CoachProfile
-
 TrainingGroup
 GroupMembership
-
 Venue
-
 LessonType
 ScheduleTemplate
 Lesson
-
 LessonResponse
 Attendance
-
 SubscriptionPlan
+SubscriptionPlanAllowance
 Subscription
-SubscriptionUsage
+SubscriptionAllowance
+OneTimeEntitlement
+MakeupEntitlement
+AttendanceCoverage
 SubscriptionLedgerEntry
-
 AuditEvent
 ```
-
-Всего около 16 основных моделей.
-
-Это всё ещё небольшой domain.
 
 ---
 
 # 70. Главный принцип модели
 
-Система должна уметь независимо отвечать на четыре вопроса:
-
-### Кто может управлять расписанием ученика?
+Система независимо отвечает на вопросы:
 
 ```text
-StudentAccess
+Кто управляет расписанием?          StudentAccess
+Кто планирует прийти?               LessonResponse
+Кто фактически пришёл?              Attendance
+Каким правом покрыто посещение?      AttendanceCoverage
+Каков остаток ICE/HALL?              SubscriptionAllowance + Ledger
+Есть ли разовое право?               OneTimeEntitlement
+Есть ли исключительное продление?   MakeupEntitlement
 ```
 
-### Собирается ли ученик прийти?
-
-```text
-LessonResponse
-```
-
-### Был ли ученик фактически на занятии?
-
-```text
-Attendance
-```
-
-### За счёт какого абонемента было оплачено это посещение?
-
-```text
-SubscriptionUsage
-```
-
-Именно такое разделение позволяет одинаково корректно работать со взрослыми, маленькими детьми и подростками, не смешивая авторизацию, планирование, фактическое посещение и учёт абонементов.
+Разделение авторизации, планирования, факта посещения, entitlement и денег сохраняется при дальнейшем развитии системы.

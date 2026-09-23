@@ -471,38 +471,18 @@ OTHER
 
 # 17. Перенос по инициативе школы и абонемент
 
-Если ученик собирался прийти:
+Если школа переносит занятие и replacement выходит за `valid_until` исходного `Subscription`, ученик не должен терять возможность использовать уже купленный остаток только из-за решения школы.
 
-```text
-RSVP = YES
-```
-
-но школа переносит занятие из-за низкой посещаемости, это не должно приводить к потере возможности использовать занятие только потому, что замена попала за границы месячного абонемента.
-
-Например:
-
-```text
-30 сентября
-Лёд
-
-Маша: YES
-
-Школа переносит на:
-2 октября
-
-ICE subscription:
-до 30 сентября
-```
-
-Для Маши система может создать специальное:
+Для участника с `RSVP=YES` определяется allowance той же категории, который мог покрыть исходный Lesson. При необходимости создаётся:
 
 ```text
 MakeupEntitlement
 reason = SCHOOL_RESCHEDULE
-target_lesson = 2 октября
+source_subscription_allowance = исходный allowance
+target_lesson = replacement Lesson
 ```
 
-Оно разрешит использовать остаток сентябрьского абонемента именно на занятии 2 октября.
+Entitlement не добавляет `GRANT +1`: он разрешает использовать существующий положительный остаток исходного allowance на replacement Lesson.
 
 ---
 
@@ -853,298 +833,79 @@ NO_SHOW
 
 # 32. Subscription state machine
 
-Основной жизненный цикл:
+Lifecycle существует у `Subscription`, но расходуемое состояние отслеживается по каждому `SubscriptionAllowance` отдельно.
 
 ```text
-                      UPCOMING
-                         │
-                         │ valid_from
-                         ▼
-                       ACTIVE
-                      /      \
-                     /        \
-          balance = 0          valid_until passed
-                   ▼               ▼
-              EXHAUSTED          EXPIRED
+Subscription:
+UPCOMING → ACTIVE → EXPIRED
+                 └→ CANCELLED
 
-                       ACTIVE
-                         │
-                         │ cancel
-                         ▼
-                     CANCELLED
+Allowance while parent ACTIVE:
+AVAILABLE ⇄ EXHAUSTED
 ```
+
+Смешанный Subscription может одновременно иметь `ICE=EXHAUSTED` и `HALL=AVAILABLE`.
 
 ---
 
 # 33. Какие состояния реально хранить
 
-Я бы не сохранял постоянно:
-
-```text
-UPCOMING
-ACTIVE
-EXHAUSTED
-EXPIRED
-```
-
-в поле БД.
-
-Они вычисляются из:
-
-```text
-valid_from
-valid_until
-balance
-cancelled_at
-```
-
-Постоянно хранится только явное административное состояние вроде:
-
-```text
-cancelled_at
-```
+`UPCOMING`, `ACTIVE`, `EXPIRED` и `EXHAUSTED` вычисляются из `valid_from`, `valid_until`, cancellation и ledger. Хранится только явная административная отмена.
 
 ---
 
 # 34. ACTIVE
 
-Обычный абонемент можно использовать, если:
-
-```text
-lesson.date >= valid_from
-
-AND
-
-lesson.date <= valid_until
-
-AND
-
-balance > 0
-
-AND
-
-cancelled_at IS NULL
-```
-
-и категория совпадает.
+Обычный allowance доступен, если родительский Subscription действует на дату Lesson, не отменён, category совпадает и `allowance_balance > 0`.
 
 ---
 
 # 35. Списание
 
-Например:
+`AttendanceMarkedPresent` запускает общий coverage engine. Для monthly coverage создаются:
 
 ```text
-AttendanceMarkedPresent
+AttendanceCoverage(subscription_allowance=...)
+SubscriptionLedgerEntry(CONSUME, -1)
 ```
 
-для занятия:
-
-```text
-ICE
-```
-
-Система ищет:
-
-```text
-ICE Subscription
-```
-
-и создаёт:
-
-```text
-SubscriptionUsage
-
-+
-
-Ledger:
-CONSUME -1
-```
-
-Событие:
-
-```text
-SubscriptionVisitConsumed
-```
+Если к Lesson привязан `OneTimeEntitlement`, он имеет приоритет и monthly ledger не меняется.
 
 ---
 
 # 36. EXHAUSTED
 
-После операции:
-
-```text
-balance: 1 → 0
-```
-
-генерируется:
-
-```text
-SubscriptionExhausted
-```
-
-Новых обычных посещений по этому абонементу быть не может.
+Событие `SubscriptionAllowanceExhausted` возникает, когда баланс конкретного allowance достигает нуля. `SubscriptionExhausted` может быть derived event только когда исчерпаны все allowances.
 
 ---
 
 # 37. Возврат посещения
 
-Если Attendance исправлен:
-
-```text
-PRESENT → ABSENT
-```
-
-создаётся:
-
-```text
-RESTORE +1
-```
-
-и событие:
-
-```text
-SubscriptionVisitRestored
-```
-
-Если абонемент ещё действует:
-
-```text
-EXHAUSTED → ACTIVE
-```
-
-происходит автоматически как вычисляемое состояние.
+При `PRESENT → ABSENT` coverage обращается. Для allowance-backed coverage создаётся `RESTORE +1` в тот же allowance; one-time entitlement просто освобождается.
 
 ---
 
 # 38. EXPIRED
 
-После:
-
-```text
-valid_until
-```
-
-обычное использование прекращается.
-
-Например:
-
-```text
-8 занятий
-
-использовано:
-6
-
-остаток:
-2
-```
-
-Абонемент становится:
-
-```text
-EXPIRED
-```
-
-но ledger остаётся:
-
-```text
-+8
--6
-
-balance = 2
-```
-
-Не нужно создавать:
-
-```text
--2 BURNED
-```
+После `valid_until` обычное использование allowances прекращается. Исторические положительные остатки сохраняются в ledger.
 
 ---
 
 # 39. Почему не нужно списывать «сгоревший» остаток
 
-Фактически человек:
-
-```text
-купил 8
-посетил 6
-```
-
-Это и должна показывать история.
-
-Состояние:
-
-```text
-EXPIRED
-balance = 2
-```
-
-намного информативнее фиктивного:
-
-```text
-balance = 0
-```
+Ledger должен показывать фактическую историю: сколько было выдано и сколько реально использовано по ICE и HALL отдельно. Фиктивный `BURNED` не создаётся.
 
 ---
 
 # 40. Событие истечения с остатком
 
-Если абонемент истёк при:
-
-```text
-balance > 0
-```
-
-генерируется:
-
-```text
-SubscriptionExpiredWithUnusedBalance
-```
-
-например:
-
-```text
-subscription_id
-student_id
-remaining_visits = 2
-```
-
-Это очень полезное событие для школы.
-
-Можно сделать отдельный отчёт:
-
-> Абонементы, завершившиеся с неиспользованными занятиями.
-
-Именно здесь вероятнее всего возникают клиентские конфликты.
+При истечении подписки вычисляются остатки по каждому allowance. Событие `SubscriptionExpiredWithUnusedBalance` содержит категориальные остатки, например `{ICE: 2, HALL: 0}`.
 
 ---
 
 # 41. Денежный возврат не должен быть состоянием Subscription
 
-Не рекомендую добавлять:
-
-```text
-REFUNDED
-```
-
-в текущий автомат.
-
-Возврат денег является отдельной финансовой операцией.
-
-Когда появится Payment module:
-
-```text
-Subscription
-      │
-      ▼
-Payment
-      │
-      ▼
-Refund
-```
-
-Поэтому спор с клиентом не должен приводить к переписыванию истории посещений или ledger.
+Возврат денег относится к будущему billing context (`Payment`/`Refund`) и не переписывает Attendance, Coverage или Ledger. Исключительное продление права посещения оформляется `MakeupEntitlement`, а не изменением исторических операций.
 
 ---
 
@@ -1503,18 +1264,7 @@ defined retention period
 
 # 55. MakeupEntitlement
 
-После:
-
-```text
-AbsenceJustification
-PENDING → VERIFIED
-```
-
-система создаёт:
-
-```text
-MakeupEntitlement
-```
+`MakeupEntitlement` разрешает исключительное использование существующего `SubscriptionAllowance`.
 
 ---
 
@@ -1522,323 +1272,100 @@ MakeupEntitlement
 
 ```text
 MakeupEntitlement
-
 id
-
 student_id
-
 source_lesson_id
-source_subscription_id
-
-category:
-    ICE
-    HALL
-
-reason:
-    MEDICAL_VERIFIED
-    SCHOOL_RESCHEDULE
-    ADMINISTRATIVE
-
+source_subscription_allowance_id
+category: ICE | HALL
+reason: MEDICAL_VERIFIED | SCHOOL_RESCHEDULE | ADMINISTRATIVE
 valid_from
 valid_until
-
 target_lesson_id nullable
-
-used_at nullable
-used_attendance_id nullable
-
 cancelled_at nullable
 ```
+
+Category должна совпадать с category исходного allowance.
 
 ---
 
 # 57. Важный принцип MakeupEntitlement
 
-`MakeupEntitlement` **не добавляет новое занятие**.
-
-То есть он не создаёт:
-
-```text
-GRANT +1
-```
-
-Он только изменяет допустимый срок использования одного из существующих оставшихся занятий.
+Он не создаёт `GRANT +1` и не увеличивает купленный объём. Использование разрешено только при положительном балансе исходного allowance.
 
 ---
 
 # 58. Пример медицинского переноса
 
-Абонемент:
-
-```text
-8 ICE
-01.09–30.09
-```
-
-Использовано:
-
-```text
-6
-```
-
-Осталось:
-
-```text
-2
-```
-
-Маша пропустила 25 сентября по болезни.
-
-Справка подтверждена.
-
-Создаётся:
-
-```text
-MakeupEntitlement
-
-category = ICE
-source_subscription = September ICE
-valid_until = <срок по политике школы>
-```
-
-30 сентября:
-
-```text
-Subscription = EXPIRED
-balance = 2
-```
-
-Но MakeupEntitlement позволяет использовать одно из этих оставшихся занятий позднее.
+У сентябрьского ICE allowance осталось 2 посещения. Медицинский пропуск создаёт `MakeupEntitlement(source_subscription_allowance=ICE)`. После окончания сентября entitlement разрешает потратить **одно из этих двух** ICE-посещений в дополнительный срок.
 
 ---
 
 # 59. Использование медицинского переноса
 
-Например 5 октября Маша приходит на лёд.
-
-Обычный сентябрьский абонемент:
-
-```text
-EXPIRED
-```
-
-но существует:
-
-```text
-MakeupEntitlement
-AVAILABLE
-```
-
-Система разрешает покрытие:
-
-```text
-MakeupEntitlement
-        ↓
-source Subscription
-        ↓
-CONSUME -1
-```
-
-И баланс:
-
-```text
-2 → 1
-```
+При новом `Attendance=PRESENT` создаётся `AttendanceCoverage` с `subscription_allowance` и `makeup_entitlement`, затем обычный `CONSUME -1` в source allowance.
 
 ---
 
 # 60. Почему медицинский перенос не должен давать +1
 
-Предположим:
-
-```text
-Куплено:
-8
-
-До болезни использовано:
-5
-
-После болезни ещё посетила:
-3
-```
-
-Итого:
-
-```text
-8 фактических посещений
-```
-
-Баланс уже:
-
-```text
-0
-```
-
-Медицинская справка не должна позволить получить девятое посещение.
-
-Поэтому при использовании MakeupEntitlement всегда дополнительно проверяется:
-
-```text
-source_subscription.balance > 0
-```
+Если исходный allowance уже имеет balance=0, entitlement использовать нельзя. Поэтому общее число фактических посещений не может превысить приобретённый лимит за счёт медицинской справки.
 
 ---
 
 # 61. Несколько медицинских пропусков
 
-Если подтверждено два разных пропуска:
-
-```text
-MEDICAL entitlement #1
-MEDICAL entitlement #2
-```
-
-и после истечения месяца осталось:
-
-```text
-balance = 2
-```
-
-можно использовать два занятия.
-
-Если осталось:
-
-```text
-balance = 1
-```
-
-можно использовать только одно.
-
-Таким образом никогда невозможно получить больше занятий, чем было приобретено.
+Несколько подтверждённых пропусков могут создать несколько entitlements, но каждый требует положительного остатка соответствующего source allowance при использовании.
 
 ---
 
 # 62. Срок медицинского переноса
 
-Я бы **не зашивал срок в код**.
-
-Нужно добавить настройку школы:
-
-```text
-medical_makeup_validity
-```
-
-либо администратор указывает:
-
-```text
-valid_until
-```
-
-при подтверждении справки.
-
-Например политика может позже измениться без миграции БД.
+Срок остаётся конфигурируемой school policy или задаётся `valid_until` при подтверждении основания.
 
 ---
 
 # 63. MakeupEntitlement state machine
 
-Вспомогательный автомат:
-
 ```text
-                     AVAILABLE
-                     /       \
-                    /         \
-                   ▼           ▼
-                USED         EXPIRED
-
-                     │
-                     ▼
-                 CANCELLED
+AVAILABLE → USED
+    └────→ EXPIRED
+    └────→ CANCELLED
 ```
 
-`AVAILABLE` означает:
-
-```text
-не использован
-AND
-не отменён
-AND
-срок не закончился
-```
+`USED` означает наличие активного `AttendanceCoverage`, ссылающегося на entitlement.
 
 ---
 
 # 64. Выбор покрытия при PRESENT
 
-При:
-
 ```text
-Attendance → PRESENT
+1. OneTimeEntitlement, bound to exact Lesson
+2. target-specific MakeupEntitlement
+3. other MakeupEntitlement, earliest expiry
+4. ordinary SubscriptionAllowance, parent Subscription earliest expiry
+5. UNCOVERED
 ```
-
-система ищет подходящее покрытие.
-
-Я рекомендую следующий порядок:
-
-```text
-1. MakeupEntitlement,
-   который закончится раньше всего
-
-2. обычный действующий Subscription,
-   который закончится раньше всего
-
-3. другой подходящий Subscription
-
-4. если ничего нет:
-   UNCOVERED
-```
-
-Это позволяет сначала использовать наиболее срочные права.
 
 ---
 
-# 65. SubscriptionUsage с переносом
-
-Предыдущую модель необходимо немного расширить:
+# 65. AttendanceCoverage с переносом
 
 ```text
-SubscriptionUsage
-
+AttendanceCoverage
 attendance_id
-
-subscription_id
-
+subscription_allowance_id nullable
+one_time_entitlement_id nullable
 makeup_entitlement_id nullable
-
-consume_ledger_entry_id
+reversed_at nullable
 ```
 
-Обычное посещение:
-
-```text
-makeup_entitlement = NULL
-```
-
-Медицинская отработка:
-
-```text
-makeup_entitlement = #123
-```
+Для medical/school/admin makeup primary source остаётся `SubscriptionAllowance`.
 
 ---
 
 # 66. Списание остаётся одинаковым
 
-И обычное посещение:
-
-```text
-CONSUME -1
-```
-
-и медицинская отработка:
-
-```text
-CONSUME -1
-```
-
-Таким образом ledger остаётся простым.
-
-Разница только в том, **почему система разрешила использовать абонемент на эту дату**.
+Обычное использование allowance и использование через makeup создают одинаковый `CONSUME -1`. Разница хранится в `AttendanceCoverage.makeup_entitlement`. One-time coverage ledger абонемента не затрагивает.
 
 ---
 
@@ -1900,21 +1427,7 @@ AND
 
 # 69. Domain Events — Lesson
 
-Основные события:
-
-| Event | Значение |
-|---|---|
-| `LessonCreated` | Создан конкретный Lesson |
-| `LessonPublished` | Открыт для учеников |
-| `LessonResponseChanged` | Изменился RSVP |
-| `LessonMinimumReached` | Количество YES достигло минимума |
-| `LessonMinimumNotMet` | На decision deadline минимум не набран |
-| `LessonConfirmed` | Школа решила проводить занятие |
-| `LessonCancelled` | Занятие отменено |
-| `LessonRescheduled` | Создан replacement Lesson |
-| `LessonCompleted` | Занятие состоялось |
-| `LessonAttendanceSubmitted` | Тренер подтвердил итоговую посещаемость |
-| `LessonAttendanceReopened` | Администратор открыл итог для исправления |
+События Lesson остаются без изменения: `LessonCreated`, `LessonPublished`, `LessonResponseChanged`, `LessonMinimumReached`, `LessonMinimumNotMet`, `LessonConfirmed`, `LessonCancelled`, `LessonRescheduled`, `LessonCompleted`, `LessonAttendanceSubmitted`, `LessonAttendanceReopened`.
 
 ---
 
@@ -1926,9 +1439,9 @@ AND
 | `AttendanceMarkedAbsent` | Тренер отметил отсутствие |
 | `AttendanceCorrectedToPresent` | ABSENT → PRESENT |
 | `AttendanceCorrectedToAbsent` | PRESENT → ABSENT |
-| `AttendanceCoverageAssigned` | Посещение покрыто абонементом |
+| `AttendanceCoverageAssigned` | Назначено entitlement-покрытие |
 | `AttendanceUncovered` | Подходящего покрытия нет |
-| `AttendanceCoverageReversed` | Списание возвращено после исправления |
+| `AttendanceCoverageReversed` | Покрытие обращено |
 
 ---
 
@@ -1936,67 +1449,46 @@ AND
 
 | Event | Значение |
 |---|---|
-| `SubscriptionIssued` | Выдан новый абонемент |
+| `SubscriptionIssued` | Выдан Subscription и его allowances |
 | `SubscriptionActivated` | Наступила дата начала |
-| `SubscriptionVisitConsumed` | Списано одно занятие |
-| `SubscriptionVisitRestored` | Занятие возвращено |
-| `SubscriptionExhausted` | Баланс достиг нуля |
+| `SubscriptionAllowanceConsumed` | Из allowance списано занятие |
+| `SubscriptionAllowanceRestored` | Занятие возвращено в allowance |
+| `SubscriptionAllowanceExhausted` | Баланс allowance достиг нуля |
 | `SubscriptionExpired` | Закончился обычный срок |
-| `SubscriptionExpiredWithUnusedBalance` | Срок закончился, но остались занятия |
-| `SubscriptionCancelled` | Абонемент административно отменён |
+| `SubscriptionExpiredWithUnusedBalance` | Остались ICE/HALL остатки |
+| `SubscriptionCancelled` | Subscription отменён |
+| `OneTimeEntitlementGranted` | Создано разовое право |
+| `OneTimeEntitlementUsed` | Разовое право использовано |
 
 ---
 
 # 72. Domain Events — справки и переносы
 
-| Event | Значение |
-|---|---|
-| `AbsenceJustificationDeclared` | Пользователь сообщил о наличии основания |
-| `AbsenceJustificationVerified` | Администратор подтвердил документ |
-| `AbsenceJustificationRejected` | Подтверждение не принято |
-| `MakeupEntitlementGranted` | Создано право на перенос |
-| `MakeupEntitlementUsed` | Право использовано |
-| `MakeupEntitlementExpired` | Срок переноса закончился |
-| `MakeupEntitlementCancelled` | Право отменено администратором |
+Сохраняются `AbsenceJustificationDeclared/Verified/Rejected`, `MakeupEntitlementGranted/Used/Expired/Cancelled`.
 
 ---
 
 # 73. Что происходит при AttendanceMarkedPresent
 
-Это одно из самых важных событий системы.
-
-Логика:
-
 ```text
 AttendanceMarkedPresent
-        │
-        ▼
+        ↓
 FindCoverage
-        │
-        ├── MakeupEntitlement?
-        │        │
-        │        ▼
-        │    source Subscription
-        │
-        ├── active Subscription?
-        │
-        ▼
-Create SubscriptionUsage
-        │
-        ▼
-Create CONSUME -1
-        │
-        ▼
+        ↓
+OneTimeEntitlement?
+        ↓ no
+MakeupEntitlement + source allowance?
+        ↓ no
+ordinary SubscriptionAllowance?
+        ↓
+Create AttendanceCoverage
+        ↓
+если allowance-backed: CONSUME -1
+        ↓
 AttendanceCoverageAssigned
 ```
 
-Если покрытия нет:
-
-```text
-AttendanceUncovered
-```
-
-но `Attendance=PRESENT` сохраняется.
+Если покрытия нет, Attendance всё равно остаётся `PRESENT`, генерируется `AttendanceUncovered`.
 
 ---
 
@@ -2004,21 +1496,15 @@ AttendanceUncovered
 
 ```text
 AttendanceCorrectedToAbsent
-        │
-        ▼
-Find active SubscriptionUsage
-        │
-        ▼
-RESTORE +1
-        │
-        ▼
-mark Usage reversed
-        │
-        ▼
-if MakeupEntitlement used:
-    return it to AVAILABLE
-        │
-        ▼
+        ↓
+Find active AttendanceCoverage
+        ↓
+allowance-backed? → RESTORE +1
+one-time?          → release entitlement
+makeup?            → entitlement снова AVAILABLE
+        ↓
+mark coverage reversed
+        ↓
 AttendanceCoverageReversed
 ```
 
@@ -2063,106 +1549,27 @@ LessonAttendanceSubmitted
 
 # 76. Отчёт по абонементам
 
-Дополнительно:
+Отчёт показывает один Subscription и независимые остатки его allowances:
 
 ```text
-Маша
-
-ICE:
-8 занятий
-
-Использовано:
-6
-
-Осталось:
-2
-
-Срок:
-истёк
-
-Медицинские переносы:
-1
+12 ICE + 16 HALL
+01.09–30.09
+ICE:  used 10 / remaining 2
+HALL: used 12 / remaining 4
+Medical makeups: 1
 ```
-
-Это позволит значительно лучше разбирать спорные ситуации с клиентами, чем сегодняшнее устное выяснение истории.
 
 ---
 
 # 77. Конфликт «занятия сгорели»
 
-Система должна показывать объективную историю:
-
-```text
-Абонемент:
-8 занятий
-
-Период:
-01.09–30.09
-
-Фактические посещения:
-5
-
-Неиспользовано:
-3
-
-Подтверждённых медицинских переносов:
-0
-```
-
-или:
-
-```text
-Фактические посещения:
-5
-
-Неиспользовано:
-3
-
-Подтверждённых медицинских переносов:
-2
-```
-
-Тогда спор решается не восстановлением событий по памяти тренеров и чата, а проверяемыми данными.
+Для разбора конфликта система показывает исходный plan snapshot, фактические посещения и неиспользованные остатки **по каждой категории отдельно**, а также созданные/использованные MakeupEntitlement. Денежное решение оформляется отдельно и не переписывает эти данные.
 
 ---
 
 # 78. Что система не должна делать при конфликте
 
-Не следует исправлять историю так:
-
-```text
-Subscription:
-valid_until 30.09
-             ↓
-поменяли задним числом
-             ↓
-valid_until 15.10
-```
-
-или:
-
-```text
-GRANT +3
-```
-
-без объяснения.
-
-Если школа принимает исключительное решение:
-
-```text
-MakeupEntitlement
-reason = ADMINISTRATIVE
-```
-
-с:
-
-```text
-created_by
-created_at
-reason
-```
-
-История остаётся прозрачной.
+Нельзя задним числом менять `valid_until`, удалять ledger entries или создавать необъяснимый `GRANT`. Если школа разрешает дополнительное использование остатка — создаётся `MakeupEntitlement(reason=ADMINISTRATIVE)` с actor/reason/audit.
 
 ---
 
@@ -2198,236 +1605,44 @@ ICE
 
 # 80. Финальные domain invariants
 
-### LESSON-01
+### LESSON
+RSVP и решение о проведении занятия не являются финансовым списанием; перенос создаёт новый Lesson.
 
-RSVP возможен только для опубликованного занятия.
+### ATTENDANCE
+Фактическую посещаемость определяет тренер/администратор. Один Attendance имеет не более одного активного `AttendanceCoverage`. `PRESENT` допустим без покрытия.
 
-### LESSON-02
+### SUBSCRIPTION
+Смешанный Subscription содержит независимые `SubscriptionAllowance`. Списание и возврат выполняются по конкретному allowance. Обычная отработка использует обычный остаток; `MakeupEntitlement` не создаёт дополнительные посещения. Истёкшие остатки не обнуляются в ledger.
 
-Недостаточный RSVP сам по себе не отменяет занятие.
+### ONE-TIME
+Привязанный к Lesson `OneTimeEntitlement` имеет приоритет над месячным allowance. Пробный entitlement существует только для ICE. Прокат коньков entitlement не создаёт.
 
-### LESSON-03
-
-Перенос создаёт новый Lesson и отменяет старый.
-
-### LESSON-04
-
-RSVP старого Lesson не копируется на replacement.
-
-### LESSON-05
-
-Для финансовых расчётов используются только закрытые занятия.
-
-### ATT-01
-
-Фактическую посещаемость определяет тренер или администратор.
-
-### ATT-02
-
-RSVP никогда автоматически не превращается в Attendance.
-
-### ATT-03
-
-Одно Attendance имеет не более одного активного SubscriptionUsage.
-
-### ATT-04
-
-PRESENT может существовать без абонемента.
-
-### SUB-01
-
-Только PRESENT расходует занятие.
-
-### SUB-02
-
-ABSENT занятие не расходует.
-
-### SUB-03
-
-Обычная отработка использует обычный остаток абонемента.
-
-### SUB-04
-
-Обычная отработка не продлевает срок абонемента.
-
-### SUB-05
-
-MakeupEntitlement не увеличивает количество купленных занятий.
-
-### SUB-06
-
-Медицинский перенос только расширяет период допустимого использования существующего остатка.
-
-### SUB-07
-
-Истёкший остаток не обнуляется в ledger.
-
-### SUB-08
-
-Все исправления ledger выполняются компенсирующими операциями.
-
-### MED-01
-
-Медицинское основание не изменяет Attendance.
-
-Ученик всё равно:
-
-```text
-ABSENT
-```
-
-### MED-02
-
-Подтверждённое медицинское основание может создать MakeupEntitlement.
-
-### MED-03
-
-В MVP медицинский документ не хранится в системе.
-
-### MED-04
-
-Система хранит только минимально необходимый результат проверки.
+### MEDICAL
+Медицинское основание не меняет `Attendance=ABSENT`; VERIFIED может создать MakeupEntitlement на конкретный source allowance. В MVP сам медицинский документ не хранится.
 
 ---
 
 # 81. Итоговая модель процесса
 
 ```text
-УТРО
-│
-▼
-LessonPublished
-│
-▼
-RSVP_OPEN
-│
-├── Буду
-├── Не буду
-└── Нет ответа
-│
-▼
-decision deadline
-│
-├── minimum met
-│      ↓
-│   CONFIRMED
-│
-└── minimum not met
-       │
-       ├── всё равно провести
-       ├── отменить
-       └── перенести
-                │
-                ▼
-          replacement Lesson
-
-────────────────────────────────
-
-ЗАНЯТИЕ
-│
-▼
-тренер отмечает
-│
-├── PRESENT
-│      │
-│      ▼
-│   Subscription
-│   или MakeupEntitlement
-│      │
-│      ▼
-│   CONSUME -1
-│
-└── ABSENT
-       │
-       ├── без справки
-       │      ↓
-       │   можно отработать
-       │   в другой группе
-       │   до конца срока
-       │
-       └── справка
-              ↓
-           VERIFIED
-              ↓
-       MakeupEntitlement
-              ↓
-       возможность использовать
-       остаток позднее
-
-────────────────────────────────
-
-ПОСЛЕ ЗАНЯТИЯ
-│
-▼
-Trainer:
-«Завершить посещаемость»
-│
-▼
-Lesson CLOSED
-│
-▼
-LessonAttendanceSubmitted
-│
-▼
-данные доступны руководителю
-для финансовых расчётов
+утром: LessonPublished → RSVP
+решение школы: CONFIRMED / CANCELLED / replacement
+занятие: Coach → Attendance
+Attendance=PRESENT → FindCoverage
+    → OneTimeEntitlement
+    → либо SubscriptionAllowance (+ optional MakeupEntitlement)
+    → либо UNCOVERED
+после занятия: LessonAttendanceSubmitted → CLOSED
 ```
 
 ---
 
 # 82. Реализация domain events
 
-Эта архитектура **не требует Event Sourcing**.
-
-PostgreSQL продолжает хранить текущее состояние:
-
-```text
-Lesson
-Attendance
-Subscription
-Ledger
-...
-```
-
-а domain events используются как семантическое описание произошедших операций и для `AuditEvent`.
-
-Например application service:
-
-```text
-mark_student_present(...)
-```
-
-в одной DB-транзакции:
-
-```text
-1. создаёт/изменяет Attendance;
-2. выбирает покрытие;
-3. создаёт SubscriptionUsage;
-4. создаёт LedgerEntry;
-5. записывает AuditEvent;
-6. фиксирует domain event.
-```
-
-Я бы не разносил эту критическую бизнес-логику по Django Signals, поскольку тогда взаимосвязь Attendance → Subscription → Ledger становится значительно менее очевидной и сложнее тестируется.
+Event Sourcing не требуется. Application service в одной транзакции меняет Attendance, создаёт AttendanceCoverage, при необходимости LedgerEntry и AuditEvent. Core business logic не размещается в Django signals.
 
 ---
 
 # 83. Архитектурное решение
 
-После введения этой логики предметная модель фактически делится на четыре независимых подсистемы:
-
-```text
-Scheduling
-Lesson + RSVP + minimum attendance
-
-Attendance
-факт присутствия тренером
-
-Entitlements
-Subscription + Ledger
-
-Exceptions
-MakeupEntitlement + medical/admin/school reschedule
-```
-
-Это разделение позволяет в будущем изменить правила возврата денег, срок медицинских переносов или минимальное количество участников, не переписывая базовую историю занятий и посещаемости.
+Предметная область разделена на Scheduling, Attendance, Entitlements и будущий Billing. Entitlements включают allowance-based subscriptions, one-time rights и makeup exceptions; Billing отвечает только за деньги/возвраты.

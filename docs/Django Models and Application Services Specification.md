@@ -1419,451 +1419,132 @@ models.Index(
 
 ---
 
-# 20. SubscriptionPlan
+# 20. SubscriptionPlan и SubscriptionPlanAllowance
 
 ```python
 class SubscriptionPlan(models.Model):
     id = UUIDField(...)
-
-    code = models.SlugField(
-        max_length=64,
-        unique=True,
-    )
-
+    code = models.SlugField(max_length=64, unique=True)
     name = models.CharField(max_length=128)
-
-    category = models.CharField(
-        max_length=16,
-        choices=SubscriptionCategory.choices,
-    )
-
-    visit_limit = models.PositiveSmallIntegerField()
-
-    validity_months = models.PositiveSmallIntegerField(
-        default=1,
-    )
-
+    validity_months = models.PositiveSmallIntegerField(default=1)
     is_active = models.BooleanField(default=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+class SubscriptionPlanAllowance(models.Model):
+    id = UUIDField(...)
+    plan = models.ForeignKey(SubscriptionPlan, on_delete=models.CASCADE, related_name="allowances")
+    category = models.CharField(max_length=16, choices=SubscriptionCategory.choices)
+    visit_limit = models.PositiveSmallIntegerField()
 ```
 
-## Current business rule
+Constraints:
 
 ```python
-models.CheckConstraint(
-    condition=models.Q(validity_months=1),
-    name="subscriptionplan_one_month",
-)
-```
-
-Если позже появятся абонементы на 2–3 месяца, constraint снимается миграцией.
-
-## Other Check
-
-```python
-models.CheckConstraint(
-    condition=models.Q(visit_limit__gt=0),
-    name="subscriptionplan_visit_limit_gt_0",
-)
-```
-
-## Index
-
-```python
-models.Index(
-    fields=["category", "is_active"],
-    name="subplan_category_active_idx",
-)
+UniqueConstraint(fields=["plan", "category"], name="subplan_allowance_category_uniq")
+CheckConstraint(condition=Q(visit_limit__gt=0), name="subplan_allowance_limit_gt_0")
+CheckConstraint(condition=Q(validity_months=1), name="subscriptionplan_one_month")
 ```
 
 ---
 
-# 21. Subscription
+# 21. Subscription и SubscriptionAllowance
 
 ```python
 class Subscription(models.Model):
     id = UUIDField(...)
-
-    student = models.ForeignKey(
-        Student,
-        on_delete=models.PROTECT,
-        related_name="subscriptions",
-    )
-
-    plan = models.ForeignKey(
-        SubscriptionPlan,
-        on_delete=models.PROTECT,
-        related_name="subscriptions",
-    )
-
-    plan_name_snapshot = models.CharField(
-        max_length=128,
-    )
-
-    category_snapshot = models.CharField(
-        max_length=16,
-        choices=SubscriptionCategory.choices,
-    )
-
-    visit_limit_snapshot = models.PositiveSmallIntegerField()
-
+    student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="subscriptions")
+    plan = models.ForeignKey(SubscriptionPlan, on_delete=models.PROTECT, related_name="subscriptions")
+    plan_code_snapshot = models.CharField(max_length=64)
+    plan_name_snapshot = models.CharField(max_length=128)
     valid_from = models.DateField()
     valid_until = models.DateField()
-
     created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name="+")
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
 
-    created_by = models.ForeignKey(
-        User,
-        null=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-    )
-
-    cancelled_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    cancelled_by = models.ForeignKey(
-        User,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-    )
+class SubscriptionAllowance(models.Model):
+    id = UUIDField(...)
+    subscription = models.ForeignKey(Subscription, on_delete=models.PROTECT, related_name="allowances")
+    category = models.CharField(max_length=16, choices=SubscriptionCategory.choices)
+    visit_limit_snapshot = models.PositiveSmallIntegerField()
 ```
 
-## CheckConstraints
+Constraints/indexes:
 
 ```python
-models.CheckConstraint(
-    condition=models.Q(valid_until__gte=models.F("valid_from")),
-    name="subscription_until_gte_from",
-)
+UniqueConstraint(fields=["subscription", "category"], name="suballow_subscription_category_uniq")
+CheckConstraint(condition=Q(visit_limit_snapshot__gt=0), name="suballow_limit_gt_0")
+Index(fields=["subscription", "category"], name="suballow_subscription_category_idx")
+Index(fields=["student", "valid_from"], name="subscription_student_history_idx")
 ```
 
-```python
-models.CheckConstraint(
-    condition=models.Q(visit_limit_snapshot__gt=0),
-    name="subscription_visit_limit_gt_0",
-)
-```
-
-```python
-models.CheckConstraint(
-    condition=(
-        models.Q(
-            cancelled_at__isnull=True,
-            cancelled_by__isnull=True,
-        )
-        |
-        models.Q(cancelled_at__isnull=False)
-    ),
-    name="subscription_cancel_consistency",
-)
-```
-
-## Coverage index
-
-```python
-models.Index(
-    fields=[
-        "student",
-        "category_snapshot",
-        "valid_from",
-        "valid_until",
-    ],
-    condition=models.Q(cancelled_at__isnull=True),
-    name="subscription_coverage_idx",
-)
-```
-
-## History
-
-```python
-models.Index(
-    fields=["student", "-valid_from"],
-    name="subscription_student_history_idx",
-)
-```
+`valid_until >= valid_from` и cancellation consistency остаются constraints `Subscription`.
 
 ---
 
 # 22. MakeupEntitlement
 
-Разрешение использовать существующий остаток за пределами обычного правила.
+`MakeupEntitlement.source_subscription_allowance` — FK на конкретный `SubscriptionAllowance`.
 
 ```python
-class MakeupEntitlement(models.Model):
-    class Reason(models.TextChoices):
-        MEDICAL_VERIFIED = "medical", "Verified medical absence"
-        SCHOOL_RESCHEDULE = "school_reschedule", "School reschedule"
-        ADMINISTRATIVE = "administrative", "Administrative"
-
-    id = UUIDField(...)
-
-    student = models.ForeignKey(
-        Student,
-        on_delete=models.PROTECT,
-        related_name="makeup_entitlements",
-    )
-
-    source_lesson = models.ForeignKey(
-        Lesson,
-        on_delete=models.PROTECT,
-        related_name="generated_makeup_entitlements",
-    )
-
-    source_subscription = models.ForeignKey(
-        Subscription,
-        on_delete=models.PROTECT,
-        related_name="makeup_entitlements",
-    )
-
-    source_justification = models.ForeignKey(
-        AbsenceJustification,
-        null=True,
-        blank=True,
-        on_delete=models.PROTECT,
-        related_name="makeup_entitlements",
-    )
-
-    category = models.CharField(
-        max_length=16,
-        choices=SubscriptionCategory.choices,
-    )
-
-    reason = models.CharField(
-        max_length=24,
-        choices=Reason.choices,
-    )
-
-    valid_from = models.DateField()
-    valid_until = models.DateField()
-
-    target_lesson = models.ForeignKey(
-        Lesson,
-        null=True,
-        blank=True,
-        on_delete=models.PROTECT,
-        related_name="targeted_makeup_entitlements",
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    created_by = models.ForeignKey(
-        User,
-        null=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-    )
-
-    cancelled_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    cancelled_by = models.ForeignKey(
-        User,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-    )
-```
-
-## Constraints
-
-```python
-models.CheckConstraint(
-    condition=models.Q(valid_until__gte=models.F("valid_from")),
-    name="makeup_until_gte_from",
+source_subscription_allowance = models.ForeignKey(
+    SubscriptionAllowance,
+    on_delete=models.PROTECT,
+    related_name="makeup_entitlements",
 )
 ```
 
-Один entitlement одного типа за один source Lesson:
-
-```python
-models.UniqueConstraint(
-    fields=["student", "source_lesson", "reason"],
-    name="makeup_student_source_reason_uniq",
-)
-```
-
-Medical требует justification:
-
-```python
-models.CheckConstraint(
-    condition=(
-        ~models.Q(reason=Reason.MEDICAL_VERIFIED)
-        | models.Q(source_justification__isnull=False)
-    ),
-    name="makeup_medical_requires_justification",
-)
-```
-
-School reschedule требует target:
-
-```python
-models.CheckConstraint(
-    condition=(
-        ~models.Q(reason=Reason.SCHOOL_RESCHEDULE)
-        | models.Q(target_lesson__isnull=False)
-    ),
-    name="makeup_reschedule_requires_target",
-)
-```
-
-Cancellation:
-
-```python
-models.CheckConstraint(
-    condition=(
-        models.Q(
-            cancelled_at__isnull=True,
-            cancelled_by__isnull=True,
-        )
-        |
-        models.Q(cancelled_at__isnull=False)
-    ),
-    name="makeup_cancel_consistency",
-)
-```
-
-## Index
-
-```python
-models.Index(
-    fields=["student", "category", "valid_until"],
-    condition=models.Q(cancelled_at__isnull=True),
-    name="makeup_available_lookup_idx",
-)
-```
+Остальные поля/constraints остаются как раньше; service layer проверяет совпадение student/category с source allowance.
 
 ---
 
-# 23. SubscriptionUsage
-
-Связывает:
-
-```text
-Attendance
-      ↓
-Subscription
-```
-
-и при необходимости:
-
-```text
-MakeupEntitlement
-```
+# 23. OneTimeEntitlement и AttendanceCoverage
 
 ```python
-class SubscriptionUsage(models.Model):
+class OneTimeEntitlement(models.Model):
+    class Type(models.TextChoices):
+        SINGLE_ICE = "single_ice", "Single ICE"
+        SINGLE_HALL = "single_hall", "Single HALL"
+        INDIVIDUAL_ICE = "individual_ice", "Individual ICE"
+        MINI_GROUP_ICE = "mini_group_ice", "Mini-group ICE"
+        TRIAL_ICE = "trial_ice", "Trial ICE"
+
     id = UUIDField(...)
-
-    attendance = models.ForeignKey(
-        Attendance,
-        on_delete=models.PROTECT,
-        related_name="subscription_usages",
-    )
-
-    subscription = models.ForeignKey(
-        Subscription,
-        on_delete=models.PROTECT,
-        related_name="usages",
-    )
-
-    makeup_entitlement = models.ForeignKey(
-        MakeupEntitlement,
-        null=True,
-        blank=True,
-        on_delete=models.PROTECT,
-        related_name="usages",
-    )
-
+    student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="one_time_entitlements")
+    lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="one_time_entitlements")
+    entitlement_type = models.CharField(max_length=24, choices=Type.choices)
+    category = models.CharField(max_length=16, choices=SubscriptionCategory.choices)
     created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name="+")
+    cancelled_at = models.DateTimeField(null=True, blank=True)
 
-    created_by = models.ForeignKey(
-        User,
-        null=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-    )
-
-    reversed_at = models.DateTimeField(
-        null=True,
-        blank=True,
-    )
-
-    reversed_by = models.ForeignKey(
-        User,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-    )
+class AttendanceCoverage(models.Model):
+    id = UUIDField(...)
+    attendance = models.ForeignKey(Attendance, on_delete=models.PROTECT, related_name="coverages")
+    subscription_allowance = models.ForeignKey(SubscriptionAllowance, null=True, blank=True, on_delete=models.PROTECT, related_name="coverages")
+    one_time_entitlement = models.ForeignKey(OneTimeEntitlement, null=True, blank=True, on_delete=models.PROTECT, related_name="coverages")
+    makeup_entitlement = models.ForeignKey(MakeupEntitlement, null=True, blank=True, on_delete=models.PROTECT, related_name="coverages")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name="+")
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
 ```
 
-## Один активный Usage на Attendance
+Required constraints:
 
 ```python
-models.UniqueConstraint(
-    fields=["attendance"],
-    condition=models.Q(reversed_at__isnull=True),
-    name="usage_one_active_per_attendance",
-)
-```
-
-Исторические reversed Usage при этом сохраняются.
-
-## Один MakeupEntitlement нельзя использовать дважды одновременно
-
-```python
-models.UniqueConstraint(
-    fields=["makeup_entitlement"],
-    condition=(
-        models.Q(
-            makeup_entitlement__isnull=False,
-            reversed_at__isnull=True,
-        )
-    ),
-    name="usage_one_active_per_makeup",
-)
-```
-
-## Reverse consistency
-
-```python
-models.CheckConstraint(
-    condition=(
-        models.Q(
-            reversed_at__isnull=True,
-            reversed_by__isnull=True,
-        )
-        |
-        models.Q(reversed_at__isnull=False)
-    ),
-    name="usage_reverse_consistency",
-)
-```
-
-## Index
-
-```python
-models.Index(
-    fields=["subscription", "reversed_at"],
-    name="usage_subscription_reverse_idx",
-)
+UniqueConstraint(fields=["attendance"], condition=Q(reversed_at__isnull=True), name="coverage_one_active_per_attendance")
+UniqueConstraint(fields=["one_time_entitlement"], condition=Q(one_time_entitlement__isnull=False, reversed_at__isnull=True), name="coverage_one_active_per_one_time")
+UniqueConstraint(fields=["makeup_entitlement"], condition=Q(makeup_entitlement__isnull=False, reversed_at__isnull=True), name="coverage_one_active_per_makeup")
+CheckConstraint(condition=(Q(subscription_allowance__isnull=False, one_time_entitlement__isnull=True) | Q(subscription_allowance__isnull=True, one_time_entitlement__isnull=False)), name="coverage_exactly_one_primary_source")
+CheckConstraint(condition=(Q(makeup_entitlement__isnull=True) | Q(subscription_allowance__isnull=False)), name="coverage_makeup_requires_allowance")
 ```
 
 ---
 
 # 24. SubscriptionLedgerEntry
-
-Единственный источник истины о количестве занятий.
 
 ```python
 class SubscriptionLedgerEntry(models.Model):
@@ -1874,150 +1555,16 @@ class SubscriptionLedgerEntry(models.Model):
         ADJUSTMENT = "adjustment", "Adjustment"
 
     id = UUIDField(...)
-
-    subscription = models.ForeignKey(
-        Subscription,
-        on_delete=models.PROTECT,
-        related_name="ledger_entries",
-    )
-
-    usage = models.ForeignKey(
-        SubscriptionUsage,
-        null=True,
-        blank=True,
-        on_delete=models.PROTECT,
-        related_name="ledger_entries",
-    )
-
-    entry_type = models.CharField(
-        max_length=16,
-        choices=EntryType.choices,
-    )
-
+    allowance = models.ForeignKey(SubscriptionAllowance, on_delete=models.PROTECT, related_name="ledger_entries")
+    coverage = models.ForeignKey(AttendanceCoverage, null=True, blank=True, on_delete=models.PROTECT, related_name="ledger_entries")
+    entry_type = models.CharField(max_length=16, choices=EntryType.choices)
     delta = models.SmallIntegerField()
-
-    reason = models.CharField(
-        max_length=255,
-        blank=True,
-    )
-
+    reason = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-
-    created_by = models.ForeignKey(
-        User,
-        null=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-    )
+    created_by = models.ForeignKey(User, null=True, on_delete=models.SET_NULL, related_name="+")
 ```
 
-## Delta semantics
-
-```python
-models.CheckConstraint(
-    condition=(
-        models.Q(
-            entry_type=EntryType.GRANT,
-            delta__gt=0,
-        )
-        |
-        models.Q(
-            entry_type=EntryType.CONSUME,
-            delta=-1,
-        )
-        |
-        models.Q(
-            entry_type=EntryType.RESTORE,
-            delta=1,
-        )
-        |
-        (
-            models.Q(entry_type=EntryType.ADJUSTMENT)
-            & ~models.Q(delta=0)
-        )
-    ),
-    name="ledger_delta_matches_type",
-)
-```
-
-## Usage requirement
-
-`CONSUME` и `RESTORE` обязательно относятся к Usage:
-
-```python
-models.CheckConstraint(
-    condition=(
-        (
-            models.Q(
-                entry_type__in=[
-                    EntryType.CONSUME,
-                    EntryType.RESTORE,
-                ],
-            )
-            & models.Q(usage__isnull=False)
-        )
-        |
-        (
-            models.Q(
-                entry_type__in=[
-                    EntryType.GRANT,
-                    EntryType.ADJUSTMENT,
-                ],
-            )
-            & models.Q(usage__isnull=True)
-        )
-    ),
-    name="ledger_usage_requirement",
-)
-```
-
-## Только один GRANT
-
-```python
-models.UniqueConstraint(
-    fields=["subscription"],
-    condition=models.Q(entry_type=EntryType.GRANT),
-    name="ledger_one_grant_per_subscription",
-)
-```
-
-## Один CONSUME/RESTORE каждого типа на Usage
-
-```python
-models.UniqueConstraint(
-    fields=["usage", "entry_type"],
-    condition=models.Q(usage__isnull=False),
-    name="ledger_usage_type_uniq",
-)
-```
-
-## Indexes
-
-```python
-models.Index(
-    fields=["subscription", "created_at"],
-    name="ledger_subscription_time_idx",
-),
-
-models.Index(
-    fields=["subscription", "entry_type"],
-    name="ledger_subscription_type_idx",
-)
-```
-
-Баланс:
-
-```python
-SUM(delta)
-```
-
-Никакого поля:
-
-```text
-remaining_visits
-```
-
-в `Subscription` нет.
+`GRANT/ADJUSTMENT` не имеют coverage; `CONSUME/RESTORE` обязаны иметь coverage. Один `GRANT` допускается на allowance; для одного coverage допускается не более одного `CONSUME` и одного `RESTORE`. Balance = `SUM(delta)` по allowance.
 
 ---
 
@@ -2087,100 +1634,37 @@ DELETE = forbidden
 
 # 26. Что PostgreSQL не может корректно проверить обычным CheckConstraint
 
-Следующие invariants являются межтабличными и должны проверяться application services.
+Service layer обязан проверять межтабличные invariants:
 
-### RESPONSE-01
+- actor имеет право менять RSVP/Attendance;
+- Attendance.student соответствует entitlement.student;
+- category Lesson совпадает с `SubscriptionAllowance.category` или `OneTimeEntitlement.category`;
+- родительский Subscription allowance действует на дату Lesson и не отменён;
+- `MakeupEntitlement.source_subscription_allowance` совпадает с allowance в Coverage;
+- one-time entitlement привязан к этому Lesson;
+- `TRIAL_ICE` имеет category=ICE; trial HALL не существует;
+- баланс allowance положителен до `CONSUME`;
+- CLOSED Lesson нельзя менять без reopen;
+- все активные roster entries имеют Attendance перед close.
 
-Student входит в активный LessonRosterEntry.
-
-### RESPONSE-02
-
-Lesson находится в:
-
-```text
-RSVP_OPEN
-CONFIRMED
-```
-
-### RESPONSE-03
-
-Сейчас не позже `rsvp_deadline`.
-
-### ATT-01
-
-Student существует в roster занятия или явно добавлен администратором.
-
-### ATT-02
-
-Actor — назначенный Coach или Administrator.
-
-### ATT-03
-
-Attendance нельзя менять после CLOSED без reopen.
-
-### COVERAGE-01
-
-Attendance.student == Subscription.student.
-
-### COVERAGE-02
-
-Lesson category == Subscription.category_snapshot.
-
-### COVERAGE-03
-
-Обычный Subscription действует на дату Lesson.
-
-### COVERAGE-04
-
-MakeupEntitlement.student == Attendance.student.
-
-### COVERAGE-05
-
-MakeupEntitlement.category совпадает с Lesson.
-
-### COVERAGE-06
-
-MakeupEntitlement.source_subscription == Usage.subscription.
-
-### CLOSE-01
-
-Все активные roster participants имеют Attendance.
-
-### MEDICAL-01
-
-Verified medical justification относится к фактическому ABSENT.
-
-Эти правила нельзя безопасно распределять по `model.save()`.
-
-Они реализуются application services.
+Эти правила не распределяются по `model.save()` и signals.
 
 ---
 
 # 27. Запрещённая архитектура
 
-Не следует реализовывать:
+Нельзя выполнять финансово-учётную цепочку внутри `Attendance.save()` или Django signals.
 
-```python
-Attendance.save()
-    -> автоматически списать Subscription
-```
-
-или:
-
-```python
-@receiver(post_save, sender=Attendance)
-def ...
-```
-
-Критическая цепочка:
+Критическая операция должна быть явно видна в application service:
 
 ```text
 Attendance
-→ SubscriptionUsage
-→ LedgerEntry
+→ AttendanceCoverage
+→ optional SubscriptionLedgerEntry
+→ AuditEvent
 ```
 
-должна быть явно видна в application service.
+One-time coverage не создаёт ledger entry; allowance-backed coverage создаёт `CONSUME/RESTORE` только через service layer.
 
 ---
 
@@ -2533,33 +2017,9 @@ RSVP не копируются.
 
 # 37. Entitlements при переносе школы
 
-В `reschedule_lesson()` дополнительный этап выполняется, если новое занятие выходит за срок старого Subscription.
+Если replacement Lesson выходит за обычный срок, для участников с `RSVP=YES` определяется `SubscriptionAllowance` той же категории, который мог покрыть исходный Lesson. При необходимости создаётся `MakeupEntitlement(source_subscription_allowance=..., target_lesson=replacement)`.
 
-Для каждого:
-
-```text
-source LessonResponse = YES
-```
-
-ищется Subscription, который мог покрыть исходное занятие.
-
-Если:
-
-```text
-replacement.date > subscription.valid_until
-```
-
-создаётся:
-
-```text
-MakeupEntitlement
-
-reason = SCHOOL_RESCHEDULE
-target_lesson = replacement
-source_subscription = найденный Subscription
-```
-
-Это не создаёт GRANT.
+Никакого `GRANT` при этом не создаётся.
 
 ---
 
@@ -2889,467 +2349,122 @@ Audit содержит административную причину.
 
 ---
 
-# 49. subscriptions.selectors.subscription_balance()
+# 49. subscriptions.selectors.allowance_balance()
 
 ```python
-subscription_balance(
-    subscription_id: UUID,
-) -> int
+allowance_balance(allowance_id: UUID) -> int
 ```
 
-SQL conceptually:
+Возвращает `COALESCE(SUM(delta), 0)` по `SubscriptionLedgerEntry.allowance_id`.
 
-```sql
-SELECT COALESCE(SUM(delta), 0)
-FROM subscription_ledger_entry
-WHERE subscription_id = ...
+Дополнительно:
+
+```python
+subscription_balances(subscription_id) -> dict[SubscriptionCategory, int]
 ```
-
-Именно это число является остатком.
 
 ---
 
 # 50. subscriptions.services.issue_subscription()
 
-```python
-issue_subscription(
-    *,
-    student_id: UUID,
-    plan_id: UUID,
-    valid_from: date,
-    valid_until: date,
-    actor: User,
-) -> Subscription
-```
-
-Создаётся snapshot:
-
-```text
-plan_name_snapshot
-category_snapshot
-visit_limit_snapshot
-```
-
-и в той же транзакции:
-
-```text
-LedgerEntry:
-
-type = GRANT
-delta = visit_limit_snapshot
-```
-
-Event:
-
-```text
-SubscriptionIssued
-```
+В одной транзакции сервис создаёт `Subscription`, копирует каждый `SubscriptionPlanAllowance` в `SubscriptionAllowance` и создаёт отдельный `GRANT` на каждый allowance.
 
 ---
 
 # 51. Правило «один месяц»
 
-Application policy дополнительно проверяет:
-
-```text
-valid_from / valid_until
-```
-
-по принятому школой определению месяца.
-
-Модель намеренно хранит конкретные даты.
-
-Поэтому переход:
-
-```text
-calendar month
-→
-rolling month
-```
-
-не потребует менять Subscription schema.
+Business policy вычисляет `valid_from/valid_until`; конкретные даты сохраняются в `Subscription` и не пересчитываются задним числом.
 
 ---
 
 # 52. subscriptions.services.assign_attendance_coverage()
 
 ```python
-assign_attendance_coverage(
-    *,
-    attendance_id: UUID,
-    actor: User | None,
-) -> SubscriptionUsage | None
+assign_attendance_coverage(*, attendance_id: UUID, actor: User | None) -> AttendanceCoverage | None
 ```
 
-Это самая критичная транзакция приложения.
+Идемпотентная критическая транзакция coverage engine.
 
 ---
 
-# 53. assign_attendance_coverage — preconditions
+# 53. Preconditions
 
-```text
-Attendance.status = PRESENT
-
-активного SubscriptionUsage
-для Attendance ещё нет
-```
-
-Если Usage уже есть:
-
-```text
-return existing
-```
-
-Операция идемпотентна.
+`Attendance=PRESENT`, активного Coverage ещё нет. Повторный вызов возвращает существующий Coverage.
 
 ---
 
 # 54. Определение категории
 
-Через:
-
-```text
-Attendance
-  ↓
-Lesson
-  ↓
-LessonType.subscription_category
-```
-
-получаем:
-
-```text
-ICE
-или
-HALL
-```
+Категория берётся из `Attendance.lesson.lesson_type.subscription_category`.
 
 ---
 
-# 55. Сначала ищется MakeupEntitlement
+# 55. Сначала ищется OneTimeEntitlement
 
-Candidate:
-
-```text
-student = Attendance.student
-
-category = Lesson category
-
-cancelled_at IS NULL
-
-valid_from <= lesson.date <= valid_until
-
-target_lesson IS NULL
-OR
-target_lesson = Attendance.lesson
-
-нет active SubscriptionUsage
-для entitlement
-```
-
-Order:
-
-```text
-valid_until ASC
-created_at ASC
-```
-
-То есть первым используется entitlement, который раньше сгорит.
+Ищется активный entitlement для `student + exact lesson + category`. Он имеет приоритет над monthly allowance.
 
 ---
 
-# 56. Проверка source Subscription entitlement
+# 56. Затем MakeupEntitlement
 
-После выбора entitlement:
-
-```text
-LOCK source_subscription
-```
-
-вычисляется balance.
-
-Если:
-
-```text
-balance > 0
-```
-
-можно использовать.
-
-Если:
-
-```text
-balance = 0
-```
-
-entitlement не создаёт дополнительное занятие и пропускается.
+Ищется entitlement той же категории, допустимый для Lesson и ещё не использованный. Блокируется его `source_subscription_allowance`, после чего проверяется положительный balance.
 
 ---
 
-# 57. Затем обычный Subscription
+# 57. Затем обычный SubscriptionAllowance
 
-Candidate:
-
-```text
-student = Attendance.student
-
-category_snapshot = Lesson category
-
-cancelled_at IS NULL
-
-valid_from <= lesson.date
-valid_until >= lesson.date
-```
-
-Order:
-
-```text
-valid_until ASC
-valid_from ASC
-created_at ASC
-```
-
-Каждый candidate Subscription блокируется:
-
-```python
-select_for_update()
-```
-
-Баланс рассчитывается после получения lock.
-
-Первый:
-
-```text
-balance > 0
-```
-
-выбирается.
+Ищутся allowances нужной category, чьи parent Subscription действуют на дату Lesson и не отменены. Порядок: `valid_until`, `valid_from`, `created_at`. Candidate allowance блокируется через `select_for_update()` перед пересчётом balance.
 
 ---
 
 # 58. Создание coverage
 
-Создаётся:
+Для one-time создаётся только `AttendanceCoverage(one_time_entitlement=...)`.
+
+Для monthly/makeup создаются:
 
 ```text
-SubscriptionUsage
-
-attendance
-subscription
-makeup_entitlement optional
-```
-
-и:
-
-```text
-SubscriptionLedgerEntry
-
-type = CONSUME
-delta = -1
-usage = созданный Usage
-```
-
-Event:
-
-```text
-SubscriptionVisitConsumed
-AttendanceCoverageAssigned
+AttendanceCoverage(subscription_allowance=..., makeup_entitlement=optional)
+SubscriptionLedgerEntry(CONSUME, -1, allowance=..., coverage=...)
 ```
 
 ---
 
 # 59. Если покрытия нет
 
-Attendance остаётся:
-
-```text
-PRESENT
-```
-
-`SubscriptionUsage` отсутствует.
-
-Событие:
-
-```text
-AttendanceUncovered
-```
-
-Это корректное состояние.
-
-Факт посещения важнее учёта абонемента.
+Attendance остаётся `PRESENT`; coverage отсутствует; генерируется `AttendanceUncovered`.
 
 ---
 
-# 60. Почему необходимо блокировать Subscription row
+# 60. Почему необходимо блокировать SubscriptionAllowance row
 
-Рассмотрим:
-
-```text
-balance = 1
-```
-
-Два тренера одновременно отмечают два посещения.
-
-Без lock обе транзакции могут увидеть:
-
-```text
-balance = 1
-```
-
-и обе списать:
-
-```text
--1
-```
-
-Получится:
-
-```text
-balance = -1
-```
-
-Поэтому любой writer ledger сначала обязан:
-
-```text
-LOCK Subscription
-```
-
-и только потом:
-
-```text
-calculate balance
-insert ledger
-```
+Все writers ledger сначала блокируют **allowance**, а не родительский Subscription. Это позволяет параллельно и безопасно расходовать независимые ICE/HALL balances, не допуская отрицательного остатка одной категории.
 
 ---
 
 # 61. subscriptions.services.reverse_attendance_coverage()
 
-```python
-reverse_attendance_coverage(
-    *,
-    attendance_id: UUID,
-    actor: User,
-) -> None
-```
+Для active Coverage:
 
-Находит active:
-
-```text
-SubscriptionUsage
-```
-
-Блокирует:
-
-```text
-Usage
-Subscription
-```
-
-Создаёт:
-
-```text
-LedgerEntry
-
-RESTORE
-+1
-usage = Usage
-```
-
-Затем:
-
-```text
-usage.reversed_at
-usage.reversed_by
-```
-
-Event:
-
-```text
-SubscriptionVisitRestored
-AttendanceCoverageReversed
-```
-
-Если был MakeupEntitlement, после reverse он автоматически снова считается доступным, поскольку активного Usage больше нет.
+- allowance-backed: lock allowance, создать `RESTORE +1`, затем reversed;
+- one-time: ledger не меняется, Coverage становится reversed;
+- makeup автоматически снова доступен после reversal.
 
 ---
 
-# 62. subscriptions.services.adjust_subscription()
-
-Только administrator.
+# 62. subscriptions.services.adjust_allowance()
 
 ```python
-adjust_subscription(
-    *,
-    subscription_id: UUID,
-    delta: int,
-    reason: str,
-    actor: User,
-) -> SubscriptionLedgerEntry
+adjust_allowance(*, allowance_id: UUID, delta: int, reason: str, actor: User)
 ```
 
-Требования:
-
-```text
-delta != 0
-reason != ""
-```
-
-Внутри:
-
-```text
-LOCK Subscription
-
-current_balance = SUM(delta)
-
-new_balance = current_balance + adjustment
-```
-
-Не допускается:
-
-```text
-new_balance < 0
-```
-
-Создаётся:
-
-```text
-ADJUSTMENT
-```
-
-Исходные LedgerEntry никогда не редактируются.
+Lock allowance, проверить `new_balance >= 0`, создать `ADJUSTMENT`. Ручного изменения числового остатка нет.
 
 ---
 
 # 63. subscriptions.services.cancel_subscription()
 
-```python
-cancel_subscription(
-    *,
-    subscription_id: UUID,
-    actor: User,
-    now: datetime,
-) -> Subscription
-```
-
-Заполняет:
-
-```text
-cancelled_at
-cancelled_by
-```
-
-Исторические:
-
-```text
-GRANT
-CONSUME
-RESTORE
-```
-
-не меняются.
-
-После cancellation новые Usage создавать нельзя.
+Cancellation относится к Subscription целиком и запрещает создание новых Coverage по всем его allowances. Исторические ledger entries не меняются.
 
 ---
 
@@ -3385,181 +2500,37 @@ MEDICAL
 
 # 65. attendance.services.verify_medical_absence()
 
-```python
-verify_medical_absence(
-    *,
-    justification_id: UUID,
-    actor: User,
-    makeup_valid_until: date,
-) -> tuple[
-    AbsenceJustification,
-    MakeupEntitlement | None,
-]
-```
-
-Только administrator.
-
-Проверки:
-
-```text
-Justification.status = PENDING
-
-Attendance(student, lesson)
-существует
-
-Attendance.status = ABSENT
-```
-
-Далее находится Subscription, который соответствовал:
-
-```text
-student
-category
-дате исходного Lesson
-```
-
-Если подходящего Subscription нет:
-
-```text
-Justification → VERIFIED
-```
-
-но entitlement не создаётся.
+При VERIFIED определяется конкретный `SubscriptionAllowance` категории исходного Lesson, который мог покрыть пропуск. Если allowance найден, создаётся MakeupEntitlement на него. Если подходящего allowance нет, justification остаётся VERIFIED, но entitlement не создаётся.
 
 ---
 
 # 66. Создание medical MakeupEntitlement
 
-Если source Subscription найден:
-
 ```text
-reason = MEDICAL_VERIFIED
-
-student = justification.student
-
-source_lesson = justification.lesson
-
-source_subscription = subscription
-
-source_justification = justification
-
-category = lesson.lesson_type.subscription_category
-
-valid_from =
-    max(subscription.valid_until + 1 day, today)
-    либо значение policy
-
-valid_until =
-    makeup_valid_until
+source_subscription_allowance = найденный allowance
+category = allowance.category
+valid_from / valid_until = medical makeup policy
 ```
 
-Не создаётся:
-
-```text
-GRANT +1
-```
+`GRANT +1` не создаётся.
 
 ---
 
 # 67. attendance.services.reject_medical_absence()
 
-```python
-reject_medical_absence(
-    *,
-    justification_id: UUID,
-    actor: User,
-) -> AbsenceJustification
-```
-
-Переход:
-
-```text
-PENDING → REJECTED
-```
-
-Event:
-
-```text
-AbsenceJustificationRejected
-```
+Логика остаётся без изменений: `PENDING → REJECTED` с audit event.
 
 ---
 
 # 68. subscriptions.services.grant_administrative_makeup()
 
-Для исключительных конфликтных случаев.
-
-```python
-grant_administrative_makeup(
-    *,
-    student_id: UUID,
-    source_lesson_id: UUID,
-    source_subscription_id: UUID,
-    valid_until: date,
-    target_lesson_id: UUID | None,
-    actor: User,
-) -> MakeupEntitlement
-```
-
-Создаёт:
-
-```text
-reason = ADMINISTRATIVE
-```
-
-но:
-
-```text
-не создаёт GRANT
-не увеличивает Subscription balance
-```
-
-В AuditEvent фиксируется actor и основание операции.
+Service принимает `source_subscription_allowance_id`; entitlement не увеличивает allowance balance и обязательно фиксирует actor/reason.
 
 ---
 
 # 69. subscriptions.services.rebind_attendance_coverage()
 
-Не обязательно выводить в UI MVP, но полезно иметь сервис.
-
-Сценарий:
-
-```text
-Attendance
-покрыт Subscription A
-
-но должен был покрываться B
-```
-
-Service:
-
-```python
-rebind_attendance_coverage(
-    *,
-    attendance_id: UUID,
-    target_subscription_id: UUID,
-    actor: User,
-) -> SubscriptionUsage
-```
-
-В одной транзакции:
-
-```text
-LOCK A
-LOCK B
-
-A:
-RESTORE +1
-
-старый Usage:
-reversed
-
-B:
-новый Usage
-CONSUME -1
-```
-
-Никакая история не удаляется.
+Service перепривязывает Coverage к другому допустимому entitlement. Для allowance→allowance: старый allowance `RESTORE +1`, старый Coverage reversed, новый Coverage + `CONSUME -1`. Для one-time веток ledger не создаётся/не восстанавливается без необходимости.
 
 ---
 
@@ -3602,106 +2573,25 @@ uncovered_count
 
 # 71. Uncovered attendance report
 
-```python
-get_uncovered_attendance()
-```
-
-Query conceptually:
-
-```text
-Attendance.status = PRESENT
-
-AND
-
-нет active SubscriptionUsage
-```
-
-Показывает администратору:
-
-```text
-Дата
-Ученик
-Занятие
-Категория
-```
+`Attendance.status=PRESENT` и нет active `AttendanceCoverage`.
 
 ---
 
 # 72. Expired unused report
 
-```python
-get_expired_subscriptions_with_balance(
-    *,
-    as_of: date,
-)
-```
-
-Условие:
-
-```text
-valid_until < as_of
-
-cancelled_at IS NULL
-
-SUM(ledger.delta) > 0
-```
-
-Показывает:
-
-```text
-Student
-Subscription
-used
-remaining
-medical makeup available
-```
-
-Именно этот отчёт полезен для разбора конфликтов о «сгоревших» занятиях.
+Отчёт агрегирует positive balances по `SubscriptionAllowance` истёкших Subscription и показывает ICE/HALL отдельно, плюс доступные MakeupEntitlement.
 
 ---
 
 # 73. Admin protection
 
-Следующие модели нельзя разрешать произвольно редактировать через стандартный Django Admin:
-
-```text
-Attendance
-SubscriptionUsage
-SubscriptionLedgerEntry
-AbsenceJustification state fields
-Lesson lifecycle fields
-```
-
-Для них Admin должен вызывать application services.
-
-Особенно:
-
-```text
-SubscriptionLedgerEntry
-```
-
-должен быть read-only.
+Read-only через обычный Admin: `Attendance`, `AttendanceCoverage`, `SubscriptionLedgerEntry`, lifecycle fields justification/lesson. Изменения выполняются application services.
 
 ---
 
 # 74. Django Admin — SubscriptionLedgerEntry
 
-```text
-list = allowed
-view = allowed
-add = forbidden
-change = forbidden
-delete = forbidden
-```
-
-Изменения выполняются только:
-
-```text
-issue_subscription()
-adjust_subscription()
-assign_attendance_coverage()
-reverse_attendance_coverage()
-```
+`list/view` разрешены, `add/change/delete` запрещены. Записи создают только `issue_subscription()`, `adjust_allowance()`, `assign_attendance_coverage()` и `reverse_attendance_coverage()`.
 
 ---
 
@@ -3732,45 +2622,19 @@ attendance.save()
 
 # 76. Domain events
 
-Все значимые services создают AuditEvent.
-
-Минимальный набор:
+Помимо Lesson/Attendance events используются:
 
 ```text
-LessonCreated
-LessonPublished
-LessonResponseChanged
-LessonMinimumReached
-LessonMinimumNotMet
-LessonConfirmed
-LessonCancelled
-LessonRescheduled
-LessonCompleted
-LessonAttendanceSubmitted
-LessonAttendanceReopened
-
-AttendanceMarkedPresent
-AttendanceMarkedAbsent
-AttendanceCorrectedToPresent
-AttendanceCorrectedToAbsent
-AttendanceCoverageAssigned
-AttendanceCoverageReversed
-AttendanceUncovered
-
 SubscriptionIssued
-SubscriptionVisitConsumed
-SubscriptionVisitRestored
-SubscriptionAdjusted
-SubscriptionCancelled
-SubscriptionExhausted
+SubscriptionActivated
+SubscriptionAllowanceConsumed
+SubscriptionAllowanceRestored
+SubscriptionAllowanceExhausted
 SubscriptionExpired
 SubscriptionExpiredWithUnusedBalance
-
-AbsenceJustificationDeclared
-AbsenceJustificationVerified
-AbsenceJustificationRejected
-AbsenceJustificationRevoked
-
+SubscriptionCancelled
+OneTimeEntitlementGranted
+OneTimeEntitlementUsed
 MakeupEntitlementGranted
 MakeupEntitlementUsed
 MakeupEntitlementCancelled
@@ -3781,399 +2645,107 @@ MakeupEntitlementExpired
 
 # 77. Event payload
 
-Не нужно копировать туда весь object.
-
-Например:
-
-```json
-{
-  "previous_status": "absent",
-  "new_status": "present",
-  "lesson_id": "...",
-  "student_id": "..."
-}
-```
-
-или:
-
-```json
-{
-  "subscription_id": "...",
-  "usage_id": "...",
-  "delta": -1
-}
-```
-
-Не писать:
-
-```text
-OAuth tokens
-session IDs
-медицинские сведения
-сканы документов
-```
+Payload содержит идентификаторы `subscription_id`, `allowance_id`, `coverage_id`, category и delta по необходимости, но не OAuth/session/medical contents.
 
 ---
 
 # 78. correlation_id
 
-Одна бизнес-операция использует один `correlation_id`.
-
-Например:
-
-```text
-Trainer нажал PRESENT
-```
-
-может создать:
-
-```text
-AttendanceMarkedPresent
-SubscriptionVisitConsumed
-AttendanceCoverageAssigned
-```
-
-У всех:
-
-```text
-correlation_id = одинаковый UUID
-```
-
-Это сильно облегчает аудит.
+Все события одной операции `Attendance → Coverage → Ledger` используют общий correlation_id.
 
 ---
 
 # 79. Transaction boundary
 
-Например:
-
-```python
-@transaction.atomic
-def set_attendance(...):
-    ...
-```
-
-Вся цепочка:
-
-```text
-Attendance
-Usage
-Ledger
-Audit
-```
-
-commit одновременно.
-
-Если Ledger insert не удался:
-
-```text
-Attendance также rollback.
-```
+В одной `transaction.atomic()` фиксируются Attendance, AttendanceCoverage, Ledger и Audit. Ошибка ledger откатывает allowance-backed Coverage и Attendance transition.
 
 ---
 
 # 80. External side effects
 
-Не отправлять уведомление внутри незавершённой DB transaction.
-
-Правило:
-
-```python
-transaction.on_commit(
-    lambda: send_notification(...)
-)
-```
-
-Например после:
-
-```text
-LessonRescheduled
-```
-
-можно после commit отправить сообщения участникам.
+Уведомления выполняются через `transaction.on_commit()`.
 
 ---
 
 # 81. Никаких Django signals для core business logic
 
-Допустимо использовать signals для второстепенной технической логики.
-
-Нельзя использовать их для:
-
-```text
-создания CONSUME
-создания RESTORE
-смены Lesson state
-выдачи MakeupEntitlement
-```
-
-Эта логика должна быть явно вызвана service layer.
+Signals не создают Coverage, CONSUME/RESTORE, MakeupEntitlement и не меняют Lesson lifecycle.
 
 ---
 
 # 82. Selectors
 
-Читающую логику стоит отделить от services.
-
-Например:
-
-```text
-scheduling/selectors.py
-
-get_student_schedule()
-get_coach_today_lessons()
-get_lesson_roster()
-get_lesson_viability()
-```
-
-```text
-subscriptions/selectors.py
-
-subscription_balance()
-get_eligible_subscriptions()
-get_available_makeups()
-get_student_subscription_summary()
-```
-
-Selectors не изменяют данные.
+Основные subscription selectors: `allowance_balance()`, `subscription_balances()`, `get_eligible_allowances()`, `get_available_one_time_entitlements()`, `get_available_makeups()`.
 
 ---
 
 # 83. Основной student schedule query
 
-```python
-get_student_schedule(
-    *,
-    student_id: UUID,
-    from_date: date,
-    until_date: date,
-)
-```
-
-Использует:
-
-```text
-active LessonRosterEntry
-
-Lesson.status != DRAFT
-Lesson.status != CANCELLED
-```
-
-и дополнительно может показывать CANCELLED как информационные записи некоторое время после отмены.
+Без изменений; дополнительно может prefetch entitlement/coverage summary для UI.
 
 ---
 
 # 84. Coach schedule
 
-```python
-get_coach_today_lessons(
-    *,
-    coach_id: UUID,
-    day: date,
-)
-```
-
-Index:
-
-```text
-(coach, starts_at)
-```
-
-уже обеспечивает основной access pattern.
+Без изменений.
 
 ---
 
 # 85. Обязательные transaction tests
 
-Обычный `TestCase` недостаточен для полноценной проверки части lock-сценариев.
-
-Concurrency tests должны использовать:
-
-```text
-TransactionTestCase
-```
-
-и реальные конкурентные транзакции PostgreSQL.
-
-Особенно тестируются:
-
-```text
-два одновременных PRESENT
-один последний visit
-```
-
-Ожидаемый результат:
-
-```text
-только один CONSUME
-второй Attendance → UNCOVERED
-или другой Subscription
-```
-
-Но никогда:
-
-```text
-balance = -1
-```
+Обязательно проверяются параллельные списания последнего visit одного allowance, независимые параллельные ICE/HALL allowances, one-time priority и идемпотентность Coverage.
 
 ---
 
 # 86. Критические DB invariants
 
-PostgreSQL гарантирует:
-
-```text
-один Attendance на Student + Lesson
-
-один LessonResponse на Student + Lesson
-
-один roster entry на Student + Lesson
-
-один active SubscriptionUsage на Attendance
-
-один active Usage на MakeupEntitlement
-
-один GRANT на Subscription
-
-один CONSUME на Usage
-
-один RESTORE на Usage
-
-корректный знак Ledger delta
-
-валидные временные диапазоны
-```
+PostgreSQL гарантирует уникальность plan/category и subscription/category allowances, один active Coverage на Attendance/OneTime/Makeup, один GRANT на allowance, один CONSUME/RESTORE на Coverage и корректный знак delta.
 
 ---
 
 # 87. Критические service invariants
 
-Application layer гарантирует:
-
-```text
-родитель меняет только своего Student
-
-тренер отмечает только своё Lesson
-
-RSVP только в допустимое время
-
-Attendance после CLOSED не меняется
-
-ICE не расходует HALL Subscription
-
-HALL не расходует ICE Subscription
-
-истёкший Subscription не используется
-без MakeupEntitlement
-
-MakeupEntitlement не создаёт extra visit
-
-Subscription balance никогда не становится отрицательным
-
-CLOSED Lesson имеет полный Attendance roster
-```
+Service layer гарантирует category match, entitlement ownership, valid date, positive allowance balance, one-time priority, отсутствие TRIAL_HALL, отсутствие отрицательных balances и запрет изменения CLOSED attendance без reopen.
 
 ---
 
 # 88. Итоговая схема
 
 ```text
-User
- ├── ExternalIdentity
- ├── StudentAccess ───────────────┐
- └── CoachProfile                │
-                                 ▼
-                              Student
-                              /     \
-                             /       \
-                            ▼         ▼
-                  GroupMembership  Subscription
-                         │          /    |    \
-                         ▼         /     |     \
-                  TrainingGroup   ▼      ▼      ▼
-                         │      Ledger  Usage  MakeupEntitlement
-                         ▼               ▲            │
-                  ScheduleTemplate       │            │
-                         │               │            │
-                         ▼               │            │
-                      Lesson ─────── Attendance       │
-                     /  |  \            ▲             │
-                    /   |   \           │             │
-                   ▼    ▼    ▼          │             │
-                Roster RSVP Enrollment  │             │
-                   │                    │             │
-                   └────────────────────┘             │
-                                                     │
-AbsenceJustification ────────────────────────────────┘
+SubscriptionPlan
+ └── SubscriptionPlanAllowance
+          │ snapshot
+          ▼
+Subscription
+ └── SubscriptionAllowance ──► SubscriptionLedgerEntry
+                ▲
+                │
+Attendance ──► AttendanceCoverage
+                │
+                ├── SubscriptionAllowance (+ optional MakeupEntitlement)
+                └── OneTimeEntitlement
 ```
 
 ---
 
 # 89. Источники истины
 
-Это должно быть явно зафиксировано в кодовой базе.
-
 ```text
-Фактическое посещение:
-Attendance
-
-Кто приглашён на занятие:
-LessonRosterEntry
-
-Планирует ли прийти:
-LessonResponse
-
-Количество оставшихся занятий:
-SUM(SubscriptionLedgerEntry.delta)
-
-Каким абонементом покрыто посещение:
-active SubscriptionUsage
-
-Медицинское основание:
-AbsenceJustification
-
-Право использовать остаток позже:
-MakeupEntitlement
+Факт посещения: Attendance
+Планируемое посещение: LessonResponse
+Состав занятия: LessonRosterEntry
+Состав тарифа: SubscriptionPlanAllowance
+Выданные лимиты: SubscriptionAllowance
+Остаток ICE/HALL: SUM(Ledger.delta) по allowance
+Покрытие посещения: active AttendanceCoverage
+Разовое/пробное/индивидуальное право: OneTimeEntitlement
+Исключительное продление: MakeupEntitlement
 ```
-
-Ни одна из этих сущностей не должна пытаться подменять другую.
 
 ---
 
 # 90. Рекомендуемый следующий этап реализации
 
-После утверждения этой схемы модели уже достаточно стабильны для начала разработки.
+После утверждения консолидированной модели реализация идёт в порядке: accounts/scheduling → Attendance → allowance-based subscriptions + ledger → AttendanceCoverage + concurrency tests → OneTimeEntitlement → Makeup flow → Admin/UI → future Billing.
 
-Рациональный порядок:
-
-```text
-1. accounts models
-
-2. scheduling models
-   + lesson generation
-   + publication
-   + roster snapshot
-   + RSVP
-
-3. Attendance models
-   + trainer interface
-
-4. Subscription models
-   + ledger
-
-5. Coverage service
-   + concurrency tests
-
-6. Medical / Makeup flow
-
-7. Lesson closing
-   + financial report
-
-8. Django Admin
-
-9. User frontend
-
-10. Security / deployment
-```
-
-Критическую часть `Attendance → SubscriptionUsage → Ledger` следует реализовать тестами раньше UI, поскольку именно она содержит основные финансовые и concurrency-инварианты системы.
+Критическую цепочку `Attendance → AttendanceCoverage → optional Ledger` необходимо покрыть transaction tests до разработки финансового UI.
