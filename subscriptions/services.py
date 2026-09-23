@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Exists, OuterRef, Q, Sum
 from django.utils import timezone
 
 from accounts.models import Student
@@ -1362,27 +1362,159 @@ def cancel_one_time_entitlement(
 def _audit_event_exists(
     *,
     event_type: str,
+    aggregate_type: str,
     aggregate_id: UUID,
 ) -> bool:
     return AuditEvent.objects.filter(
         event_type=event_type,
+        aggregate_type=aggregate_type,
         aggregate_id=aggregate_id,
     ).exists()
 
 
 @transaction.atomic
+def _process_one_subscription_lifecycle(
+    *,
+    subscription_id: UUID,
+    as_of: date,
+    actor: User | None,
+) -> dict[str, int]:
+    result = {
+        "activated": 0,
+        "expired": 0,
+        "expired_with_unused": 0,
+    }
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    if subscription.cancelled_at is not None:
+        return result
+
+    if (
+        subscription.valid_from <= as_of
+        and not _audit_event_exists(
+            event_type="SubscriptionActivated",
+            aggregate_type="Subscription",
+            aggregate_id=subscription.id,
+        )
+    ):
+        _audit(
+            event_type="SubscriptionActivated",
+            aggregate_type="Subscription",
+            aggregate_id=subscription.id,
+            actor=actor,
+            payload={
+                "student_id": str(subscription.student_id),
+                "valid_from": subscription.valid_from.isoformat(),
+                "valid_until": subscription.valid_until.isoformat(),
+                "as_of": as_of.isoformat(),
+            },
+        )
+        result["activated"] = 1
+
+    if subscription.valid_until >= as_of:
+        return result
+
+    balances = {
+        row["category"]: int(row["balance"] or 0)
+        for row in (
+            SubscriptionAllowance.objects.filter(subscription=subscription)
+            .values("category")
+            .annotate(balance=Sum("ledger_entries__delta"))
+        )
+    }
+
+    if not _audit_event_exists(
+        event_type="SubscriptionExpired",
+        aggregate_type="Subscription",
+        aggregate_id=subscription.id,
+    ):
+        _audit(
+            event_type="SubscriptionExpired",
+            aggregate_type="Subscription",
+            aggregate_id=subscription.id,
+            actor=actor,
+            payload={
+                "student_id": str(subscription.student_id),
+                "valid_until": subscription.valid_until.isoformat(),
+                "as_of": as_of.isoformat(),
+                "balances": balances,
+            },
+        )
+        result["expired"] = 1
+
+    if (
+        any(balance > 0 for balance in balances.values())
+        and not _audit_event_exists(
+            event_type="SubscriptionExpiredWithUnusedBalance",
+            aggregate_type="Subscription",
+            aggregate_id=subscription.id,
+        )
+    ):
+        _audit(
+            event_type="SubscriptionExpiredWithUnusedBalance",
+            aggregate_type="Subscription",
+            aggregate_id=subscription.id,
+            actor=actor,
+            payload={
+                "student_id": str(subscription.student_id),
+                "valid_until": subscription.valid_until.isoformat(),
+                "as_of": as_of.isoformat(),
+                "balances": balances,
+            },
+        )
+        result["expired_with_unused"] = 1
+
+    return result
+
+
+@transaction.atomic
+def _process_one_makeup_expiry(
+    *,
+    makeup_id: UUID,
+    as_of: date,
+    actor: User | None,
+) -> int:
+    makeup = MakeupEntitlement.objects.select_for_update().get(pk=makeup_id)
+    if makeup.cancelled_at is not None or makeup.valid_until >= as_of:
+        return 0
+    if AttendanceCoverage.objects.filter(
+        makeup_entitlement=makeup,
+        reversed_at__isnull=True,
+    ).exists():
+        return 0
+    if _audit_event_exists(
+        event_type="MakeupEntitlementExpired",
+        aggregate_type="MakeupEntitlement",
+        aggregate_id=makeup.id,
+    ):
+        return 0
+
+    _audit(
+        event_type="MakeupEntitlementExpired",
+        aggregate_type="MakeupEntitlement",
+        aggregate_id=makeup.id,
+        actor=actor,
+        payload={
+            "student_id": str(makeup.student_id),
+            "source_lesson_id": str(makeup.source_lesson_id),
+            "source_allowance_id": str(
+                makeup.source_subscription_allowance_id
+            ),
+            "category": makeup.category,
+            "valid_until": makeup.valid_until.isoformat(),
+            "as_of": as_of.isoformat(),
+        },
+    )
+    return 1
+
+
 def process_subscription_lifecycle(
     *,
     as_of: date,
     actor: User | None = None,
 ) -> dict[str, int]:
-    """
-    Emit derived subscription/make-up lifecycle events idempotently.
-
-    The operation does not mutate Subscription, Allowance, MakeupEntitlement,
-    or ledger state. Row locks serialize concurrent processors so the same
-    lifecycle event is not emitted twice.
-    """
+    """Emit derived lifecycle events using short per-object transactions."""
     counts = {
         "activated": 0,
         "expired": 0,
@@ -1390,137 +1522,85 @@ def process_subscription_lifecycle(
         "makeup_expired": 0,
     }
 
+    activated_event = AuditEvent.objects.filter(
+        event_type="SubscriptionActivated",
+        aggregate_type="Subscription",
+        aggregate_id=OuterRef("pk"),
+    )
+    expired_event = AuditEvent.objects.filter(
+        event_type="SubscriptionExpired",
+        aggregate_type="Subscription",
+        aggregate_id=OuterRef("pk"),
+    )
+    unused_event = AuditEvent.objects.filter(
+        event_type="SubscriptionExpiredWithUnusedBalance",
+        aggregate_type="Subscription",
+        aggregate_id=OuterRef("pk"),
+    )
     subscription_ids = list(
         Subscription.objects.filter(
             cancelled_at__isnull=True,
             valid_from__lte=as_of,
+        )
+        .annotate(
+            has_activated_event=Exists(activated_event),
+            has_expired_event=Exists(expired_event),
+            has_unused_event=Exists(unused_event),
+        )
+        .filter(
+            Q(has_activated_event=False)
+            | Q(
+                valid_until__lt=as_of,
+                has_expired_event=False,
+            )
+            | Q(
+                valid_until__lt=as_of,
+                has_unused_event=False,
+            )
         )
         .order_by("id")
         .values_list("id", flat=True)
     )
 
     for subscription_id in subscription_ids:
-        subscription = Subscription.objects.select_for_update().get(
-            pk=subscription_id
+        result = _process_one_subscription_lifecycle(
+            subscription_id=subscription_id,
+            as_of=as_of,
+            actor=actor,
         )
-        if subscription.cancelled_at is not None:
-            continue
-
-        if (
-            subscription.valid_from <= as_of
-            and not _audit_event_exists(
-                event_type="SubscriptionActivated",
-                aggregate_id=subscription.id,
-            )
-        ):
-            _audit(
-                event_type="SubscriptionActivated",
-                aggregate_type="Subscription",
-                aggregate_id=subscription.id,
-                actor=actor,
-                payload={
-                    "student_id": str(subscription.student_id),
-                    "valid_from": subscription.valid_from.isoformat(),
-                    "valid_until": subscription.valid_until.isoformat(),
-                    "as_of": as_of.isoformat(),
-                },
-            )
-            counts["activated"] += 1
-
-        if subscription.valid_until >= as_of:
-            continue
-
-        balances = {}
-        allowances = (
-            SubscriptionAllowance.objects.select_for_update()
-            .filter(subscription=subscription)
-            .order_by("category", "id")
-        )
-        for allowance in allowances:
-            balance = SubscriptionLedgerEntry.objects.filter(
-                allowance=allowance
-            ).aggregate(balance=Sum("delta"))["balance"]
-            balances[allowance.category] = int(balance or 0)
-
-        if not _audit_event_exists(
-            event_type="SubscriptionExpired",
-            aggregate_id=subscription.id,
-        ):
-            _audit(
-                event_type="SubscriptionExpired",
-                aggregate_type="Subscription",
-                aggregate_id=subscription.id,
-                actor=actor,
-                payload={
-                    "student_id": str(subscription.student_id),
-                    "valid_until": subscription.valid_until.isoformat(),
-                    "as_of": as_of.isoformat(),
-                    "balances": balances,
-                },
-            )
-            counts["expired"] += 1
-
-        if (
-            any(balance > 0 for balance in balances.values())
-            and not _audit_event_exists(
-                event_type="SubscriptionExpiredWithUnusedBalance",
-                aggregate_id=subscription.id,
-            )
-        ):
-            _audit(
-                event_type="SubscriptionExpiredWithUnusedBalance",
-                aggregate_type="Subscription",
-                aggregate_id=subscription.id,
-                actor=actor,
-                payload={
-                    "student_id": str(subscription.student_id),
-                    "valid_until": subscription.valid_until.isoformat(),
-                    "as_of": as_of.isoformat(),
-                    "balances": balances,
-                },
-            )
-            counts["expired_with_unused"] += 1
+        for key, value in result.items():
+            counts[key] += value
 
     active_makeup_usage = AttendanceCoverage.objects.filter(
         makeup_entitlement_id=OuterRef("pk"),
         reversed_at__isnull=True,
+    )
+    expired_makeup_event = AuditEvent.objects.filter(
+        event_type="MakeupEntitlementExpired",
+        aggregate_type="MakeupEntitlement",
+        aggregate_id=OuterRef("pk"),
     )
     makeup_ids = list(
         MakeupEntitlement.objects.filter(
             valid_until__lt=as_of,
             cancelled_at__isnull=True,
         )
-        .annotate(is_used=Exists(active_makeup_usage))
-        .filter(is_used=False)
+        .annotate(
+            is_used=Exists(active_makeup_usage),
+            has_expired_event=Exists(expired_makeup_event),
+        )
+        .filter(
+            is_used=False,
+            has_expired_event=False,
+        )
         .order_by("id")
         .values_list("id", flat=True)
     )
     for makeup_id in makeup_ids:
-        makeup = MakeupEntitlement.objects.select_for_update().get(pk=makeup_id)
-        if makeup.cancelled_at is not None or makeup.valid_until >= as_of:
-            continue
-        if _audit_event_exists(
-            event_type="MakeupEntitlementExpired",
-            aggregate_id=makeup.id,
-        ):
-            continue
-
-        _audit(
-            event_type="MakeupEntitlementExpired",
-            aggregate_type="MakeupEntitlement",
-            aggregate_id=makeup.id,
+        counts["makeup_expired"] += _process_one_makeup_expiry(
+            makeup_id=makeup_id,
+            as_of=as_of,
             actor=actor,
-            payload={
-                "student_id": str(makeup.student_id),
-                "source_lesson_id": str(makeup.source_lesson_id),
-                "source_allowance_id": str(
-                    makeup.source_subscription_allowance_id
-                ),
-                "category": makeup.category,
-                "valid_until": makeup.valid_until.isoformat(),
-                "as_of": as_of.isoformat(),
-            },
         )
-        counts["makeup_expired"] += 1
 
     return counts
