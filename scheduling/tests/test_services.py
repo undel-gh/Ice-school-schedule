@@ -1155,6 +1155,8 @@ def test_generate_lessons_uses_school_timezone_not_active_request_timezone(
 @pytest.mark.django_db
 def test_reschedule_workflow_rolls_back_when_entitlement_permission_missing(
     school_context,
+    student,
+    admin,
 ):
     coach, group, venue, lesson_type = school_context
     actor = User.objects.create_user(
@@ -1190,12 +1192,38 @@ def test_reschedule_workflow_rolls_back_when_entitlement_permission_missing(
         decision_deadline=starts_at - timedelta(hours=1),
         status=Lesson.Status.RSVP_OPEN,
     )
+    LessonResponse.objects.create(
+        lesson=source,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=admin,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="rollback-permission-plan",
+        name="Rollback permission plan",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category="ice",
+        visit_limit=1,
+    )
+    issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=admin,
+    )
 
     with pytest.raises(PermissionDenied):
         reschedule_lesson_with_entitlements(
             lesson_id=source.id,
-            new_starts_at=starts_at + timedelta(days=1),
-            new_ends_at=starts_at + timedelta(days=1, hours=1),
+            new_starts_at=datetime(
+                2026, 10, 2, 15, 0, tzinfo=dt_timezone.utc
+            ),
+            new_ends_at=datetime(
+                2026, 10, 2, 16, 0, tzinfo=dt_timezone.utc
+            ),
             actor=actor,
             reason=Lesson.CancellationReason.ADMINISTRATIVE,
             now=starts_at - timedelta(hours=3),
