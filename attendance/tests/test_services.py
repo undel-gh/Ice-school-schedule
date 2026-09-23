@@ -8,7 +8,12 @@ from django.core.exceptions import PermissionDenied, ValidationError
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
-from attendance.services import (\n    mark_remaining_absent,\n    reopen_attendance,\n    set_attendance,\n    submit_attendance,\n)
+from attendance.services import (
+    mark_remaining_absent,
+    reopen_attendance,
+    set_attendance,
+    submit_attendance,
+)
 from core.choices import SubscriptionCategory
 from scheduling.models import (
     Lesson,
