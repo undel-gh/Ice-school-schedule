@@ -11,7 +11,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
-from core.time import school_date
+from core.time import school_date as get_school_date
 from django.views.decorators.http import require_POST
 
 from accounts.models import CoachProfile, StudentAccess
@@ -109,7 +109,7 @@ def student_schedule(request: HttpRequest) -> HttpResponse:
     else:
         selected = accesses[0].student
 
-    today = school_date(timezone.now())
+    today = get_school_date(timezone.now())
     from_date = _parse_date(request.GET.get("from"), default=today)
     until_date = _parse_date(
         request.GET.get("until"),
@@ -174,7 +174,7 @@ def coach_schedule(request: HttpRequest) -> HttpResponse:
     coach = _coach_for_user(request)
     school_date = _parse_date(
         request.GET.get("date"),
-        default=school_date(timezone.now()),
+        default=get_school_date(timezone.now()),
     )
     lessons = get_coach_schedule(
         coach_id=coach.id,
