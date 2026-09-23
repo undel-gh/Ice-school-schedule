@@ -152,6 +152,7 @@ def admin(db):
         username="admin-scheduling",
         password="test",
         is_staff=True,
+        is_superuser=True,
     )
 
 
