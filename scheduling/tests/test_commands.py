@@ -17,7 +17,7 @@ from scheduling.models import (
     TrainingGroup,
     Venue,
 )
-from scheduling.services import LessonGenerationResult
+from scheduling.services import LessonGenerationResult, generate_lessons
 
 
 @pytest.fixture
