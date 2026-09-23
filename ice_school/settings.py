@@ -14,7 +14,19 @@ if not SECRET_KEY:
         raise ImproperlyConfigured(
             "DJANGO_SECRET_KEY is required when DJANGO_DEBUG is not enabled."
         )
-ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h]
+ALLOWED_HOSTS = [
+    h
+    for h in os.environ.get(
+        "DJANGO_ALLOWED_HOSTS",
+        "localhost,127.0.0.1",
+    ).split(",")
+    if h
+]
+TRUSTED_PROXY_IPS = tuple(
+    value.strip()
+    for value in os.environ.get("TRUSTED_PROXY_IPS", "").split(",")
+    if value.strip()
+)
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -170,11 +182,6 @@ AXES_FAILURE_LIMIT = int(os.environ.get("AXES_FAILURE_LIMIT", "5"))
 AXES_COOLOFF_TIME = 1
 AXES_RESET_ON_SUCCESS = True
 AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"], "ip_address"]
-# Production reverse proxy must overwrite X-Real-IP with the direct client's
-# address. X-Forwarded-For is intentionally ignored because append-style
-# proxy configurations can preserve attacker-supplied values.
-AXES_IPWARE_PROXY_COUNT = 0
-AXES_IPWARE_META_PRECEDENCE_ORDER = (
-    "HTTP_X_REAL_IP",
-    "REMOTE_ADDR",
-)
+# Trust X-Real-IP only when REMOTE_ADDR is an explicitly configured proxy.
+# Direct clients cannot self-assert X-Real-IP.
+AXES_CLIENT_IP_CALLABLE = "ice_school.security.get_axes_client_ip"
