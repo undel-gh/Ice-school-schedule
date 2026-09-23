@@ -894,9 +894,30 @@ def complete_lesson(
     *,
     lesson_id: UUID,
     now: datetime,
+    actor: User | None = None,
 ) -> Lesson:
-    """Move a finished confirmed lesson into attendance-entry state."""
-    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    """Move a finished confirmed lesson into attendance-entry state.
+
+    actor=None is reserved for trusted scheduler/management execution.
+    Interactive callers must pass the authenticated actor.
+    """
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("coach__user")
+        .get(pk=lesson_id)
+    )
+    if actor is not None:
+        from core.permissions import require_lesson_coach_or_permission
+
+        require_lesson_coach_or_permission(
+            actor=actor,
+            lesson=lesson,
+            permission="attendance.change_attendance",
+            message=(
+                "Only the lesson coach or a user with attendance change "
+                "permission may complete this lesson."
+            ),
+        )
 
     if lesson.status != Lesson.Status.CONFIRMED:
         raise ValidationError(
@@ -920,7 +941,7 @@ def complete_lesson(
     _audit_lesson(
         event_type="LessonCompleted",
         lesson=lesson,
-        actor=None,
+        actor=actor,
         payload={"completed_at": now.isoformat()},
     )
     return lesson
