@@ -32,7 +32,12 @@ User = get_user_model()
 
 @pytest.fixture
 def actor(db):
-    return User.objects.create_user(\n        username="finance-admin",\n        password="test",\n        is_superuser=True,\n        is_staff=True,\n    )
+    return User.objects.create_user(
+        username="finance-admin",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
 
 
 @pytest.fixture
