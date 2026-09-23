@@ -1670,3 +1670,83 @@ def test_draft_reschedule_moves_enrollment_and_one_time_entitlement(
         cancelled_at__isnull=True,
     ).exists()
     assert entitlement.lesson_id == replacement.id
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_reuses_existing_group_slot_after_draft_reschedule(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    old_template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 10, 20, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    old_lesson = generate_lessons(
+        template_id=old_template.id,
+        from_date=date(2026, 10, 20),
+        until_date=date(2026, 10, 20),
+        actor=admin,
+    )[0]
+    LessonEnrollment.objects.create(
+        lesson=old_lesson,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=old_lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=old_lesson.id,
+        new_starts_at=old_lesson.starts_at + timedelta(hours=1),
+        new_ends_at=old_lesson.ends_at + timedelta(hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+    )
+
+    new_template = version_schedule_template(
+        template_id=old_template.id,
+        effective_from=date(2026, 10, 19),
+        actor=admin,
+        now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+        start_time=datetime(2026, 10, 20, 19, 0).time(),
+    )
+
+    generated = generate_lessons(
+        template_id=new_template.id,
+        from_date=date(2026, 10, 19),
+        until_date=date(2026, 10, 25),
+        actor=admin,
+    )
+
+    slot_lessons = Lesson.objects.filter(
+        group=group,
+        starts_at=replacement.starts_at,
+    ).exclude(status=Lesson.Status.CANCELLED)
+    assert slot_lessons.count() == 1
+    assert slot_lessons.get().id == replacement.id
+    assert generated == [replacement]
+
+    entitlement.refresh_from_db()
+    assert entitlement.lesson_id == replacement.id
+    assert LessonEnrollment.objects.filter(
+        lesson=replacement,
+        student=student,
+        cancelled_at__isnull=True,
+    ).exists()
