@@ -142,3 +142,15 @@ def test_axes_trusted_proxy_matches_ipv4_mapped_remote_addr():
     )
 
     assert get_client_ip_address(request) == "203.0.113.7"
+
+
+
+@override_settings(TRUSTED_PROXY_IPS=("::ffff:10.0.0.0/104",))
+def test_axes_trusted_proxy_normalizes_ipv4_mapped_cidr():
+    request = RequestFactory().get(
+        "/accounts/login/",
+        REMOTE_ADDR="::ffff:10.23.45.67",
+        HTTP_X_REAL_IP="203.0.113.7",
+    )
+
+    assert get_client_ip_address(request) == "203.0.113.7"
