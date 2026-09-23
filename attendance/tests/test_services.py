@@ -1196,6 +1196,7 @@ def test_revoke_medical_absence_cancels_active_makeup(
 def test_present_attendance_audit_events_share_correlation_id(
     student,
     coach_user,
+    admin_user,
     school_context,
 ):
     starts_at = datetime(
@@ -1229,7 +1230,7 @@ def test_present_attendance_audit_events_share_correlation_id(
         plan_id=plan.id,
         valid_from=date(2026, 9, 1),
         valid_until=date(2026, 9, 30),
-        actor=coach_user,
+        actor=admin_user,
     )
 
     attendance = set_attendance(
