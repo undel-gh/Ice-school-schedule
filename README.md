@@ -308,6 +308,8 @@ monitoring can alert an operator instead of silently dropping the lesson.
 
 If the template already has its own concrete lesson for the exact slot,
 including a CANCELLED lesson, that concrete lesson is authoritative for the
-slot and no generation conflict is reported. Repeated unresolved conflicts
-still fail the cron command, but the same template/expected-start audit event
-is recorded only once.
+slot and no generation conflict is reported. Repeated unresolved conflicts still fail the cron command, but the same
+template/expected-start/conflicting-lesson audit event is recorded only once.
+If the school intentionally replaces a future regular occurrence, operators
+can cancel that template-owned lesson while it is still DRAFT; the cancelled
+own occurrence then becomes the authoritative decision for that slot.
