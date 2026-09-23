@@ -11,9 +11,9 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from core.permissions import require_permission, require_student_access
 from core.time import make_school_aware, school_date as get_school_date
 
-from accounts.models import StudentAccess
 from audit.services import record_event
 from .models import (
     GroupMembership,
@@ -55,8 +55,13 @@ def create_group_membership(
     group_id: UUID,
     starts_on: date,
     ends_on: date | None,
-    actor: User | None,
+    actor: User,
 ) -> GroupMembership:
+    require_permission(
+        actor,
+        "scheduling.add_groupmembership",
+        "Group membership creation permission is required.",
+    )
     if ends_on is not None and ends_on < starts_on:
         raise ValidationError(
             {"ends_on": "Membership end date cannot precede start date."}
@@ -100,7 +105,13 @@ def update_group_membership(
     membership_id: UUID,
     starts_on: date,
     ends_on: date | None,
+    actor: User,
 ) -> GroupMembership:
+    require_permission(
+        actor,
+        "scheduling.change_groupmembership",
+        "Group membership change permission is required.",
+    )
     if ends_on is not None and ends_on < starts_on:
         raise ValidationError(
             {"ends_on": "Membership end date cannot precede start date."}
@@ -319,6 +330,11 @@ def add_lesson_enrollment(
     reason: str,
     actor: User,
 ) -> LessonEnrollment:
+    require_permission(
+        actor,
+        "scheduling.add_lessonenrollment",
+        "Lesson enrollment permission is required.",
+    )
     if reason not in LessonEnrollment.Reason.values:
         raise ValidationError({"reason": "Unsupported enrollment reason."})
 
@@ -528,14 +544,10 @@ def set_lesson_response(
     if now > lesson.rsvp_deadline:
         raise ValidationError({"lesson": "RSVP deadline has passed."})
 
-    if not StudentAccess.objects.filter(
-        user=actor,
+    require_student_access(
+        actor=actor,
         student_id=student_id,
-        is_active=True,
-    ).exists():
-        raise ValidationError(
-            {"student": "Actor has no active access to this student."}
-        )
+    )
 
     try:
         LessonRosterEntry.objects.select_for_update().get(
@@ -678,6 +690,11 @@ def confirm_lesson(
     actor: User,
     now: datetime,
 ) -> Lesson:
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson confirmation permission is required.",
+    )
     lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
     if lesson.status != Lesson.Status.RSVP_OPEN:
         raise ValidationError(
@@ -720,6 +737,11 @@ def cancel_lesson(
     reason: str,
     now: datetime,
 ) -> Lesson:
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson cancellation permission is required.",
+    )
     _validate_cancellation_reason(reason)
     lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
     if lesson.status not in {
@@ -770,6 +792,11 @@ def reschedule_lesson(
     reason: str,
     now: datetime,
 ) -> Lesson:
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson reschedule permission is required.",
+    )
     _validate_cancellation_reason(reason)
     if new_ends_at <= new_starts_at:
         raise ValidationError(
