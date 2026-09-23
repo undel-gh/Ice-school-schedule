@@ -7,6 +7,8 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+from core.workflows import reschedule_lesson_with_entitlements
+
 from accounts.models import CoachProfile
 from attendance.models import Attendance
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
@@ -566,7 +568,7 @@ def test_reschedule_beyond_subscription_creates_targeted_makeup(
         actor=admin,
     )
 
-    replacement = reschedule_lesson(
+    replacement = reschedule_lesson_with_entitlements(
         lesson_id=source.id,
         new_starts_at=datetime(
             2026,
