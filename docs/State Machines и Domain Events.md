@@ -113,31 +113,30 @@ minimum_attendees:
                       cancel publish
                          │    │
                          ▼    ▼
-                  ┌───────────┐
-                     ┌─────────────┐
-                     │  RSVP_OPEN  │
-                     └──────┬──────┘
-                            │
-             ┌──────────────┼───────────────┐
-             │              │               │
-          confirm         cancel         reschedule
-             │              │               │
-             ▼              ▼               ▼
-       ┌───────────┐   ┌───────────┐   CANCELLED
-       │ CONFIRMED │   │ CANCELLED │       +
-       └─────┬─────┘   └───────────┘    new Lesson
-             │
-             │ lesson ends
-             ▼
-       ┌───────────┐
-       │ COMPLETED │
-       └─────┬─────┘
-             │ trainer submits
-             │ attendance
-             ▼
-       ┌───────────┐
-       │  CLOSED   │
-       └───────────┘
+                  ┌───────────┐  ┌─────────────┐
+                  │ CANCELLED │  │  RSVP_OPEN  │
+                  └───────────┘  └──────┬──────┘
+                                        │
+                         ┌──────────────┼───────────────┐
+                         │              │               │
+                      confirm         cancel         reschedule
+                         │              │               │
+                         ▼              ▼               ▼
+                   ┌───────────┐   ┌───────────┐   CANCELLED
+                   │ CONFIRMED │   │ CANCELLED │       +
+                   └─────┬─────┘   └───────────┘    new Lesson
+                         │
+                         │ lesson ends
+                         ▼
+                   ┌───────────┐
+                   │ COMPLETED │
+                   └─────┬─────┘
+                         │ trainer submits
+                         │ attendance
+                         ▼
+                   ┌───────────┐
+                   │  CLOSED   │
+                   └───────────┘
 ```
 
 Администратор может выполнить:
