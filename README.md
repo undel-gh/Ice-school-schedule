@@ -82,6 +82,11 @@ python manage.py generate_lessons \
   --from-date 2026-09-01 \
   --until-date 2026-09-30
 
+# recurring scheduler mode: all active templates for the next 60 days
+python manage.py generate_lessons \
+  --all-active \
+  --horizon-days 60
+
 python manage.py publish_daily_schedule --date 2026-09-23
 
 python manage.py evaluate_lesson --lesson <lesson-uuid>
@@ -136,6 +141,18 @@ python manage.py reject_medical_absence \
 python manage.py revoke_medical_absence \
   --justification <justification-uuid> \
   --actor <username>
+
+python manage.py create_group_membership \
+  --student <student-uuid> \
+  --group <group-uuid> \
+  --starts-on 2026-09-01 \
+  --actor <username>
+
+python manage.py update_group_membership \
+  --membership <membership-uuid> \
+  --starts-on 2026-09-01 \
+  --ends-on 2027-05-31 \
+  --actor <username>
 ```
 
 The named actor must possess the Django model permission required by the
@@ -186,3 +203,17 @@ the application to function.
 
 Login attempts are rate-limited with `django-axes`; the default failure limit
 is controlled by `AXES_FAILURE_LIMIT` (5 by default).
+
+Lockouts are tracked independently by username **or** client IP. Production
+deployment assumes one trusted reverse proxy (Caddy -> Gunicorn):
+
+```bash
+AXES_IPWARE_PROXY_COUNT=1
+AXES_IPWARE_PROXY_ORDER=left-most
+```
+
+Axes checks `HTTP_X_FORWARDED_FOR` before `REMOTE_ADDR`. The reverse proxy
+must strip or overwrite any client-supplied `X-Forwarded-For` value before
+forwarding the request; otherwise clients could spoof addresses and bypass IP
+rate limiting. Direct development/Codespaces should use
+`AXES_IPWARE_PROXY_COUNT=0`.
