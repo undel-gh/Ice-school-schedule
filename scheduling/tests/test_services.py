@@ -118,6 +118,7 @@ from scheduling.services import (
     cancel_lesson,
     confirm_lesson,
     evaluate_lesson_viability,
+    version_schedule_template,
     generate_lessons,
     publish_daily_schedule,
     publish_lesson,
@@ -1288,3 +1289,107 @@ def test_reschedule_transfers_unused_one_time_entitlement(
         event_type="OneTimeEntitlementTransferred",
         aggregate_id=entitlement.id,
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_cancels_future_drafts_and_avoids_duplicates(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 1, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        valid_until=None,
+        is_active=True,
+    )
+    generated = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 21),
+        until_date=date(2026, 10, 5),
+        actor=admin,
+    )
+    assert generated
+
+    replacement = version_schedule_template(
+        template_id=template.id,
+        effective_from=date(2026, 9, 28),
+        actor=admin,
+        now=datetime(
+            2026,
+            9,
+            23,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        start_time=datetime(2026, 9, 1, 19, 0).time(),
+    )
+
+    template.refresh_from_db()
+    assert template.is_active is False
+    assert template.valid_until == date(2026, 9, 27)
+    assert replacement.valid_from == date(2026, 9, 28)
+    assert replacement.start_time.hour == 19
+
+    assert not Lesson.objects.filter(
+        source_template=template,
+        status=Lesson.Status.DRAFT,
+        starts_at__date__gte=date(2026, 9, 28),
+    ).exists()
+    assert Lesson.objects.filter(
+        source_template=template,
+        status=Lesson.Status.CANCELLED,
+    ).exists()
+
+    generate_lessons(
+        template_id=replacement.id,
+        from_date=date(2026, 9, 28),
+        until_date=date(2026, 10, 5),
+        actor=admin,
+    )
+    active_future = Lesson.objects.filter(
+        source_template=replacement,
+        status=Lesson.Status.DRAFT,
+    )
+    assert active_future.exists()
+    assert all(item.starts_at.hour == 16 for item in active_future)
+
+
+@pytest.mark.django_db
+def test_group_membership_audit_preserves_previous_values(
+    school_context,
+    student,
+    admin,
+):
+    _coach, group, _venue, _lesson_type = school_context
+    membership = create_group_membership(
+        student_id=student.id,
+        group_id=group.id,
+        starts_on=date(2026, 9, 1),
+        ends_on=None,
+        actor=admin,
+    )
+
+    update_group_membership(
+        membership_id=membership.id,
+        starts_on=date(2026, 9, 2),
+        ends_on=date(2026, 12, 31),
+        actor=admin,
+    )
+
+    event = AuditEvent.objects.get(
+        event_type="GroupMembershipChanged",
+        aggregate_id=membership.id,
+    )
+    assert event.payload["previous_starts_on"] == "2026-09-01"
+    assert event.payload["previous_ends_on"] is None
+    assert event.payload["starts_on"] == "2026-09-02"
+    assert event.payload["ends_on"] == "2026-12-31"
