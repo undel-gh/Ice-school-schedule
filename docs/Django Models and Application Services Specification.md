@@ -2887,11 +2887,11 @@ version_schedule_template(
 Для забронированного DRAFT доступен
 `ice_school.workflows.reschedule_lesson_with_entitlements()`: DRAFT входит в
 разрешённые source states, активные enrollment копируются, а неиспользованные
-one-time entitlement переносятся на replacement. Replacement является
-разовым exception lesson (`source_template=None`) и должен быть поставлен в
-слот вне новой регулярной сетки, чтобы cron не создал рядом ещё одно занятие
-нового шаблона. Это операторский путь разблокировки versioning без досрочной
-публикации дня.
+one-time entitlement переносятся на replacement. Replacement остаётся разовым exception lesson (`source_template=None`), но
+может занимать тот же `group + starts_at`, который затем соответствует новой
+регулярной сетке. `generate_lessons()` перед созданием шаблонного занятия
+проверяет уже существующее неотменённое занятие той же группы в этом слоте и
+считает такой слот покрытым, поэтому дубль не создаётся.
 
 Безопасные DRAFT без броней отменяются с audit event, после чего новая версия
 может генерироваться начиная с `effective_from`.
