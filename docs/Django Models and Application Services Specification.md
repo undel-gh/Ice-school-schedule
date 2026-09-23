@@ -2916,7 +2916,7 @@ TrainingGroup и запрещает пересекающийся replacement.
 - overlap + другой `lesson_type` → возвращается conflict, слот не считается
   успешно сгенерированным;
 - `LessonGenerationConflict` записывается в audit идемпотентно по
-  `template + expected_starts_at`;
+  `template + expected_starts_at + conflicting_lesson_id`;
 - management command собирает такие конфликты и завершает каждый unresolved
   запуск `CommandError`, не размножая одинаковые audit events.
 
@@ -2935,3 +2935,9 @@ LessonGenerationResult(
 
 Callers используют поля `.lessons` и `.conflicts`; result не является
 подклассом list.
+
+
+DRAFT может быть отменён через обычный `cancel_lesson()`. Это позволяет
+оператору сначала сгенерировать occurrence шаблона, затем отменить его и тем
+самым явно принять занятие другого типа в этом временном слоте без публикации
+дня.
