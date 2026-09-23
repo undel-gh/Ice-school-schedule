@@ -5,6 +5,7 @@ from io import StringIO
 
 import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 
 from accounts.models import CoachProfile, Student
 from audit.models import AuditEvent
@@ -223,3 +224,103 @@ def test_generate_lessons_all_active_horizon(monkeypatch, ops_context):
 
     assert Lesson.objects.filter(source_template__isnull=False).exists()
     assert "Templates processed: 1" in out.getvalue()
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_all_active_continues_after_template_error(
+    monkeypatch,
+    ops_context,
+):
+    actor, coach, group, venue, lesson_type = ops_context
+    first = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 9, 21, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    second = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 22, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    calls = []
+
+    def fake_generate_lessons(*, template_id, **kwargs):
+        calls.append(template_id)
+        if template_id == first.id:
+            from django.core.exceptions import ValidationError
+
+            raise ValidationError("broken template")
+        return []
+
+    monkeypatch.setattr(
+        "scheduling.management.commands.generate_lessons.generate_lessons",
+        fake_generate_lessons,
+    )
+    monkeypatch.setattr(
+        "scheduling.management.commands.generate_lessons.school_date",
+        lambda value: date(2026, 9, 23),
+    )
+
+    with pytest.raises(CommandError) as exc_info:
+        call_command(
+            "generate_lessons",
+            "--all-active",
+            "--horizon-days",
+            "7",
+        )
+
+    assert first.id in calls
+    assert second.id in calls
+    assert "Some schedule templates failed" in str(exc_info.value)
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_command(ops_context):
+    actor, coach, group, venue, lesson_type = ops_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2099, 1, 5, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2099, 1, 1),
+        is_active=True,
+    )
+
+    out = StringIO()
+    call_command(
+        "version_schedule_template",
+        "--template",
+        str(template.id),
+        "--effective-from",
+        "2099-02-01",
+        "--start-time",
+        "19:00",
+        "--actor",
+        actor.username,
+        stdout=out,
+    )
+
+    template.refresh_from_db()
+    replacement = ScheduleTemplate.objects.get(
+        valid_from=date(2099, 2, 1),
+    )
+    assert template.is_active is False
+    assert template.valid_until == date(2099, 1, 31)
+    assert replacement.start_time.hour == 19
+    assert "version created" in out.getvalue().lower()
