@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from uuid import UUID
 
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.core.management.base import BaseCommand, CommandError
 from django.db import models
 from django.utils import timezone
@@ -66,18 +67,27 @@ class Command(BaseCommand):
             )
 
         total = 0
+        errors = []
         for template_id in template_ids:
-            lessons = generate_lessons(
-                template_id=template_id,
-                from_date=from_date,
-                until_date=until_date,
-                actor=None,
-            )
+            try:
+                lessons = generate_lessons(
+                    template_id=template_id,
+                    from_date=from_date,
+                    until_date=until_date,
+                    actor=None,
+                )
+            except (ValidationError, ObjectDoesNotExist) as exc:
+                errors.append(f"{template_id}: {exc}")
+                continue
             total += len(lessons)
 
         self.stdout.write(
             self.style.SUCCESS(
                 f"Templates processed: {len(template_ids)}; "
-                f"lessons returned: {total}"
+                f"lessons returned: {total}; errors: {len(errors)}"
             )
         )
+        if errors:
+            raise CommandError(
+                "Some schedule templates failed: " + " | ".join(errors)
+            )
