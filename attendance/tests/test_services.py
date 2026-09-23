@@ -1633,3 +1633,87 @@ def test_revoke_medical_absence_rejects_used_makeup(
     justification.refresh_from_db()
     assert makeup.cancelled_at is None
     assert justification.status == AbsenceJustification.Status.VERIFIED
+
+
+
+@pytest.mark.django_db
+def test_medical_justification_can_be_redeclared_after_present_correction(
+    student,
+    coach_user,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    add_to_roster(
+        lesson=lesson,
+        student=student,
+        actor=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=admin_user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(minutes=5),
+    )
+    justification = declare_medical_absence(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        actor=admin_user,
+    )
+    verify_medical_absence(
+        justification_id=justification.id,
+        actor=admin_user,
+        valid_until=date(2026, 10, 15),
+        now=starts_at + timedelta(days=1),
+    )
+
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.PRESENT,
+        actor=coach_user,
+        now=starts_at + timedelta(days=2),
+    )
+
+    justification.refresh_from_db()
+    assert justification.status == AbsenceJustification.Status.REVOKED
+    assert justification.revoked_at is not None
+
+    set_attendance(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        status=Attendance.Status.ABSENT,
+        actor=coach_user,
+        now=starts_at + timedelta(days=3),
+    )
+    redeclared = declare_medical_absence(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        actor=admin_user,
+    )
+
+    assert redeclared.id == justification.id
+    assert redeclared.status == AbsenceJustification.Status.PENDING
+    assert redeclared.reviewed_at is None
+    assert redeclared.revoked_at is None
+    assert AuditEvent.objects.filter(
+        event_type="AbsenceJustificationRedeclared",
+        aggregate_id=justification.id,
+    ).exists()
