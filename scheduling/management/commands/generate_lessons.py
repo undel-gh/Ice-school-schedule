@@ -79,8 +79,8 @@ class Command(BaseCommand):
             except (ValidationError, ObjectDoesNotExist) as exc:
                 errors.append(f"{template_id}: {exc}")
                 continue
-            total += len(lessons)
-            for conflict in getattr(lessons, "conflicts", ()):
+            total += len(lessons.lessons)
+            for conflict in lessons.conflicts:
                 errors.append(
                     (
                         f"{template_id}: generation conflict with lesson "
