@@ -146,10 +146,25 @@ def get_available_makeups(
         )
     )
 
+    allowance_ids = {
+        makeup.source_subscription_allowance_id
+        for makeup in candidates
+    }
+    balance_rows = (
+        SubscriptionLedgerEntry.objects.filter(
+            allowance_id__in=allowance_ids
+        )
+        .values("allowance_id")
+        .annotate(balance=Sum("delta"))
+    )
+    balances = {
+        row["allowance_id"]: int(row["balance"] or 0)
+        for row in balance_rows
+    }
     usable = [
         makeup
         for makeup in candidates
-        if allowance_balance(makeup.source_subscription_allowance_id) > 0
+        if balances.get(makeup.source_subscription_allowance_id, 0) > 0
     ]
     usable.sort(
         key=lambda makeup: (
