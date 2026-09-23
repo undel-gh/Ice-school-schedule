@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -41,14 +41,18 @@ def _audit(
     attendance: Attendance,
     actor: User,
     payload: dict | None = None,
+    correlation_id: UUID | None = None,
 ) -> None:
-    AuditEvent.objects.create(
-        event_type=event_type,
-        actor=actor,
-        aggregate_type="Attendance",
-        aggregate_id=attendance.id,
-        payload=payload or {},
-    )
+    values = {
+        "event_type": event_type,
+        "actor": actor,
+        "aggregate_type": "Attendance",
+        "aggregate_id": attendance.id,
+        "payload": payload or {},
+    }
+    if correlation_id is not None:
+        values["correlation_id"] = correlation_id
+    AuditEvent.objects.create(**values)
 
 
 def _assert_actor_can_mark(*, lesson: Lesson, actor: User) -> None:
@@ -102,6 +106,7 @@ def set_attendance(
     actor: User,
     now: datetime,
 ) -> Attendance:
+    correlation_id = uuid4()
     if status not in Attendance.Status.values:
         raise ValidationError({"status": "Unsupported attendance status."})
 
@@ -156,6 +161,7 @@ def set_attendance(
             coverage = assign_attendance_coverage(
                 attendance_id=attendance.id,
                 actor=actor,
+                correlation_id=correlation_id,
             )
             event_type = "AttendanceMarkedPresent"
             coverage_state = "covered" if coverage is not None else "uncovered"
@@ -173,7 +179,22 @@ def set_attendance(
                 "status": status,
                 "coverage": coverage_state,
             },
+            correlation_id=correlation_id,
         )
+        if (
+            status == Attendance.Status.PRESENT
+            and coverage is None
+        ):
+            _audit(
+                event_type="AttendanceUncovered",
+                attendance=attendance,
+                actor=actor,
+                payload={
+                    "lesson_id": str(lesson.id),
+                    "student_id": str(roster_entry.student_id),
+                },
+                correlation_id=correlation_id,
+            )
         return attendance
 
     if attendance.status == status:
@@ -192,6 +213,7 @@ def set_attendance(
             reverse_attendance_coverage(
                 coverage_id=coverage.id,
                 actor=actor,
+                correlation_id=correlation_id,
             )
 
         attendance.status = Attendance.Status.ABSENT
@@ -209,6 +231,7 @@ def set_attendance(
                 "from_status": previous_status,
                 "to_status": status,
             },
+            correlation_id=correlation_id,
         )
         return attendance
 
@@ -225,6 +248,7 @@ def set_attendance(
         coverage = assign_attendance_coverage(
             attendance_id=attendance.id,
             actor=actor,
+            correlation_id=correlation_id,
         )
         _audit(
             event_type="AttendanceCorrectedToPresent",
@@ -239,7 +263,19 @@ def set_attendance(
                     "covered" if coverage is not None else "uncovered"
                 ),
             },
+            correlation_id=correlation_id,
         )
+        if coverage is None:
+            _audit(
+                event_type="AttendanceUncovered",
+                attendance=attendance,
+                actor=actor,
+                payload={
+                    "lesson_id": str(lesson.id),
+                    "student_id": str(roster_entry.student_id),
+                },
+                correlation_id=correlation_id,
+            )
         return attendance
 
     raise ValidationError(
