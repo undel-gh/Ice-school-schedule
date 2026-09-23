@@ -130,3 +130,15 @@ def test_production_check_warns_about_invalid_trusted_proxy_entry():
     warnings = run_checks(tags=[Tags.security])
 
     assert any(item.id == "ice_school.W001" for item in warnings)
+
+
+
+@override_settings(TRUSTED_PROXY_IPS=("10.0.0.0/8",))
+def test_axes_trusted_proxy_matches_ipv4_mapped_remote_addr():
+    request = RequestFactory().get(
+        "/accounts/login/",
+        REMOTE_ADDR="::ffff:10.0.0.5",
+        HTTP_X_REAL_IP="203.0.113.7",
+    )
+
+    assert get_client_ip_address(request) == "203.0.113.7"
