@@ -29,6 +29,7 @@ TRUSTED_PROXY_IPS = tuple(
 )
 
 INSTALLED_APPS = [
+    "ice_school.apps.IceSchoolConfig",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
