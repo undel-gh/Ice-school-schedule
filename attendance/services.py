@@ -798,19 +798,60 @@ def verify_medical_absence(
                 }
             )
 
-        entitlement = MakeupEntitlement.objects.create(
-            student_id=justification.student_id,
-            source_lesson_id=justification.lesson_id,
-            source_subscription_allowance=allowance,
-            source_justification=justification,
-            category=allowance.category,
-            reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
-            valid_from=valid_from,
-            valid_until=valid_until,
-            created_by=actor,
+        entitlement = (
+            MakeupEntitlement.objects.select_for_update()
+            .filter(
+                student_id=justification.student_id,
+                source_lesson_id=justification.lesson_id,
+                reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+            )
+            .first()
         )
+        event_type = "MakeupEntitlementGranted"
+        if entitlement is None:
+            entitlement = MakeupEntitlement.objects.create(
+                student_id=justification.student_id,
+                source_lesson_id=justification.lesson_id,
+                source_subscription_allowance=allowance,
+                source_justification=justification,
+                category=allowance.category,
+                reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+                valid_from=valid_from,
+                valid_until=valid_until,
+                created_by=actor,
+            )
+        else:
+            if entitlement.cancelled_at is None:
+                raise ValidationError(
+                    {
+                        "justification": (
+                            "An active medical make-up already exists for "
+                            "this absence."
+                        )
+                    }
+                )
+            entitlement.source_subscription_allowance = allowance
+            entitlement.source_justification = justification
+            entitlement.category = allowance.category
+            entitlement.valid_from = valid_from
+            entitlement.valid_until = valid_until
+            entitlement.cancelled_at = None
+            entitlement.cancelled_by = None
+            entitlement.save(
+                update_fields=[
+                    "source_subscription_allowance",
+                    "source_justification",
+                    "category",
+                    "valid_from",
+                    "valid_until",
+                    "cancelled_at",
+                    "cancelled_by",
+                ]
+            )
+            event_type = "MakeupEntitlementReactivated"
+
         record_event(
-            event_type="MakeupEntitlementGranted",
+            event_type=event_type,
             actor=actor,
             aggregate_type="MakeupEntitlement",
             aggregate_id=entitlement.id,
