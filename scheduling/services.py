@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from uuid import UUID
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -21,6 +22,7 @@ from subscriptions.models import (
 
 from .models import (
     GroupMembership,
+    ScheduleTemplate,
     Lesson,
     LessonEnrollment,
     LessonResponse,
@@ -37,6 +39,34 @@ class LessonViabilityResult:
     no_response_count: int
     minimum_attendees: int
     minimum_met: bool
+
+
+
+def _validate_deadline_policy() -> tuple[int, int]:
+    rsvp_minutes = settings.SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START
+    decision_minutes = settings.SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START
+
+    if decision_minutes < 0 or rsvp_minutes < 0:
+        raise ValidationError(
+            "Scheduling deadline lead times must be non-negative."
+        )
+    if rsvp_minutes < decision_minutes:
+        raise ValidationError(
+            "RSVP deadline lead time must be greater than or equal to "
+            "decision deadline lead time."
+        )
+    return rsvp_minutes, decision_minutes
+
+
+def _aware_datetime_for_school_date(
+    *,
+    school_date: date,
+    local_time,
+) -> datetime:
+    naive = datetime.combine(school_date, local_time)
+    if settings.USE_TZ:
+        return timezone.make_aware(naive, timezone.get_current_timezone())
+    return naive
 
 
 def _lesson_date(lesson: Lesson):
@@ -59,6 +89,201 @@ def _audit_lesson(
         aggregate_id=lesson.id,
         payload=payload or {},
     )
+
+
+
+@transaction.atomic
+def generate_lessons(
+    *,
+    template_id: UUID,
+    from_date: date,
+    until_date: date,
+    actor: User | None = None,
+) -> list[Lesson]:
+    if until_date < from_date:
+        raise ValidationError(
+            {"until_date": "until_date must be on or after from_date."}
+        )
+
+    template = (
+        ScheduleTemplate.objects.select_for_update()
+        .select_related("group")
+        .get(pk=template_id)
+    )
+    if not template.is_active:
+        raise ValidationError(
+            {"template": "Inactive schedule templates cannot generate lessons."}
+        )
+
+    effective_from = max(from_date, template.valid_from)
+    effective_until = until_date
+    if template.valid_until is not None:
+        effective_until = min(effective_until, template.valid_until)
+
+    if effective_until < effective_from:
+        return []
+
+    rsvp_minutes, decision_minutes = _validate_deadline_policy()
+    created_or_existing: list[Lesson] = []
+
+    current = effective_from
+    while current <= effective_until:
+        if current.weekday() != template.weekday:
+            current += timedelta(days=1)
+            continue
+
+        starts_at = _aware_datetime_for_school_date(
+            school_date=current,
+            local_time=template.start_time,
+        )
+        ends_at = starts_at + timedelta(minutes=template.duration_minutes)
+        minimum_attendees = (
+            template.minimum_attendees_override
+            if template.minimum_attendees_override is not None
+            else template.group.default_minimum_attendees
+        )
+        rsvp_deadline = starts_at - timedelta(minutes=rsvp_minutes)
+        decision_deadline = starts_at - timedelta(minutes=decision_minutes)
+
+        lesson, _ = Lesson.objects.get_or_create(
+            source_template=template,
+            starts_at=starts_at,
+            defaults={
+                "group_id": template.group_id,
+                "lesson_type_id": template.lesson_type_id,
+                "coach_id": template.coach_id,
+                "venue_id": template.venue_id,
+                "ends_at": ends_at,
+                "minimum_attendees": minimum_attendees,
+                "rsvp_deadline": rsvp_deadline,
+                "decision_deadline": decision_deadline,
+                "status": Lesson.Status.DRAFT,
+            },
+        )
+        created_or_existing.append(lesson)
+        current += timedelta(days=1)
+
+    if created_or_existing:
+        AuditEvent.objects.create(
+            event_type="LessonsGenerated",
+            actor=actor,
+            aggregate_type="ScheduleTemplate",
+            aggregate_id=template.id,
+            payload={
+                "from_date": from_date.isoformat(),
+                "until_date": until_date.isoformat(),
+                "lesson_ids": [str(lesson.id) for lesson in created_or_existing],
+            },
+        )
+    return created_or_existing
+
+
+def publish_daily_schedule(
+    *,
+    school_date: date,
+    now: datetime,
+) -> list[Lesson]:
+    lesson_ids = []
+    for lesson in Lesson.objects.filter(status=Lesson.Status.DRAFT).only(
+        "id", "starts_at"
+    ):
+        if _lesson_date(lesson) == school_date:
+            lesson_ids.append(lesson.id)
+
+    published = []
+    for lesson_id in lesson_ids:
+        published.append(
+            publish_lesson(
+                lesson_id=lesson_id,
+                actor=None,
+                now=now,
+            )
+        )
+    return published
+
+
+@transaction.atomic
+def add_lesson_enrollment(
+    *,
+    lesson_id: UUID,
+    student_id: UUID,
+    reason: str,
+    actor: User,
+) -> LessonEnrollment:
+    if reason not in LessonEnrollment.Reason.values:
+        raise ValidationError({"reason": "Unsupported enrollment reason."})
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status in {
+        Lesson.Status.CANCELLED,
+        Lesson.Status.COMPLETED,
+        Lesson.Status.CLOSED,
+    }:
+        raise ValidationError(
+            {"lesson": "Cannot add enrollment to this lesson state."}
+        )
+
+    existing = (
+        LessonEnrollment.objects.select_for_update()
+        .filter(
+            lesson=lesson,
+            student_id=student_id,
+            cancelled_at__isnull=True,
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    enrollment = LessonEnrollment.objects.create(
+        lesson=lesson,
+        student_id=student_id,
+        reason=reason,
+        created_by=actor,
+    )
+
+    if lesson.status in {
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        roster, created = LessonRosterEntry.objects.get_or_create(
+            lesson=lesson,
+            student_id=student_id,
+            defaults={
+                "source": LessonRosterEntry.Source.ENROLLMENT,
+                "lesson_enrollment": enrollment,
+                "added_by": actor,
+                "is_active": True,
+            },
+        )
+        if not created:
+            roster.source = LessonRosterEntry.Source.ENROLLMENT
+            roster.lesson_enrollment = enrollment
+            roster.is_active = True
+            roster.deactivated_at = None
+            roster.deactivated_by = None
+            roster.save(
+                update_fields=[
+                    "source",
+                    "lesson_enrollment",
+                    "is_active",
+                    "deactivated_at",
+                    "deactivated_by",
+                ]
+            )
+
+    AuditEvent.objects.create(
+        event_type="LessonEnrollmentAdded",
+        actor=actor,
+        aggregate_type="LessonEnrollment",
+        aggregate_id=enrollment.id,
+        payload={
+            "lesson_id": str(lesson.id),
+            "student_id": str(student_id),
+            "reason": reason,
+        },
+    )
+    return enrollment
 
 
 @transaction.atomic
