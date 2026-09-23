@@ -569,6 +569,7 @@ def generate_lessons(
         .select_related("group")
         .get(pk=template_id)
     )
+    TrainingGroup.objects.select_for_update().get(pk=template.group_id)
     if not template.is_active:
         raise ValidationError(
             {"template": "Inactive schedule templates cannot generate lessons."}
@@ -604,6 +605,20 @@ def generate_lessons(
         )
         rsvp_deadline = starts_at - timedelta(minutes=rsvp_minutes)
         decision_deadline = starts_at - timedelta(minutes=decision_minutes)
+
+        occupying_lesson = (
+            Lesson.objects.filter(
+                group_id=template.group_id,
+                starts_at=starts_at,
+            )
+            .exclude(status=Lesson.Status.CANCELLED)
+            .order_by("id")
+            .first()
+        )
+        if occupying_lesson is not None:
+            created_or_existing.append(occupying_lesson)
+            current += timedelta(days=1)
+            continue
 
         lesson, created = Lesson.objects.get_or_create(
             source_template=template,
