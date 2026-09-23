@@ -4,21 +4,22 @@ from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Sum
 from django.utils import timezone
 
-from accounts.models import StudentAccess
-from audit.models import AuditEvent
+from audit.services import record_event
+from core.permissions import (
+    require_lesson_coach_or_permission,
+    require_permission,
+    require_student_access,
+)
 from core.time import school_date
 from scheduling.models import Lesson, LessonResponse, LessonRosterEntry
+from subscriptions.balances import locked_eligible_source_allowance
 from subscriptions.models import (
     AttendanceCoverage,
     MakeupEntitlement,
-    Subscription,
-    SubscriptionAllowance,
-    SubscriptionLedgerEntry,
 )
 from subscriptions.services import (
     assign_attendance_coverage,
@@ -53,16 +54,18 @@ def _audit(
     }
     if correlation_id is not None:
         values["correlation_id"] = correlation_id
-    AuditEvent.objects.create(**values)
+    record_event(**values)
 
 
 def _assert_actor_can_mark(*, lesson: Lesson, actor: User) -> None:
-    if actor.is_superuser or actor.is_staff:
-        return
-    if lesson.coach.user_id == actor.id:
-        return
-    raise PermissionDenied(
-        "Only the lesson coach or an administrator may mark attendance."
+    require_lesson_coach_or_permission(
+        actor=actor,
+        lesson=lesson,
+        permission="attendance.change_attendance",
+        message=(
+            "Only the lesson coach or a user with attendance change "
+            "permission may mark attendance."
+        ),
     )
 
 
@@ -144,7 +147,7 @@ def _cancel_unused_medical_makeups_for_present_correction(
         entitlement.cancelled_at = now
         entitlement.cancelled_by = actor
         entitlement.save(update_fields=["cancelled_at", "cancelled_by"])
-        AuditEvent.objects.create(
+        record_event(
             event_type="MakeupEntitlementCancelled",
             actor=actor,
             aggregate_type="MakeupEntitlement",
@@ -518,7 +521,7 @@ def submit_attendance(
         ]
     )
 
-    AuditEvent.objects.create(
+    record_event(
         event_type="LessonAttendanceSubmitted",
         actor=actor,
         aggregate_type="Lesson",
@@ -535,10 +538,11 @@ def reopen_attendance(
     actor: User,
     reason: str,
 ) -> Lesson:
-    if not (actor.is_staff or actor.is_superuser):
-        raise PermissionDenied(
-            "Only an administrator may reopen submitted attendance."
-        )
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson change permission is required to reopen attendance.",
+    )
     if not reason.strip():
         raise ValidationError({"reason": "Reopen reason is required."})
 
@@ -560,7 +564,7 @@ def reopen_attendance(
         ]
     )
 
-    AuditEvent.objects.create(
+    record_event(
         event_type="LessonAttendanceReopened",
         actor=actor,
         aggregate_type="Lesson",
@@ -572,12 +576,10 @@ def reopen_attendance(
 
 
 def _assert_medical_reviewer(actor: User) -> None:
-    if actor.is_superuser or actor.has_perm(
-        "attendance.change_absencejustification"
-    ):
-        return
-    raise PermissionDenied(
-        "Medical absence review permission is required."
+    require_permission(
+        actor,
+        "attendance.change_absencejustification",
+        "Medical absence review permission is required.",
     )
 
 
@@ -585,57 +587,16 @@ def _find_medical_source_allowance(
     *,
     student_id: UUID,
     lesson: Lesson,
-) -> tuple[SubscriptionAllowance, Subscription] | None:
-    source_date = school_date(lesson.starts_at)
-    category = lesson.lesson_type.subscription_category
-
-    candidate_ids = list(
-        SubscriptionAllowance.objects.filter(
-            subscription__student_id=student_id,
-            category=category,
-            subscription__cancelled_at__isnull=True,
-            subscription__valid_from__lte=source_date,
-            subscription__valid_until__gte=source_date,
-        )
-        .order_by(
-            "subscription__valid_until",
-            "subscription__valid_from",
-            "subscription__created_at",
-            "id",
-        )
-        .values_list("id", flat=True)
+):
+    selected = locked_eligible_source_allowance(
+        student_id=student_id,
+        category=lesson.lesson_type.subscription_category,
+        source_date=school_date(lesson.starts_at),
     )
-
-    for allowance_id in candidate_ids:
-        allowance = (
-            SubscriptionAllowance.objects.select_for_update()
-            .select_related("subscription")
-            .get(pk=allowance_id)
-        )
-        subscription = allowance.subscription
-        balance = SubscriptionLedgerEntry.objects.filter(
-            allowance=allowance
-        ).aggregate(balance=Sum("delta"))["balance"]
-        balance = int(balance or 0)
-
-        if subscription.cancelled_at is not None:
-            continue
-        if subscription.student_id != student_id:
-            continue
-        if allowance.category != category:
-            continue
-        if not (
-            subscription.valid_from
-            <= source_date
-            <= subscription.valid_until
-        ):
-            continue
-        if balance <= 0:
-            continue
-
-        return allowance, subscription
-
-    return None
+    if selected is None:
+        return None
+    allowance, subscription, _ = selected
+    return allowance, subscription
 
 
 @transaction.atomic
@@ -645,14 +606,10 @@ def declare_medical_absence(
     lesson_id: UUID,
     actor: User,
 ) -> AbsenceJustification:
-    if not StudentAccess.objects.filter(
-        user=actor,
+    require_student_access(
+        actor=actor,
         student_id=student_id,
-        is_active=True,
-    ).exists():
-        raise PermissionDenied(
-            "Actor has no active SELF or GUARDIAN access to this student."
-        )
+    )
 
     attendance = (
         Attendance.objects.select_for_update()
@@ -695,7 +652,7 @@ def declare_medical_absence(
         ),
         declared_by=actor,
     )
-    AuditEvent.objects.create(
+    record_event(
         event_type="AbsenceJustificationDeclared",
         actor=actor,
         aggregate_type="AbsenceJustification",
@@ -793,7 +750,7 @@ def verify_medical_absence(
             valid_until=valid_until,
             created_by=actor,
         )
-        AuditEvent.objects.create(
+        record_event(
             event_type="MakeupEntitlementGranted",
             actor=actor,
             aggregate_type="MakeupEntitlement",
@@ -809,7 +766,7 @@ def verify_medical_absence(
             },
         )
 
-    AuditEvent.objects.create(
+    record_event(
         event_type="AbsenceJustificationVerified",
         actor=actor,
         aggregate_type="AbsenceJustification",
@@ -858,7 +815,7 @@ def reject_medical_absence(
         update_fields=["status", "reviewed_at", "reviewed_by"]
     )
 
-    AuditEvent.objects.create(
+    record_event(
         event_type="AbsenceJustificationRejected",
         actor=actor,
         aggregate_type="AbsenceJustification",
@@ -924,7 +881,7 @@ def revoke_medical_absence(
         entitlement.save(
             update_fields=["cancelled_at", "cancelled_by"]
         )
-        AuditEvent.objects.create(
+        record_event(
             event_type="MakeupEntitlementCancelled",
             actor=actor,
             aggregate_type="MakeupEntitlement",
@@ -942,7 +899,7 @@ def revoke_medical_absence(
         update_fields=["status", "revoked_at", "revoked_by"]
     )
 
-    AuditEvent.objects.create(
+    record_event(
         event_type="AbsenceJustificationRevoked",
         actor=actor,
         aggregate_type="AbsenceJustification",
