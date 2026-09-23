@@ -161,6 +161,23 @@ python manage.py grant_administrative_makeup \
   --valid-until 2026-10-31 \
   --reason 'Administrative correction' \
   --actor <username>
+
+python manage.py create_schedule_template \
+  --group <group-uuid> \
+  --lesson-type <lesson-type-uuid> \
+  --coach <coach-profile-uuid> \
+  --venue <venue-uuid> \
+  --weekday 1 \
+  --start-time 18:00 \
+  --duration-minutes 60 \
+  --valid-from 2026-09-01 \
+  --actor <username>
+
+python manage.py version_schedule_template \
+  --template <schedule-template-uuid> \
+  --effective-from 2026-10-01 \
+  --start-time 19:00 \
+  --actor <username>
 ```
 
 The named actor must possess the Django model permission required by the
@@ -212,16 +229,33 @@ the application to function.
 Login attempts are rate-limited with `django-axes`; the default failure limit
 is controlled by `AXES_FAILURE_LIMIT` (5 by default).
 
-Lockouts are tracked independently by username **or** client IP. Production
-deployment assumes one trusted reverse proxy (Caddy -> Gunicorn):
+Axes uses two lockout scopes:
 
-```bash
-AXES_IPWARE_PROXY_COUNT=1
-AXES_IPWARE_PROXY_ORDER=left-most
+```text
+(username + client IP)
+OR
+client IP
 ```
 
-Axes checks `HTTP_X_FORWARDED_FOR` before `REMOTE_ADDR`. The reverse proxy
-must strip or overwrite any client-supplied `X-Forwarded-For` value before
-forwarding the request; otherwise clients could spoof addresses and bypass IP
-rate limiting. Direct development/Codespaces should use
-`AXES_IPWARE_PROXY_COUNT=0`.
+This avoids username-only denial of service while still limiting password
+spraying from one address.
+
+The application deliberately ignores `X-Forwarded-For`. It resolves the
+client address from `X-Real-IP` first and falls back to `REMOTE_ADDR`.
+The production reverse proxy **must overwrite** `X-Real-IP` with the direct
+client address rather than forwarding a client-supplied value.
+
+For nginx:
+
+```nginx
+proxy_set_header X-Real-IP $remote_addr;
+```
+
+For Caddy:
+
+```caddy
+header_up X-Real-IP {remote_host}
+```
+
+The regression suite verifies this exact Axes configuration, including that a
+spoofed `X-Forwarded-For` value is ignored.
