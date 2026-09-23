@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 
 from accounts.models import CoachProfile
+from attendance.models import Attendance
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from scheduling.services import complete_lesson
 
@@ -119,7 +120,9 @@ from scheduling.services import (
     set_lesson_response,
 )
 from subscriptions.models import (
+    AttendanceCoverage,
     MakeupEntitlement,
+    OneTimeEntitlement,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
