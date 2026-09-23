@@ -2059,19 +2059,11 @@ def test_generation_conflict_audit_is_idempotent_per_template_slot(
 
     assert len(first.conflicts) == 1
     assert len(second.conflicts) == 1
+    expected_starts_at = first.conflicts[0].starts_at.isoformat()
     events = AuditEvent.objects.filter(
         event_type="LessonGenerationConflict",
         aggregate_type="ScheduleTemplate",
         aggregate_id=template.id,
-        payload__expected_starts_at=(
-            datetime(
-                2026,
-                10,
-                29,
-                17,
-                30,
-                tzinfo=dt_timezone.utc,
-            ).isoformat()
-        ),
+        payload__expected_starts_at=expected_starts_at,
     )
     assert events.count() == 1
