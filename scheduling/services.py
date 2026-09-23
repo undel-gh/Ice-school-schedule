@@ -1,0 +1,1574 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from uuid import UUID, uuid4
+
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.db.models import Count, Q
+from django.utils import timezone
+
+from core.permissions import (
+    require_lesson_coach_or_permission,
+    require_permission,
+    require_student_access,
+)
+from core.time import make_school_aware, school_date as get_school_date
+
+from accounts.models import Student
+from audit.services import event_exists_with_payload, record_event
+from .models import (
+    GroupMembership,
+    TrainingGroup,
+    ScheduleTemplate,
+    Lesson,
+    LessonEnrollment,
+    LessonResponse,
+    LessonRosterEntry,
+)
+
+User = get_user_model()
+
+
+@dataclass(frozen=True, slots=True)
+class LessonViabilityResult:
+    yes_count: int
+    no_count: int
+    no_response_count: int
+    minimum_attendees: int
+    minimum_met: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LessonGenerationConflict:
+    template_id: UUID
+    conflicting_lesson_id: UUID
+    expected_lesson_type_id: UUID
+    conflicting_lesson_type_id: UUID
+    starts_at: datetime
+    ends_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class LessonGenerationResult:
+    lessons: tuple[Lesson, ...] = ()
+    conflicts: tuple[LessonGenerationConflict, ...] = ()
+
+
+
+def _membership_overlaps(
+    *,
+    starts_on: date,
+    ends_on: date | None,
+    other: GroupMembership,
+) -> bool:
+    effective_end = ends_on or date.max
+    other_end = other.ends_on or date.max
+    return starts_on <= other_end and other.starts_on <= effective_end
+
+
+@transaction.atomic
+def create_group_membership(
+    *,
+    student_id: UUID,
+    group_id: UUID,
+    starts_on: date,
+    ends_on: date | None,
+    actor: User,
+) -> GroupMembership:
+    require_permission(
+        actor,
+        "scheduling.add_groupmembership",
+        "Group membership creation permission is required.",
+    )
+    if ends_on is not None and ends_on < starts_on:
+        raise ValidationError(
+            {"ends_on": "Membership end date cannot precede start date."}
+        )
+
+    Student.objects.select_for_update().get(pk=student_id)
+    existing = list(
+        GroupMembership.objects.select_for_update().filter(
+            student_id=student_id,
+            group_id=group_id,
+        )
+    )
+    if any(
+        _membership_overlaps(
+            starts_on=starts_on,
+            ends_on=ends_on,
+            other=membership,
+        )
+        for membership in existing
+    ):
+        raise ValidationError(
+            {
+                "membership": (
+                    "Membership interval overlaps an existing interval "
+                    "for this student and group."
+                )
+            }
+        )
+
+    membership = GroupMembership.objects.create(
+        student_id=student_id,
+        group_id=group_id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+        created_by=actor,
+    )
+    record_event(
+        event_type="GroupMembershipCreated",
+        aggregate_type="GroupMembership",
+        aggregate_id=membership.id,
+        actor=actor,
+        payload={
+            "student_id": str(student_id),
+            "group_id": str(group_id),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat() if ends_on else None,
+        },
+    )
+    return membership
+
+
+@transaction.atomic
+def update_group_membership(
+    *,
+    membership_id: UUID,
+    starts_on: date,
+    ends_on: date | None,
+    actor: User,
+) -> GroupMembership:
+    require_permission(
+        actor,
+        "scheduling.change_groupmembership",
+        "Group membership change permission is required.",
+    )
+    if ends_on is not None and ends_on < starts_on:
+        raise ValidationError(
+            {"ends_on": "Membership end date cannot precede start date."}
+        )
+
+    membership = GroupMembership.objects.select_for_update().get(
+        pk=membership_id
+    )
+    Student.objects.select_for_update().get(pk=membership.student_id)
+    others = list(
+        GroupMembership.objects.select_for_update()
+        .filter(
+            student_id=membership.student_id,
+            group_id=membership.group_id,
+        )
+        .exclude(pk=membership.id)
+    )
+    if any(
+        _membership_overlaps(
+            starts_on=starts_on,
+            ends_on=ends_on,
+            other=other,
+        )
+        for other in others
+    ):
+        raise ValidationError(
+            {
+                "membership": (
+                    "Membership interval overlaps an existing interval "
+                    "for this student and group."
+                )
+            }
+        )
+
+    previous_starts_on = membership.starts_on
+    previous_ends_on = membership.ends_on
+    membership.starts_on = starts_on
+    membership.ends_on = ends_on
+    membership.save(update_fields=["starts_on", "ends_on"])
+    record_event(
+        event_type="GroupMembershipChanged",
+        aggregate_type="GroupMembership",
+        aggregate_id=membership.id,
+        actor=actor,
+        payload={
+            "student_id": str(membership.student_id),
+            "group_id": str(membership.group_id),
+            "previous_starts_on": previous_starts_on.isoformat(),
+            "previous_ends_on": (
+                previous_ends_on.isoformat() if previous_ends_on else None
+            ),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat() if ends_on else None,
+        },
+    )
+    return membership
+
+
+@transaction.atomic
+def create_schedule_template(
+    *,
+    group_id: UUID,
+    lesson_type_id: UUID,
+    coach_id: UUID,
+    venue_id: UUID,
+    weekday: int,
+    start_time,
+    duration_minutes: int,
+    valid_from: date,
+    valid_until: date | None,
+    minimum_attendees_override: int | None,
+    actor: User,
+) -> ScheduleTemplate:
+    require_permission(
+        actor,
+        "scheduling.add_scheduletemplate",
+        "Schedule template creation permission is required.",
+    )
+    if not 0 <= weekday <= 6:
+        raise ValidationError({"weekday": "weekday must be between 0 and 6."})
+    if duration_minutes <= 0:
+        raise ValidationError(
+            {"duration_minutes": "duration_minutes must be positive."}
+        )
+    if valid_until is not None and valid_until < valid_from:
+        raise ValidationError(
+            {"valid_until": "valid_until cannot precede valid_from."}
+        )
+    if minimum_attendees_override is not None and minimum_attendees_override < 1:
+        raise ValidationError(
+            {
+                "minimum_attendees_override": (
+                    "minimum_attendees_override must be at least 1."
+                )
+            }
+        )
+
+    template = ScheduleTemplate.objects.create(
+        group_id=group_id,
+        lesson_type_id=lesson_type_id,
+        coach_id=coach_id,
+        venue_id=venue_id,
+        weekday=weekday,
+        start_time=start_time,
+        duration_minutes=duration_minutes,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        minimum_attendees_override=minimum_attendees_override,
+        is_active=True,
+    )
+    record_event(
+        event_type="ScheduleTemplateCreated",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        actor=actor,
+        payload={
+            "group_id": str(group_id),
+            "lesson_type_id": str(lesson_type_id),
+            "coach_id": str(coach_id),
+            "venue_id": str(venue_id),
+            "weekday": weekday,
+            "start_time": start_time.isoformat(),
+            "duration_minutes": duration_minutes,
+            "valid_from": valid_from.isoformat(),
+            "valid_until": valid_until.isoformat() if valid_until else None,
+            "minimum_attendees_override": minimum_attendees_override,
+        },
+    )
+    return template
+
+
+_UNCHANGED = object()
+
+
+@transaction.atomic
+def version_schedule_template(
+    *,
+    template_id: UUID,
+    effective_from: date,
+    actor: User,
+    now: datetime,
+    group_id: UUID | object = _UNCHANGED,
+    lesson_type_id: UUID | object = _UNCHANGED,
+    coach_id: UUID | object = _UNCHANGED,
+    venue_id: UUID | object = _UNCHANGED,
+    weekday: int | object = _UNCHANGED,
+    start_time: object = _UNCHANGED,
+    duration_minutes: int | object = _UNCHANGED,
+    minimum_attendees_override: int | None | object = _UNCHANGED,
+) -> ScheduleTemplate:
+    """Create a new future template version without rewriting history."""
+    require_permission(
+        actor,
+        "scheduling.change_scheduletemplate",
+        "Schedule template change permission is required.",
+    )
+    template = ScheduleTemplate.objects.select_for_update().get(pk=template_id)
+    today = get_school_date(now)
+    if effective_from < today:
+        raise ValidationError(
+            {"effective_from": "Template changes cannot start in the past."}
+        )
+    if effective_from <= template.valid_from:
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "New template version must start after the current "
+                    "template valid_from."
+                )
+            }
+        )
+    if (
+        template.valid_until is not None
+        and effective_from > template.valid_until
+    ):
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "New template version must start within the current "
+                    "template validity interval."
+                )
+            }
+        )
+
+    new_values = {
+        "group_id": template.group_id,
+        "lesson_type_id": template.lesson_type_id,
+        "coach_id": template.coach_id,
+        "venue_id": template.venue_id,
+        "weekday": template.weekday,
+        "start_time": template.start_time,
+        "duration_minutes": template.duration_minutes,
+        "minimum_attendees_override": template.minimum_attendees_override,
+    }
+    requested = {
+        "group_id": group_id,
+        "lesson_type_id": lesson_type_id,
+        "coach_id": coach_id,
+        "venue_id": venue_id,
+        "weekday": weekday,
+        "start_time": start_time,
+        "duration_minutes": duration_minutes,
+        "minimum_attendees_override": minimum_attendees_override,
+    }
+    for key, value in requested.items():
+        if value is not _UNCHANGED:
+            new_values[key] = value
+
+    if not 0 <= int(new_values["weekday"]) <= 6:
+        raise ValidationError({"weekday": "weekday must be between 0 and 6."})
+    if int(new_values["duration_minutes"]) <= 0:
+        raise ValidationError(
+            {"duration_minutes": "duration_minutes must be positive."}
+        )
+    minimum = new_values["minimum_attendees_override"]
+    if minimum is not None and int(minimum) < 1:
+        raise ValidationError(
+            {
+                "minimum_attendees_override": (
+                    "minimum_attendees_override must be at least 1."
+                )
+            }
+        )
+
+    cutoff = make_school_aware(
+        datetime.combine(effective_from, datetime.min.time())
+    )
+    affected_lessons = list(
+        Lesson.objects.select_for_update()
+        .filter(
+            source_template=template,
+            starts_at__gte=cutoff,
+        )
+        .order_by("starts_at", "id")
+    )
+    blocking_statuses = {
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+        Lesson.Status.COMPLETED,
+        Lesson.Status.CLOSED,
+    }
+    blocking_lesson = next(
+        (
+            lesson
+            for lesson in affected_lessons
+            if lesson.status in blocking_statuses
+        ),
+        None,
+    )
+    if blocking_lesson is not None:
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "Template versioning would affect a published or "
+                    "processed lesson. Reschedule/cancel that lesson "
+                    f"explicitly first: {blocking_lesson.id}."
+                )
+            }
+        )
+
+    draft_ids = [
+        lesson.id
+        for lesson in affected_lessons
+        if lesson.status == Lesson.Status.DRAFT
+    ]
+    booking_state = {
+        row["id"]: (
+            row["active_enrollment_count"] > 0,
+            row["active_one_time_count"] > 0,
+        )
+        for row in (
+            Lesson.objects.filter(id__in=draft_ids)
+            .annotate(
+                active_enrollment_count=Count(
+                    "enrollments",
+                    filter=Q(enrollments__cancelled_at__isnull=True),
+                    distinct=True,
+                ),
+                active_one_time_count=Count(
+                    "one_time_entitlements",
+                    filter=Q(
+                        one_time_entitlements__cancelled_at__isnull=True
+                    ),
+                    distinct=True,
+                ),
+            )
+            .values(
+                "id",
+                "active_enrollment_count",
+                "active_one_time_count",
+            )
+        )
+    }
+    booked_draft = next(
+        (
+            lesson
+            for lesson in affected_lessons
+            if lesson.status == Lesson.Status.DRAFT
+            and any(booking_state.get(lesson.id, (False, False)))
+        ),
+        None,
+    )
+    if booked_draft is not None:
+        raise ValidationError(
+            {
+                "effective_from": (
+                    "Template versioning would cancel a DRAFT lesson with "
+                    "an active enrollment or one-time entitlement. Use the "
+                    "reschedule_lesson command to move that booked lesson "
+                    "to an explicit exception slot outside the new recurring "
+                    f"template slot first: {booked_draft.id}."
+                )
+            }
+        )
+
+    previous_valid_until = template.valid_until
+    template.valid_until = effective_from - timedelta(days=1)
+    template.save(update_fields=["valid_until", "updated_at"])
+
+    replacement = ScheduleTemplate.objects.create(
+        **new_values,
+        valid_from=effective_from,
+        valid_until=previous_valid_until,
+        is_active=True,
+    )
+
+    draft_lessons = [
+        lesson
+        for lesson in affected_lessons
+        if lesson.status == Lesson.Status.DRAFT
+    ]
+    cancelled_ids = []
+    for lesson in draft_lessons:
+        lesson.status = Lesson.Status.CANCELLED
+        lesson.cancelled_at = now
+        lesson.cancelled_by = actor
+        lesson.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
+        lesson.save(
+            update_fields=[
+                "status",
+                "cancelled_at",
+                "cancelled_by",
+                "cancellation_reason",
+                "updated_at",
+            ]
+        )
+        cancelled_ids.append(str(lesson.id))
+        _audit_lesson(
+            event_type="LessonCancelled",
+            lesson=lesson,
+            actor=actor,
+            payload={
+                "reason": "schedule_template_versioned",
+                "replacement_template_id": str(replacement.id),
+            },
+        )
+
+    record_event(
+        event_type="ScheduleTemplateVersioned",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        actor=actor,
+        payload={
+            "replacement_template_id": str(replacement.id),
+            "effective_from": effective_from.isoformat(),
+            "previous_valid_until": (
+                previous_valid_until.isoformat()
+                if previous_valid_until is not None
+                else None
+            ),
+            "cancelled_draft_lesson_ids": cancelled_ids,
+        },
+    )
+    return replacement
+
+
+def _validate_deadline_policy() -> tuple[int, int]:
+    rsvp_minutes = settings.SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START
+    decision_minutes = settings.SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START
+
+    if decision_minutes < 0 or rsvp_minutes < 0:
+        raise ValidationError(
+            "Scheduling deadline lead times must be non-negative."
+        )
+    if rsvp_minutes < decision_minutes:
+        raise ValidationError(
+            "RSVP deadline lead time must be greater than or equal to "
+            "decision deadline lead time."
+        )
+    return rsvp_minutes, decision_minutes
+
+
+def _aware_datetime_for_school_date(
+    *,
+    school_date: date,
+    local_time,
+) -> datetime:
+    naive = datetime.combine(school_date, local_time)
+    if settings.USE_TZ:
+        return make_school_aware(naive)
+    return naive
+
+
+@transaction.atomic
+def skip_template_occurrence(
+    *,
+    template_id: UUID,
+    occurrence_date: date,
+    actor: User,
+    now: datetime,
+) -> Lesson:
+    """Create an authoritative CANCELLED occurrence for one template date."""
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        (
+            "Lesson change permission is required to skip a template "
+            "occurrence."
+        ),
+    )
+    template = (
+        ScheduleTemplate.objects.select_for_update()
+        .select_related("group")
+        .get(pk=template_id)
+    )
+    TrainingGroup.objects.select_for_update().get(pk=template.group_id)
+
+    if not template.is_active:
+        raise ValidationError(
+            {
+                "template": (
+                    "Inactive schedule templates cannot skip occurrences."
+                )
+            }
+        )
+    if occurrence_date < get_school_date(now):
+        raise ValidationError(
+            {"date": "Past template occurrences cannot be skipped."}
+        )
+    if occurrence_date < template.valid_from or (
+        template.valid_until is not None
+        and occurrence_date > template.valid_until
+    ):
+        raise ValidationError(
+            {"date": "Occurrence date is outside template validity."}
+        )
+    if occurrence_date.weekday() != template.weekday:
+        raise ValidationError(
+            {"date": "Occurrence date does not match template weekday."}
+        )
+
+    starts_at = _aware_datetime_for_school_date(
+        school_date=occurrence_date,
+        local_time=template.start_time,
+    )
+    existing = (
+        Lesson.objects.select_for_update()
+        .filter(
+            source_template=template,
+            starts_at=starts_at,
+        )
+        .order_by("id")
+        .first()
+    )
+    if existing is not None:
+        if existing.status == Lesson.Status.CANCELLED:
+            return existing
+        raise ValidationError(
+            {
+                "date": (
+                    "Template occurrence is already materialized as lesson "
+                    f"{existing.id} with status {existing.status}."
+                )
+            }
+        )
+
+    rsvp_minutes, decision_minutes = _validate_deadline_policy()
+    ends_at = starts_at + timedelta(minutes=template.duration_minutes)
+    minimum_attendees = (
+        template.minimum_attendees_override
+        if template.minimum_attendees_override is not None
+        else template.group.default_minimum_attendees
+    )
+    lesson = Lesson.objects.create(
+        source_template=template,
+        group_id=template.group_id,
+        lesson_type_id=template.lesson_type_id,
+        coach_id=template.coach_id,
+        venue_id=template.venue_id,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        minimum_attendees=minimum_attendees,
+        rsvp_deadline=starts_at - timedelta(minutes=rsvp_minutes),
+        decision_deadline=starts_at - timedelta(minutes=decision_minutes),
+        status=Lesson.Status.CANCELLED,
+        cancelled_at=now,
+        cancelled_by=actor,
+        cancellation_reason=Lesson.CancellationReason.ADMINISTRATIVE,
+    )
+    correlation_id = uuid4()
+    record_event(
+        event_type="ScheduleTemplateOccurrenceSkipped",
+        actor=actor,
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        correlation_id=correlation_id,
+        payload={
+            "lesson_id": str(lesson.id),
+            "occurrence_date": occurrence_date.isoformat(),
+            "starts_at": starts_at.isoformat(),
+            "ends_at": ends_at.isoformat(),
+        },
+    )
+    _audit_lesson(
+        event_type="LessonCancelled",
+        lesson=lesson,
+        actor=actor,
+        correlation_id=correlation_id,
+        payload={
+            "cancelled_at": now.isoformat(),
+            "reason": Lesson.CancellationReason.ADMINISTRATIVE,
+            "source": "schedule_template_occurrence_skipped",
+            "source_template_id": str(template.id),
+        },
+    )
+    return lesson
+
+
+def _audit_lesson(
+    *,
+    event_type: str,
+    lesson: Lesson,
+    actor: User | None,
+    payload: dict | None = None,
+    correlation_id: UUID | None = None,
+) -> None:
+    record_event(
+        event_type=event_type,
+        actor=actor,
+        aggregate_type="Lesson",
+        aggregate_id=lesson.id,
+        payload=payload,
+        correlation_id=correlation_id,
+    )
+
+
+
+@transaction.atomic
+def generate_lessons(
+    *,
+    template_id: UUID,
+    from_date: date,
+    until_date: date,
+    actor: User | None = None,
+) -> LessonGenerationResult:
+    if until_date < from_date:
+        raise ValidationError(
+            {"until_date": "until_date must be on or after from_date."}
+        )
+
+    template = (
+        ScheduleTemplate.objects.select_for_update()
+        .select_related("group")
+        .get(pk=template_id)
+    )
+    TrainingGroup.objects.select_for_update().get(pk=template.group_id)
+    if not template.is_active:
+        raise ValidationError(
+            {"template": "Inactive schedule templates cannot generate lessons."}
+        )
+
+    effective_from = max(from_date, template.valid_from)
+    effective_until = until_date
+    if template.valid_until is not None:
+        effective_until = min(effective_until, template.valid_until)
+
+    if effective_until < effective_from:
+        return LessonGenerationResult()
+
+    rsvp_minutes, decision_minutes = _validate_deadline_policy()
+    created_or_existing: list[Lesson] = []
+    conflicts: list[LessonGenerationConflict] = []
+    created_ids: list[str] = []
+
+    current = effective_from
+    while current <= effective_until:
+        if current.weekday() != template.weekday:
+            current += timedelta(days=1)
+            continue
+
+        starts_at = _aware_datetime_for_school_date(
+            school_date=current,
+            local_time=template.start_time,
+        )
+        ends_at = starts_at + timedelta(minutes=template.duration_minutes)
+        minimum_attendees = (
+            template.minimum_attendees_override
+            if template.minimum_attendees_override is not None
+            else template.group.default_minimum_attendees
+        )
+        rsvp_deadline = starts_at - timedelta(minutes=rsvp_minutes)
+        decision_deadline = starts_at - timedelta(minutes=decision_minutes)
+
+        own_lesson = (
+            Lesson.objects.filter(
+                source_template=template,
+                starts_at=starts_at,
+            )
+            .order_by("id")
+            .first()
+        )
+        if own_lesson is not None:
+            created_or_existing.append(own_lesson)
+            current += timedelta(days=1)
+            continue
+
+        overlapping_lessons = list(
+            Lesson.objects.filter(
+                group_id=template.group_id,
+                starts_at__lt=ends_at,
+                ends_at__gt=starts_at,
+            )
+            .exclude(status=Lesson.Status.CANCELLED)
+            .order_by("starts_at", "id")
+        )
+        if overlapping_lessons:
+            cross_type = next(
+                (
+                    lesson
+                    for lesson in overlapping_lessons
+                    if lesson.lesson_type_id != template.lesson_type_id
+                ),
+                None,
+            )
+            if cross_type is None:
+                created_or_existing.append(overlapping_lessons[0])
+            else:
+                conflict = LessonGenerationConflict(
+                    template_id=template.id,
+                    conflicting_lesson_id=cross_type.id,
+                    expected_lesson_type_id=template.lesson_type_id,
+                    conflicting_lesson_type_id=cross_type.lesson_type_id,
+                    starts_at=starts_at,
+                    ends_at=ends_at,
+                )
+                conflicts.append(conflict)
+                expected_starts_at = starts_at.isoformat()
+                if not event_exists_with_payload(
+                    event_type="LessonGenerationConflict",
+                    aggregate_type="ScheduleTemplate",
+                    aggregate_id=template.id,
+                    payload_filters={
+                        "expected_starts_at": expected_starts_at,
+                        "conflicting_lesson_id": str(cross_type.id),
+                    },
+                ):
+                    record_event(
+                        event_type="LessonGenerationConflict",
+                        actor=actor,
+                        aggregate_type="ScheduleTemplate",
+                        aggregate_id=template.id,
+                        payload={
+                            "conflicting_lesson_id": str(cross_type.id),
+                            "expected_lesson_type_id": str(
+                                template.lesson_type_id
+                            ),
+                            "conflicting_lesson_type_id": str(
+                                cross_type.lesson_type_id
+                            ),
+                            "expected_starts_at": expected_starts_at,
+                            "expected_ends_at": ends_at.isoformat(),
+                            "conflicting_starts_at": (
+                                cross_type.starts_at.isoformat()
+                            ),
+                            "conflicting_ends_at": (
+                                cross_type.ends_at.isoformat()
+                            ),
+                        },
+                    )
+            current += timedelta(days=1)
+            continue
+
+        lesson, created = Lesson.objects.get_or_create(
+            source_template=template,
+            starts_at=starts_at,
+            defaults={
+                "group_id": template.group_id,
+                "lesson_type_id": template.lesson_type_id,
+                "coach_id": template.coach_id,
+                "venue_id": template.venue_id,
+                "ends_at": ends_at,
+                "minimum_attendees": minimum_attendees,
+                "rsvp_deadline": rsvp_deadline,
+                "decision_deadline": decision_deadline,
+                "status": Lesson.Status.DRAFT,
+            },
+        )
+        created_or_existing.append(lesson)
+        if created:
+            created_ids.append(str(lesson.id))
+        current += timedelta(days=1)
+
+    if created_ids:
+        record_event(
+            event_type="LessonsGenerated",
+            actor=actor,
+            aggregate_type="ScheduleTemplate",
+            aggregate_id=template.id,
+            payload={
+                "from_date": from_date.isoformat(),
+                "until_date": until_date.isoformat(),
+                "lesson_ids": created_ids,
+            },
+        )
+    return LessonGenerationResult(
+        lessons=tuple(created_or_existing),
+        conflicts=tuple(conflicts),
+    )
+
+
+def publish_daily_schedule(
+    *,
+    school_date: date,
+    now: datetime,
+) -> list[Lesson]:
+    start = make_school_aware(
+        datetime.combine(school_date, datetime.min.time())
+    )
+    end = start + timedelta(days=1)
+    lesson_ids = list(
+        Lesson.objects.filter(
+            status=Lesson.Status.DRAFT,
+            starts_at__gte=start,
+            starts_at__lt=end,
+        )
+        .order_by("starts_at", "id")
+        .values_list("id", flat=True)
+    )
+
+    published = []
+    for lesson_id in lesson_ids:
+        try:
+            lesson = publish_lesson(
+                lesson_id=lesson_id,
+                actor=None,
+                now=now,
+            )
+        except ValidationError:
+            current_status = Lesson.objects.filter(
+                pk=lesson_id
+            ).values_list("status", flat=True).first()
+            if current_status != Lesson.Status.DRAFT:
+                continue
+            raise
+        published.append(lesson)
+    return published
+
+
+@transaction.atomic
+def add_lesson_enrollment(
+    *,
+    lesson_id: UUID,
+    student_id: UUID,
+    reason: str,
+    actor: User,
+) -> LessonEnrollment:
+    require_permission(
+        actor,
+        "scheduling.add_lessonenrollment",
+        "Lesson enrollment permission is required.",
+    )
+    if reason not in LessonEnrollment.Reason.values:
+        raise ValidationError({"reason": "Unsupported enrollment reason."})
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status in {
+        Lesson.Status.CANCELLED,
+        Lesson.Status.COMPLETED,
+        Lesson.Status.CLOSED,
+    }:
+        raise ValidationError(
+            {"lesson": "Cannot add enrollment to this lesson state."}
+        )
+
+    existing = (
+        LessonEnrollment.objects.select_for_update()
+        .filter(
+            lesson=lesson,
+            student_id=student_id,
+            cancelled_at__isnull=True,
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    enrollment = LessonEnrollment.objects.create(
+        lesson=lesson,
+        student_id=student_id,
+        reason=reason,
+        created_by=actor,
+    )
+
+    if lesson.status in {
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        roster, created = LessonRosterEntry.objects.get_or_create(
+            lesson=lesson,
+            student_id=student_id,
+            defaults={
+                "source": LessonRosterEntry.Source.ENROLLMENT,
+                "lesson_enrollment": enrollment,
+                "added_by": actor,
+                "is_active": True,
+            },
+        )
+        if not created:
+            roster.source = LessonRosterEntry.Source.ENROLLMENT
+            roster.lesson_enrollment = enrollment
+            roster.is_active = True
+            roster.deactivated_at = None
+            roster.deactivated_by = None
+            roster.save(
+                update_fields=[
+                    "source",
+                    "lesson_enrollment",
+                    "is_active",
+                    "deactivated_at",
+                    "deactivated_by",
+                ]
+            )
+
+    record_event(
+        event_type="LessonEnrollmentAdded",
+        actor=actor,
+        aggregate_type="LessonEnrollment",
+        aggregate_id=enrollment.id,
+        payload={
+            "lesson_id": str(lesson.id),
+            "student_id": str(student_id),
+            "reason": reason,
+        },
+    )
+    return enrollment
+
+
+@transaction.atomic
+def publish_lesson(
+    *,
+    lesson_id: UUID,
+    actor: User | None,
+    now: datetime,
+) -> Lesson:
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status != Lesson.Status.DRAFT:
+        raise ValidationError(
+            {"lesson": "Only a DRAFT lesson can be published."}
+        )
+
+    lesson_date = get_school_date(lesson.starts_at)
+
+    memberships = (
+        GroupMembership.objects.filter(
+            group_id=lesson.group_id,
+            student__is_active=True,
+            starts_on__lte=lesson_date,
+        )
+        .filter(Q(ends_on__isnull=True) | Q(ends_on__gte=lesson_date))
+        .order_by("student_id", "-starts_on", "id")
+    )
+
+    selected_memberships = {}
+    for membership in memberships:
+        selected_memberships.setdefault(membership.student_id, membership)
+
+    for membership in selected_memberships.values():
+        roster, created = LessonRosterEntry.objects.get_or_create(
+            lesson=lesson,
+            student_id=membership.student_id,
+            defaults={
+                "source": LessonRosterEntry.Source.GROUP,
+                "group_membership": membership,
+                "added_by": actor,
+                "is_active": True,
+            },
+        )
+        if not created and not roster.is_active:
+            roster.is_active = True
+            roster.deactivated_at = None
+            roster.deactivated_by = None
+            roster.save(
+                update_fields=[
+                    "is_active",
+                    "deactivated_at",
+                    "deactivated_by",
+                ]
+            )
+
+    enrollments = (
+        LessonEnrollment.objects.filter(
+            lesson=lesson,
+            student__is_active=True,
+            cancelled_at__isnull=True,
+        )
+        .order_by("student_id", "created_at", "id")
+    )
+    for enrollment in enrollments:
+        roster, created = LessonRosterEntry.objects.get_or_create(
+            lesson=lesson,
+            student_id=enrollment.student_id,
+            defaults={
+                "source": LessonRosterEntry.Source.ENROLLMENT,
+                "lesson_enrollment": enrollment,
+                "added_by": actor,
+                "is_active": True,
+            },
+        )
+        if not created and not roster.is_active:
+            roster.is_active = True
+            roster.deactivated_at = None
+            roster.deactivated_by = None
+            roster.save(
+                update_fields=[
+                    "is_active",
+                    "deactivated_at",
+                    "deactivated_by",
+                ]
+            )
+
+    lesson.status = Lesson.Status.RSVP_OPEN
+    lesson.published_at = now
+    lesson.save(
+        update_fields=["status", "published_at", "updated_at"]
+    )
+
+    roster_count = LessonRosterEntry.objects.filter(
+        lesson=lesson,
+        is_active=True,
+    ).count()
+    _audit_lesson(
+        event_type="LessonPublished",
+        lesson=lesson,
+        actor=actor,
+        payload={
+            "published_at": now.isoformat(),
+            "roster_count": roster_count,
+        },
+    )
+    return lesson
+
+
+@transaction.atomic
+def set_lesson_response(
+    *,
+    actor: User,
+    student_id: UUID,
+    lesson_id: UUID,
+    status: str,
+    now: datetime,
+) -> LessonResponse:
+    if status not in LessonResponse.Status.values:
+        raise ValidationError({"status": "Unsupported RSVP status."})
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status not in {
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "RSVP is only available for RSVP_OPEN or CONFIRMED "
+                    "lessons."
+                )
+            }
+        )
+    if now > lesson.rsvp_deadline:
+        raise ValidationError({"lesson": "RSVP deadline has passed."})
+
+    require_student_access(
+        actor=actor,
+        student_id=student_id,
+    )
+
+    try:
+        LessonRosterEntry.objects.select_for_update().get(
+            lesson=lesson,
+            student_id=student_id,
+            is_active=True,
+        )
+    except LessonRosterEntry.DoesNotExist as exc:
+        raise ValidationError(
+            {"student": "Student is not an active lesson participant."}
+        ) from exc
+
+    response = (
+        LessonResponse.objects.select_for_update()
+        .filter(lesson=lesson, student_id=student_id)
+        .first()
+    )
+    previous_status = response.status if response is not None else None
+
+    if response is None:
+        response = LessonResponse.objects.create(
+            lesson=lesson,
+            student_id=student_id,
+            status=status,
+            updated_by=actor,
+        )
+    else:
+        response.status = status
+        response.updated_by = actor
+        response.save(
+            update_fields=["status", "updated_by", "updated_at"]
+        )
+
+    record_event(
+        event_type="LessonResponseChanged",
+        actor=actor,
+        aggregate_type="LessonResponse",
+        aggregate_id=response.id,
+        payload={
+            "lesson_id": str(lesson.id),
+            "student_id": str(student_id),
+            "previous_status": previous_status,
+            "status": status,
+        },
+    )
+    return response
+
+
+@transaction.atomic
+def evaluate_lesson_viability(
+    *,
+    lesson_id: UUID,
+    now: datetime,
+) -> LessonViabilityResult:
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status not in {
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Viability can only be evaluated for RSVP_OPEN or "
+                    "CONFIRMED lessons."
+                )
+            }
+        )
+    if now < lesson.decision_deadline:
+        raise ValidationError(
+            {"lesson": "Decision deadline has not been reached yet."}
+        )
+
+    active_student_ids = list(
+        LessonRosterEntry.objects.filter(
+            lesson=lesson,
+            is_active=True,
+        ).values_list("student_id", flat=True)
+    )
+    responses = LessonResponse.objects.filter(
+        lesson=lesson,
+        student_id__in=active_student_ids,
+    )
+
+    yes_count = responses.filter(
+        status=LessonResponse.Status.YES
+    ).count()
+    no_count = responses.filter(
+        status=LessonResponse.Status.NO
+    ).count()
+    no_response_count = (
+        len(active_student_ids) - yes_count - no_count
+    )
+    minimum_met = yes_count >= lesson.minimum_attendees
+
+    lesson.decision_evaluated_at = now
+    lesson.decision_yes_count = yes_count
+    lesson.decision_no_count = no_count
+    lesson.decision_no_response_count = no_response_count
+    lesson.save(
+        update_fields=[
+            "decision_evaluated_at",
+            "decision_yes_count",
+            "decision_no_count",
+            "decision_no_response_count",
+            "updated_at",
+        ]
+    )
+
+    _audit_lesson(
+        event_type=(
+            "LessonMinimumReached"
+            if minimum_met
+            else "LessonMinimumNotMet"
+        ),
+        lesson=lesson,
+        actor=None,
+        payload={
+            "yes_count": yes_count,
+            "no_count": no_count,
+            "no_response_count": no_response_count,
+            "minimum_attendees": lesson.minimum_attendees,
+            "minimum_met": minimum_met,
+            "evaluated_at": now.isoformat(),
+        },
+    )
+
+    return LessonViabilityResult(
+        yes_count=yes_count,
+        no_count=no_count,
+        no_response_count=no_response_count,
+        minimum_attendees=lesson.minimum_attendees,
+        minimum_met=minimum_met,
+    )
+
+
+@transaction.atomic
+def confirm_lesson(
+    *,
+    lesson_id: UUID,
+    actor: User,
+    now: datetime,
+) -> Lesson:
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson confirmation permission is required.",
+    )
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status != Lesson.Status.RSVP_OPEN:
+        raise ValidationError(
+            {"lesson": "Only an RSVP_OPEN lesson can be confirmed."}
+        )
+
+    lesson.status = Lesson.Status.CONFIRMED
+    lesson.confirmed_at = now
+    lesson.confirmed_by = actor
+    lesson.save(
+        update_fields=[
+            "status",
+            "confirmed_at",
+            "confirmed_by",
+            "updated_at",
+        ]
+    )
+
+    _audit_lesson(
+        event_type="LessonConfirmed",
+        lesson=lesson,
+        actor=actor,
+        payload={"confirmed_at": now.isoformat()},
+    )
+    return lesson
+
+
+def _validate_cancellation_reason(reason: str) -> None:
+    if reason not in Lesson.CancellationReason.values:
+        raise ValidationError(
+            {"reason": "Unsupported lesson cancellation reason."}
+        )
+
+
+@transaction.atomic
+def cancel_lesson(
+    *,
+    lesson_id: UUID,
+    actor: User,
+    reason: str,
+    now: datetime,
+) -> Lesson:
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson cancellation permission is required.",
+    )
+    _validate_cancellation_reason(reason)
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status == Lesson.Status.DRAFT and (
+        lesson.enrollments.filter(cancelled_at__isnull=True).exists()
+        or lesson.one_time_entitlements.filter(
+            cancelled_at__isnull=True
+        ).exists()
+    ):
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Cannot cancel a DRAFT lesson with an active enrollment "
+                    "or one-time entitlement. Reschedule the lesson instead "
+                    "so bookings move to the replacement lesson."
+                )
+            }
+        )
+    if lesson.status not in {
+        Lesson.Status.DRAFT,
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can be "
+                    "cancelled."
+                )
+            }
+        )
+
+    lesson.status = Lesson.Status.CANCELLED
+    lesson.cancelled_at = now
+    lesson.cancelled_by = actor
+    lesson.cancellation_reason = reason
+    lesson.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+            "cancellation_reason",
+            "updated_at",
+        ]
+    )
+
+    _audit_lesson(
+        event_type="LessonCancelled",
+        lesson=lesson,
+        actor=actor,
+        payload={
+            "cancelled_at": now.isoformat(),
+            "reason": reason,
+        },
+    )
+    return lesson
+
+
+@transaction.atomic
+def reschedule_lesson(
+    *,
+    lesson_id: UUID,
+    new_starts_at: datetime,
+    new_ends_at: datetime,
+    actor: User,
+    reason: str,
+    now: datetime,
+) -> Lesson:
+    """Low-level scheduling transition.
+
+    Interactive callers must use
+    ice_school.workflows.reschedule_lesson_with_entitlements() so financial
+    entitlements are migrated atomically with the lesson replacement.
+    """
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson reschedule permission is required.",
+    )
+    _validate_cancellation_reason(reason)
+    if new_ends_at <= new_starts_at:
+        raise ValidationError(
+            {"new_ends_at": "Replacement lesson must end after it starts."}
+        )
+    if new_starts_at <= now:
+        raise ValidationError(
+            {"new_starts_at": "Replacement lesson must start in the future."}
+        )
+
+    source_ref = Lesson.objects.only("group_id").get(pk=lesson_id)
+    TrainingGroup.objects.select_for_update().get(pk=source_ref.group_id)
+    source = (
+        Lesson.objects.select_for_update()
+        .select_related("lesson_type")
+        .get(pk=lesson_id)
+    )
+    if source.status not in {
+        Lesson.Status.DRAFT,
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can be "
+                    "rescheduled."
+                )
+            }
+        )
+
+    conflicting_lesson = (
+        Lesson.objects.filter(
+            group_id=source.group_id,
+            starts_at__lt=new_ends_at,
+            ends_at__gt=new_starts_at,
+        )
+        .exclude(pk=source.id)
+        .exclude(status=Lesson.Status.CANCELLED)
+        .order_by("starts_at", "id")
+        .first()
+    )
+    if conflicting_lesson is not None:
+        raise ValidationError(
+            {
+                "new_starts_at": (
+                    "Replacement interval overlaps another non-cancelled "
+                    "lesson of this group: "
+                    f"{conflicting_lesson.id}."
+                )
+            }
+        )
+
+    rsvp_lead = source.starts_at - source.rsvp_deadline
+    decision_lead = source.starts_at - source.decision_deadline
+
+    replacement = Lesson.objects.create(
+        source_template=None,
+        group_id=source.group_id,
+        lesson_type_id=source.lesson_type_id,
+        coach_id=source.coach_id,
+        venue_id=source.venue_id,
+        starts_at=new_starts_at,
+        ends_at=new_ends_at,
+        minimum_attendees=source.minimum_attendees,
+        rsvp_deadline=new_starts_at - rsvp_lead,
+        decision_deadline=new_starts_at - decision_lead,
+        status=Lesson.Status.DRAFT,
+    )
+
+    source_enrollments = list(
+        LessonEnrollment.objects.select_for_update().filter(
+            lesson=source,
+            cancelled_at__isnull=True,
+        )
+    )
+    for enrollment in source_enrollments:
+        LessonEnrollment.objects.create(
+            lesson=replacement,
+            student_id=enrollment.student_id,
+            reason=enrollment.reason,
+            created_by=actor,
+        )
+
+    source.status = Lesson.Status.CANCELLED
+    source.cancelled_at = now
+    source.cancelled_by = actor
+    source.cancellation_reason = reason
+    source.replacement_lesson = replacement
+    source.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+            "cancellation_reason",
+            "replacement_lesson",
+            "updated_at",
+        ]
+    )
+
+    _audit_lesson(
+        event_type="LessonRescheduled",
+        lesson=source,
+        actor=actor,
+        payload={
+            "replacement_lesson_id": str(replacement.id),
+            "old_starts_at": source.starts_at.isoformat(),
+            "new_starts_at": new_starts_at.isoformat(),
+            "reason": reason,
+        },
+    )
+    return replacement
+
+
+@transaction.atomic
+def complete_lesson(
+    *,
+    lesson_id: UUID,
+    now: datetime,
+    actor: User | None = None,
+) -> Lesson:
+    """Move a finished confirmed lesson into attendance-entry state.
+
+    actor=None is reserved for trusted scheduler/management execution.
+    Interactive callers must pass the authenticated actor.
+    """
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("coach__user")
+        .get(pk=lesson_id)
+    )
+    if actor is not None:
+        require_lesson_coach_or_permission(
+            actor=actor,
+            lesson=lesson,
+            permission="attendance.change_attendance",
+            message=(
+                "Only the lesson coach or a user with attendance change "
+                "permission may complete this lesson."
+            ),
+        )
+
+    if lesson.status != Lesson.Status.CONFIRMED:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Only a CONFIRMED lesson can be completed."
+                )
+            }
+        )
+    if now < lesson.ends_at:
+        raise ValidationError(
+            {"lesson": "Lesson cannot be completed before it ends."}
+        )
+
+    lesson.status = Lesson.Status.COMPLETED
+    lesson.completed_at = now
+    lesson.save(
+        update_fields=["status", "completed_at", "updated_at"]
+    )
+
+    _audit_lesson(
+        event_type="LessonCompleted",
+        lesson=lesson,
+        actor=actor,
+        payload={"completed_at": now.isoformat()},
+    )
+    return lesson

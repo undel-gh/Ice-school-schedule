@@ -1,0 +1,1753 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone as dt_timezone
+import threading
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import close_old_connections, connection, connections
+
+from accounts.models import CoachProfile, Student
+from attendance.models import Attendance
+from audit.models import AuditEvent
+from core.choices import SubscriptionCategory
+from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from subscriptions.models import (
+    AttendanceCoverage,
+    MakeupEntitlement,
+    OneTimeEntitlement,
+    SubscriptionLedgerEntry,
+    SubscriptionPlan,
+    SubscriptionPlanAllowance,
+)
+from subscriptions.selectors import (
+    AllowanceState,
+    SubscriptionState,
+    allowance_balance,
+    allowance_state,
+    get_available_makeups,
+    get_available_one_time_entitlements,
+    get_eligible_allowances,
+    subscription_balances,
+    subscription_state,
+)
+from subscriptions.services import (
+    adjust_allowance,
+    cancel_one_time_entitlement,
+    grant_administrative_makeup,
+    grant_one_time_entitlement,
+    assign_attendance_coverage,
+    cancel_subscription,
+    issue_subscription,
+    process_subscription_lifecycle,
+    rebind_attendance_coverage,
+    reverse_attendance_coverage,
+)
+
+User = get_user_model()
+
+
+@pytest.fixture
+def actor(db):
+    return User.objects.create_user(
+        username="admin",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+
+
+@pytest.fixture
+def student(db):
+    return Student.objects.create(display_name="Маша")
+
+
+@pytest.fixture
+def school_context(db, actor):
+    coach = CoachProfile.objects.create(user=actor, display_name="Coach")
+    group = TrainingGroup.objects.create(code="group-a", name="Group A")
+    venue = Venue.objects.create(code="rink", name="Rink")
+    ice = LessonType.objects.create(
+        code="ice",
+        name="Ice",
+        subscription_category=SubscriptionCategory.ICE,
+    )
+    hall = LessonType.objects.create(
+        code="hall",
+        name="Hall",
+        subscription_category=SubscriptionCategory.HALL,
+    )
+    return {
+        "coach": coach,
+        "group": group,
+        "venue": venue,
+        "ice": ice,
+        "hall": hall,
+    }
+
+
+def make_lesson(*, school_context, lesson_type, starts_at: datetime) -> Lesson:
+    return Lesson.objects.create(
+        group=school_context["group"],
+        lesson_type=lesson_type,
+        coach=school_context["coach"],
+        venue=school_context["venue"],
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.COMPLETED,
+    )
+
+
+def make_plan(
+    *,
+    code: str,
+    ice: int | None = None,
+    hall: int | None = None,
+) -> SubscriptionPlan:
+    plan = SubscriptionPlan.objects.create(code=code, name=code.upper())
+    if ice is not None:
+        SubscriptionPlanAllowance.objects.create(
+            plan=plan,
+            category=SubscriptionCategory.ICE,
+            visit_limit=ice,
+        )
+    if hall is not None:
+        SubscriptionPlanAllowance.objects.create(
+            plan=plan,
+            category=SubscriptionCategory.HALL,
+            visit_limit=hall,
+        )
+    return plan
+
+
+def make_present_attendance(
+    *,
+    lesson: Lesson,
+    student: Student,
+    actor,
+) -> Attendance:
+    return Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+
+
+@pytest.mark.django_db
+def test_issue_subscription_snapshots_allowances_and_grants(
+    student,
+    actor,
+):
+    plan = make_plan(code="8-ice-12-hall", ice=8, hall=12)
+
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+
+    assert subscription_balances(subscription.id) == {
+        SubscriptionCategory.HALL: 12,
+        SubscriptionCategory.ICE: 8,
+    }
+    assert SubscriptionLedgerEntry.objects.filter(
+        allowance__subscription=subscription,
+        entry_type=SubscriptionLedgerEntry.EntryType.GRANT,
+    ).count() == 2
+
+    source = plan.allowances.get(category=SubscriptionCategory.ICE)
+    source.visit_limit = 99
+    source.save(update_fields=["visit_limit"])
+
+    ice_allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    assert ice_allowance.visit_limit_snapshot == 8
+
+
+@pytest.mark.django_db
+def test_issue_subscription_rejects_plan_without_allowances(
+    student,
+    actor,
+):
+    plan = SubscriptionPlan.objects.create(code="empty", name="Empty")
+
+    with pytest.raises(ValidationError):
+        issue_subscription(
+            student_id=student.id,
+            plan_id=plan.id,
+            valid_from=date(2026, 9, 1),
+            valid_until=date(2026, 9, 30),
+            actor=actor,
+        )
+
+    assert student.subscriptions.count() == 0
+
+
+@pytest.mark.django_db
+def test_one_time_entitlement_has_priority_over_monthly_allowance(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="8-ice", ice=8)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.TRIAL_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    repeated = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    assert coverage is not None
+    assert repeated.id == coverage.id
+    assert coverage.one_time_entitlement_id == entitlement.id
+    assert coverage.subscription_allowance_id is None
+    assert allowance_balance(allowance.id) == 8
+
+
+@pytest.mark.django_db
+def test_mixed_subscription_consumes_only_matching_category(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="mixed-one-one", ice=1, hall=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    ice_allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    hall_allowance = subscription.allowances.get(
+        category=SubscriptionCategory.HALL
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["hall"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    assert coverage is not None
+    assert coverage.subscription_allowance_id == hall_allowance.id
+    assert allowance_balance(hall_allowance.id) == 0
+    assert allowance_balance(ice_allowance.id) == 1
+
+
+@pytest.mark.django_db
+def test_target_specific_makeup_precedes_generic_makeup(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="ice-source", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            10,
+            5,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=target_lesson,
+        student=student,
+        actor=actor,
+    )
+
+    generic = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 10),
+        created_by=actor,
+    )
+    targeted = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 15),
+        target_lesson=target_lesson,
+        created_by=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    assert coverage is not None
+    assert coverage.makeup_entitlement_id == targeted.id
+    assert coverage.makeup_entitlement_id != generic.id
+    assert allowance_balance(allowance.id) == 1
+
+
+@pytest.mark.django_db
+def test_ordinary_allowance_uses_earliest_expiry(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="one-ice", ice=1)
+    first = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 20),
+        actor=actor,
+    )
+    second = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    assert coverage is not None
+    assert coverage.subscription_allowance.subscription_id == first.id
+    assert allowance_balance(first.allowances.get().id) == 0
+    assert allowance_balance(second.allowances.get().id) == 1
+
+
+@pytest.mark.django_db
+def test_uncovered_present_is_preserved(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    assert coverage is None
+    attendance.refresh_from_db()
+    assert attendance.status == Attendance.Status.PRESENT
+
+
+@pytest.mark.django_db
+def test_reverse_restores_same_allowance_and_is_idempotent(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="reverse-ice", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    reverse_attendance_coverage(
+        coverage_id=coverage.id,
+        actor=actor,
+    )
+    reverse_attendance_coverage(
+        coverage_id=coverage.id,
+        actor=actor,
+    )
+
+    assert allowance_balance(allowance.id) == 1
+    assert SubscriptionLedgerEntry.objects.filter(
+        coverage=coverage,
+        entry_type=SubscriptionLedgerEntry.EntryType.RESTORE,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_adjustment_cannot_make_balance_negative(
+    student,
+    actor,
+):
+    plan = make_plan(code="adjust-ice", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+
+    with pytest.raises(ValidationError):
+        adjust_allowance(
+            allowance_id=allowance.id,
+            delta=-3,
+            reason="bad",
+            actor=actor,
+        )
+
+    adjust_allowance(
+        allowance_id=allowance.id,
+        delta=-1,
+        reason="Correction",
+        actor=actor,
+    )
+    assert allowance_balance(allowance.id) == 1
+
+
+@pytest.mark.django_db
+def test_cancelled_subscription_is_not_used(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="cancel-ice", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    cancel_subscription(
+        subscription_id=subscription.id,
+        actor=actor,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+
+    assert assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    ) is None
+
+
+@pytest.mark.django_db
+def test_absent_attendance_cannot_receive_coverage(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.ABSENT,
+        marked_by=actor,
+    )
+
+    with pytest.raises(ValidationError):
+        assign_attendance_coverage(
+            attendance_id=attendance.id,
+            actor=actor,
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_last_visit_is_consumed_at_most_once(
+    student,
+    actor,
+    school_context,
+):
+    if connection.vendor != "postgresql":
+        pytest.skip(
+            "Row-locking concurrency test requires PostgreSQL."
+        )
+
+    plan = make_plan(code="last-ice", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+
+    lesson_a = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    lesson_b = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            16,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance_a = make_present_attendance(
+        lesson=lesson_a,
+        student=student,
+        actor=actor,
+    )
+    attendance_b = make_present_attendance(
+        lesson=lesson_b,
+        student=student,
+        actor=actor,
+    )
+
+    barrier = threading.Barrier(2)
+
+    def worker(attendance_id):
+        close_old_connections()
+        try:
+            barrier.wait(timeout=5)
+            result = assign_attendance_coverage(
+                attendance_id=attendance_id,
+                actor=None,
+            )
+            return result.id if result else None
+        finally:
+            # Worker threads own their own Django connection wrappers.
+            # close_old_connections() only closes unusable/obsolete
+            # connections; healthy PostgreSQL sessions may otherwise stay
+            # attached to the temporary test database until process exit.
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(
+                worker,
+                [attendance_a.id, attendance_b.id],
+            )
+        )
+
+    assert sum(result is not None for result in results) == 1
+    assert allowance_balance(allowance.id) == 0
+    assert SubscriptionLedgerEntry.objects.filter(
+        allowance=allowance,
+        entry_type=SubscriptionLedgerEntry.EntryType.CONSUME,
+    ).count() == 1
+
+
+
+@pytest.mark.django_db
+def test_grant_administrative_makeup_does_not_change_balance(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="admin-makeup", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    entitlement = grant_administrative_makeup(
+        source_subscription_allowance_id=allowance.id,
+        source_lesson_id=source_lesson.id,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 15),
+        actor=actor,
+        reason="Goodwill extension",
+    )
+
+    assert entitlement.reason == MakeupEntitlement.Reason.ADMINISTRATIVE
+    assert entitlement.source_subscription_allowance_id == allowance.id
+    assert allowance_balance(allowance.id) == 2
+    assert SubscriptionLedgerEntry.objects.filter(
+        allowance=allowance,
+        entry_type=SubscriptionLedgerEntry.EntryType.GRANT,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_rebind_allowance_to_allowance_restores_old_and_consumes_new(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-two", ice=1)
+    first = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    second = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    first_allowance = first.allowances.get()
+    second_allowance = second.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert old_coverage.subscription_allowance_id == first_allowance.id
+
+    new_coverage = rebind_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        subscription_allowance_id=second_allowance.id,
+    )
+
+    old_coverage.refresh_from_db()
+    assert old_coverage.reversed_at is not None
+    assert new_coverage.subscription_allowance_id == second_allowance.id
+    assert allowance_balance(first_allowance.id) == 1
+    assert allowance_balance(second_allowance.id) == 0
+
+
+@pytest.mark.django_db
+def test_rebind_allowance_to_one_time_restores_allowance(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-one-time", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+
+    new_coverage = rebind_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        one_time_entitlement_id=entitlement.id,
+    )
+
+    assert new_coverage.one_time_entitlement_id == entitlement.id
+    assert new_coverage.subscription_allowance_id is None
+    assert allowance_balance(allowance.id) == 1
+    assert SubscriptionLedgerEntry.objects.filter(
+        coverage=new_coverage,
+    ).count() == 0
+
+
+@pytest.mark.django_db
+def test_rebind_one_time_to_allowance_consumes_target_allowance(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-from-one-time", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert old_coverage.one_time_entitlement_id == entitlement.id
+
+    new_coverage = rebind_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        subscription_allowance_id=allowance.id,
+    )
+
+    assert new_coverage.subscription_allowance_id == allowance.id
+    assert new_coverage.one_time_entitlement_id is None
+    assert allowance_balance(allowance.id) == 0
+
+
+
+@pytest.mark.django_db
+def test_get_eligible_allowances_orders_by_earliest_expiry(
+    student,
+    actor,
+):
+    plan = make_plan(code="selector-ice", ice=2)
+    later = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    earlier = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 20),
+        actor=actor,
+    )
+
+    results = get_eligible_allowances(
+        student_id=student.id,
+        category=SubscriptionCategory.ICE,
+        lesson_date=date(2026, 9, 15),
+    )
+
+    assert [item.allowance.subscription_id for item in results] == [
+        earlier.id,
+        later.id,
+    ]
+    assert [item.balance for item in results] == [2, 2]
+
+
+@pytest.mark.django_db
+def test_get_available_one_time_entitlements_excludes_used(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    first = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+    second = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.TRIAL_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+
+    coverage = AttendanceCoverage.objects.create(
+        attendance=attendance,
+        one_time_entitlement=first,
+        created_by=actor,
+    )
+
+    available = get_available_one_time_entitlements(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        category=SubscriptionCategory.ICE,
+    )
+    assert [item.id for item in available] == [second.id]
+
+    coverage.reversed_at = datetime(
+        2026,
+        9,
+        16,
+        12,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    coverage.reversed_by = actor
+    coverage.save(update_fields=["reversed_at", "reversed_by"])
+
+    available_after_reverse = get_available_one_time_entitlements(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        category=SubscriptionCategory.ICE,
+    )
+    assert {item.id for item in available_after_reverse} == {
+        first.id,
+        second.id,
+    }
+
+
+@pytest.mark.django_db
+def test_get_available_makeups_prioritizes_target_specific(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="selector-makeup", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            10,
+            5,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    generic = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 10),
+        created_by=actor,
+    )
+    targeted = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 15),
+        target_lesson=target_lesson,
+        created_by=actor,
+    )
+
+    available = get_available_makeups(
+        student_id=student.id,
+        lesson_id=target_lesson.id,
+        category=SubscriptionCategory.ICE,
+        lesson_date=date(2026, 10, 5),
+    )
+
+    assert [item.id for item in available] == [
+        targeted.id,
+        generic.id,
+    ]
+
+
+
+@pytest.mark.django_db
+def test_grant_one_time_entitlement_uses_lesson_category(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    entitlement = grant_one_time_entitlement(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        entitlement_type=OneTimeEntitlement.Type.TRIAL_ICE,
+        actor=actor,
+    )
+
+    assert entitlement.category == SubscriptionCategory.ICE
+    assert AuditEvent.objects.filter(
+        event_type="OneTimeEntitlementGranted",
+        aggregate_id=entitlement.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_grant_one_time_entitlement_rejects_category_mismatch(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["hall"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    with pytest.raises(ValidationError):
+        grant_one_time_entitlement(
+            student_id=student.id,
+            lesson_id=lesson.id,
+            entitlement_type=OneTimeEntitlement.Type.TRIAL_ICE,
+            actor=actor,
+        )
+
+
+@pytest.mark.django_db
+def test_grant_one_time_entitlement_rejects_cancelled_lesson(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    lesson.status = Lesson.Status.CANCELLED
+    lesson.cancelled_at = datetime(
+        2026,
+        9,
+        14,
+        12,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
+    lesson.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancellation_reason",
+        ]
+    )
+
+    with pytest.raises(ValidationError):
+        grant_one_time_entitlement(
+            student_id=student.id,
+            lesson_id=lesson.id,
+            entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+            actor=actor,
+        )
+
+
+@pytest.mark.django_db
+def test_cancel_one_time_entitlement_is_idempotent_and_audited(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    entitlement = grant_one_time_entitlement(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        actor=actor,
+    )
+    at = datetime(
+        2026,
+        9,
+        14,
+        12,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+
+    first = cancel_one_time_entitlement(
+        entitlement_id=entitlement.id,
+        actor=actor,
+        at=at,
+    )
+    second = cancel_one_time_entitlement(
+        entitlement_id=entitlement.id,
+        actor=actor,
+        at=at + timedelta(hours=1),
+    )
+
+    assert first.cancelled_at == at
+    assert second.cancelled_at == at
+    assert AuditEvent.objects.filter(
+        event_type="OneTimeEntitlementCancelled",
+        aggregate_id=entitlement.id,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_cancel_one_time_entitlement_rejects_active_usage(
+    student,
+    actor,
+    school_context,
+):
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    entitlement = grant_one_time_entitlement(
+        student_id=student.id,
+        lesson_id=lesson.id,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        actor=actor,
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert coverage.one_time_entitlement_id == entitlement.id
+
+    with pytest.raises(ValidationError):
+        cancel_one_time_entitlement(
+            entitlement_id=entitlement.id,
+            actor=actor,
+        )
+
+
+
+@pytest.mark.django_db
+def test_last_visit_emits_single_correlated_exhausted_event(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="exhaust-event", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    exhausted = AuditEvent.objects.filter(
+        event_type="SubscriptionAllowanceExhausted",
+        aggregate_id=allowance.id,
+    )
+    consumed = AuditEvent.objects.get(
+        event_type="SubscriptionAllowanceConsumed",
+        aggregate_id=allowance.id,
+    )
+    assigned = AuditEvent.objects.get(
+        event_type="AttendanceCoverageAssigned",
+        aggregate_id=coverage.id,
+    )
+
+    assert exhausted.count() == 1
+    event = exhausted.get()
+    assert event.payload["balance"] == 0
+    assert event.correlation_id == consumed.correlation_id
+    assert event.correlation_id == assigned.correlation_id
+
+
+
+@pytest.mark.django_db
+def test_derived_subscription_and_allowance_states(
+    student,
+    actor,
+):
+    plan = make_plan(code="state-plan", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 10),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 9, 1),
+    ) == SubscriptionState.UPCOMING
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 9, 15),
+    ) == SubscriptionState.ACTIVE
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 10, 1),
+    ) == SubscriptionState.EXPIRED
+    assert allowance_state(
+        allowance=allowance,
+        as_of=date(2026, 9, 15),
+    ) == AllowanceState.AVAILABLE
+
+    adjust_allowance(
+        allowance_id=allowance.id,
+        delta=-1,
+        reason="Exhaust for derived-state test",
+        actor=actor,
+    )
+    assert allowance_state(
+        allowance=allowance,
+        as_of=date(2026, 9, 15),
+    ) == AllowanceState.EXHAUSTED
+
+    cancel_subscription(
+        subscription_id=subscription.id,
+        actor=actor,
+        at=datetime(
+            2026,
+            9,
+            16,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    subscription.refresh_from_db()
+    assert subscription_state(
+        subscription=subscription,
+        as_of=date(2026, 9, 16),
+    ) == SubscriptionState.CANCELLED
+
+
+@pytest.mark.django_db
+def test_process_subscription_lifecycle_is_idempotent(
+    student,
+    actor,
+):
+    plan = make_plan(code="lifecycle-unused", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+
+    first = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+    second = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+
+    assert first["activated"] == 1
+    assert first["expired"] == 1
+    assert first["expired_with_unused"] == 1
+    assert second == {
+        "activated": 0,
+        "expired": 0,
+        "expired_with_unused": 0,
+        "makeup_expired": 0,
+    }
+    assert AuditEvent.objects.filter(
+        event_type="SubscriptionActivated",
+        aggregate_id=subscription.id,
+    ).count() == 1
+    assert AuditEvent.objects.filter(
+        event_type="SubscriptionExpired",
+        aggregate_id=subscription.id,
+    ).count() == 1
+    unused = AuditEvent.objects.get(
+        event_type="SubscriptionExpiredWithUnusedBalance",
+        aggregate_id=subscription.id,
+    )
+    assert unused.payload["balances"] == {
+        SubscriptionCategory.ICE: 2,
+    }
+
+
+@pytest.mark.django_db
+def test_expired_fully_consumed_subscription_has_no_unused_event(
+    student,
+    actor,
+):
+    plan = make_plan(code="lifecycle-consumed", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    adjust_allowance(
+        allowance_id=allowance.id,
+        delta=-1,
+        reason="Consumed before expiry",
+        actor=actor,
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+
+    assert result["expired"] == 1
+    assert result["expired_with_unused"] == 0
+    assert not AuditEvent.objects.filter(
+        event_type="SubscriptionExpiredWithUnusedBalance",
+        aggregate_id=subscription.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_process_subscription_lifecycle_emits_makeup_expired_once(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="makeup-expiry", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            8,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    makeup = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 10),
+        created_by=actor,
+    )
+
+    first = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+    second = process_subscription_lifecycle(
+        as_of=date(2026, 9, 16),
+        actor=actor,
+    )
+
+    assert first["makeup_expired"] == 1
+    assert second["makeup_expired"] == 0
+    assert AuditEvent.objects.filter(
+        event_type="MakeupEntitlementExpired",
+        aggregate_id=makeup.id,
+    ).count() == 1
+
+
+
+@pytest.mark.django_db
+def test_rebind_rejects_closed_lesson(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-closed", ice=2)
+    first = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    second = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    first_allowance = first.allowances.get()
+    second_allowance = second.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    lesson.status = Lesson.Status.COMPLETED
+    lesson.save(update_fields=["status"])
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert coverage.subscription_allowance_id == first_allowance.id
+
+    lesson.status = Lesson.Status.CLOSED
+    lesson.save(update_fields=["status"])
+
+    with pytest.raises(ValidationError):
+        rebind_attendance_coverage(
+            attendance_id=attendance.id,
+            actor=actor,
+            subscription_allowance_id=second_allowance.id,
+        )
+
+    coverage.refresh_from_db()
+    assert coverage.reversed_at is None
+    assert allowance_balance(first_allowance.id) == 1
+    assert allowance_balance(second_allowance.id) == 2
+
+
+
+@pytest.mark.django_db
+def test_used_makeup_is_not_marked_expired(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="used-makeup-expiry", ice=2)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 8, 1),
+        valid_until=date(2026, 8, 31),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    source_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            8,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            5,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson.status = Lesson.Status.COMPLETED
+    target_lesson.save(update_fields=["status"])
+    makeup = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 10),
+        target_lesson=target_lesson,
+        created_by=actor,
+    )
+    attendance = make_present_attendance(
+        lesson=target_lesson,
+        student=student,
+        actor=actor,
+    )
+    AttendanceCoverage.objects.create(
+        attendance=attendance,
+        subscription_allowance=allowance,
+        makeup_entitlement=makeup,
+        created_by=actor,
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 9, 15),
+        actor=actor,
+    )
+
+    assert result["makeup_expired"] == 0
+    assert not AuditEvent.objects.filter(
+        event_type="MakeupEntitlementExpired",
+        aggregate_id=makeup.id,
+    ).exists()
+
+
+
+@pytest.mark.django_db
+def test_issue_subscription_rejects_staff_without_model_permission(
+    student,
+):
+    actor = User.objects.create_user(
+        username="limited-staff",
+        password="test",
+        is_staff=True,
+    )
+    plan = make_plan(code="permission-plan", ice=1)
+
+    with pytest.raises(PermissionDenied):
+        issue_subscription(
+            student_id=student.id,
+            plan_id=plan.id,
+            valid_from=date(2026, 9, 1),
+            valid_until=date(2026, 9, 30),
+            actor=actor,
+        )

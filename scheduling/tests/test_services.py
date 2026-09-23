@@ -1,0 +1,2548 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone as dt_timezone
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.utils import timezone
+
+from ice_school.workflows import reschedule_lesson_with_entitlements
+
+from accounts.models import CoachProfile
+from attendance.models import Attendance
+from audit.models import AuditEvent
+from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from scheduling.services import complete_lesson
+
+User = get_user_model()
+
+
+@pytest.fixture
+def coach_user(db):
+    return User.objects.create_user(username="coach-lifecycle", password="test")
+
+
+@pytest.fixture
+def school_context(db, coach_user):
+    coach = CoachProfile.objects.create(user=coach_user, display_name="Coach")
+    group = TrainingGroup.objects.create(code="g-life", name="Group")
+    venue = Venue.objects.create(code="v-life", name="Venue")
+    lesson_type = LessonType.objects.create(
+        code="ice-life",
+        name="Ice",
+        subscription_category="ice",
+    )
+    return coach, group, venue, lesson_type
+
+
+def make_lesson(*, school_context, status, starts_at):
+    coach, group, venue, lesson_type = school_context
+    return Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=status,
+    )
+
+
+@pytest.mark.django_db
+def test_complete_lesson_transitions_confirmed_to_completed(school_context):
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.CONFIRMED,
+        starts_at=starts_at,
+    )
+    now = starts_at + timedelta(hours=1, minutes=1)
+
+    completed = complete_lesson(lesson_id=lesson.id, now=now)
+
+    assert completed.status == Lesson.Status.COMPLETED
+    assert completed.completed_at == now
+
+
+@pytest.mark.django_db
+def test_complete_lesson_rejects_early_completion(school_context):
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.CONFIRMED,
+        starts_at=starts_at,
+    )
+
+    with pytest.raises(ValidationError):
+        complete_lesson(
+            lesson_id=lesson.id,
+            now=starts_at + timedelta(minutes=30),
+        )
+
+
+@pytest.mark.django_db
+def test_complete_lesson_rejects_wrong_state(school_context):
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at,
+    )
+
+    with pytest.raises(ValidationError):
+        complete_lesson(
+            lesson_id=lesson.id,
+            now=starts_at + timedelta(hours=2),
+        )
+
+
+from accounts.models import Student, StudentAccess
+from scheduling.models import (
+    GroupMembership,
+    ScheduleTemplate,
+    LessonEnrollment,
+    LessonResponse,
+    LessonRosterEntry,
+)
+from scheduling.selectors import (
+    get_coach_schedule,
+    get_student_schedule,
+)
+from scheduling.services import (
+    add_lesson_enrollment,
+    create_group_membership,
+    update_group_membership,
+    cancel_lesson,
+    confirm_lesson,
+    evaluate_lesson_viability,
+    version_schedule_template,
+    generate_lessons,
+    publish_daily_schedule,
+    publish_lesson,
+    reschedule_lesson,
+    set_lesson_response,
+    skip_template_occurrence,
+)
+from subscriptions.models import (
+    AttendanceCoverage,
+    MakeupEntitlement,
+    OneTimeEntitlement,
+    SubscriptionPlan,
+    SubscriptionPlanAllowance,
+)
+from subscriptions.services import issue_subscription
+
+
+@pytest.fixture
+def student(db):
+    return Student.objects.create(display_name="Student A")
+
+
+@pytest.fixture
+def second_student(db):
+    return Student.objects.create(display_name="Student B")
+
+
+@pytest.fixture
+def guardian(db):
+    return User.objects.create_user(username="guardian", password="test")
+
+
+@pytest.fixture
+def admin(db):
+    return User.objects.create_user(
+        username="admin-scheduling",
+        password="test",
+        is_staff=True,
+        is_superuser=True,
+    )
+
+
+def add_membership(*, student, group, starts_on, ends_on=None):
+    return GroupMembership.objects.create(
+        student=student,
+        group=group,
+        starts_on=starts_on,
+        ends_on=ends_on,
+    )
+
+
+@pytest.mark.django_db
+def test_publish_lesson_snapshots_group_and_enrollment(
+    school_context,
+    student,
+    second_student,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    membership = add_membership(
+        student=student,
+        group=group,
+        starts_on=date(2026, 9, 1),
+    )
+    enrollment = LessonEnrollment.objects.create(
+        lesson=lesson,
+        student=second_student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=coach_user,
+    )
+
+    published = publish_lesson(
+        lesson_id=lesson.id,
+        actor=coach_user,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    assert published.status == Lesson.Status.RSVP_OPEN
+    group_roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=student,
+    )
+    enrollment_roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=second_student,
+    )
+    assert group_roster.source == LessonRosterEntry.Source.GROUP
+    assert group_roster.group_membership_id == membership.id
+    assert enrollment_roster.source == LessonRosterEntry.Source.ENROLLMENT
+    assert enrollment_roster.lesson_enrollment_id == enrollment.id
+
+
+@pytest.mark.django_db
+def test_publish_lesson_excludes_expired_membership(
+    school_context,
+    student,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    add_membership(
+        student=student,
+        group=group,
+        starts_on=date(2026, 8, 1),
+        ends_on=date(2026, 9, 10),
+    )
+
+    publish_lesson(
+        lesson_id=lesson.id,
+        actor=coach_user,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    assert not LessonRosterEntry.objects.filter(
+        lesson=lesson,
+        student=student,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_set_lesson_response_requires_student_access(
+    school_context,
+    student,
+    guardian,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=1),
+        decision_deadline=starts_at - timedelta(minutes=30),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+    )
+
+    with pytest.raises(PermissionDenied):
+        set_lesson_response(
+            actor=guardian,
+            student_id=student.id,
+            lesson_id=lesson.id,
+            status=LessonResponse.Status.YES,
+            now=starts_at - timedelta(hours=2),
+        )
+
+    StudentAccess.objects.create(
+        user=guardian,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    response = set_lesson_response(
+        actor=guardian,
+        student_id=student.id,
+        lesson_id=lesson.id,
+        status=LessonResponse.Status.YES,
+        now=starts_at - timedelta(hours=2),
+    )
+    assert response.status == LessonResponse.Status.YES
+
+
+@pytest.mark.django_db
+def test_set_lesson_response_is_last_write_wins(
+    school_context,
+    student,
+    guardian,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=1),
+        decision_deadline=starts_at - timedelta(minutes=30),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=guardian,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+
+    first = set_lesson_response(
+        actor=guardian,
+        student_id=student.id,
+        lesson_id=lesson.id,
+        status=LessonResponse.Status.YES,
+        now=starts_at - timedelta(hours=2),
+    )
+    second = set_lesson_response(
+        actor=guardian,
+        student_id=student.id,
+        lesson_id=lesson.id,
+        status=LessonResponse.Status.NO,
+        now=starts_at - timedelta(hours=2),
+    )
+
+    assert second.id == first.id
+    assert second.status == LessonResponse.Status.NO
+    assert LessonResponse.objects.filter(
+        lesson=lesson,
+        student=student,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_evaluate_lesson_viability_snapshots_counts(
+    school_context,
+    student,
+    second_student,
+    guardian,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=2,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    for s in (student, second_student):
+        LessonRosterEntry.objects.create(
+            lesson=lesson,
+            student=s,
+            source=LessonRosterEntry.Source.MANUAL,
+            added_by=coach_user,
+        )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+
+    result = evaluate_lesson_viability(
+        lesson_id=lesson.id,
+        now=starts_at - timedelta(minutes=30),
+    )
+
+    lesson.refresh_from_db()
+    assert result.yes_count == 1
+    assert result.no_count == 0
+    assert result.no_response_count == 1
+    assert result.minimum_met is False
+    assert lesson.decision_yes_count == 1
+    assert lesson.decision_no_response_count == 1
+
+
+@pytest.mark.django_db
+def test_confirm_lesson_does_not_require_minimum(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=4,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+
+    confirmed = confirm_lesson(
+        lesson_id=lesson.id,
+        actor=admin,
+        now=starts_at - timedelta(minutes=30),
+    )
+
+    assert confirmed.status == Lesson.Status.CONFIRMED
+    assert confirmed.confirmed_by_id == admin.id
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_records_reason(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CONFIRMED,
+    )
+
+    cancelled = cancel_lesson(
+        lesson_id=lesson.id,
+        actor=admin,
+        reason=Lesson.CancellationReason.LOW_ATTENDANCE,
+        now=starts_at - timedelta(minutes=30),
+    )
+
+    assert cancelled.status == Lesson.Status.CANCELLED
+    assert cancelled.cancellation_reason == Lesson.CancellationReason.LOW_ATTENDANCE
+
+
+@pytest.mark.django_db
+def test_reschedule_creates_draft_without_copying_rsvp(
+    school_context,
+    student,
+    guardian,
+    admin,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonResponse.objects.create(
+        lesson=source,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+
+    replacement = reschedule_lesson(
+        lesson_id=source.id,
+        new_starts_at=starts_at + timedelta(days=1),
+        new_ends_at=starts_at + timedelta(days=1, hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    source.refresh_from_db()
+    assert source.status == Lesson.Status.CANCELLED
+    assert source.replacement_lesson_id == replacement.id
+    assert replacement.status == Lesson.Status.DRAFT
+    assert replacement.responses.count() == 0
+
+
+@pytest.mark.django_db
+def test_reschedule_beyond_subscription_creates_targeted_makeup(
+    school_context,
+    student,
+    guardian,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(2026, 9, 29, 15, 0, tzinfo=dt_timezone.utc)
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonResponse.objects.create(
+        lesson=source,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="reschedule-ice",
+        name="Reschedule ICE",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category="ice",
+        visit_limit=1,
+    )
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=admin,
+    )
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=source.id,
+        new_starts_at=datetime(
+            2026,
+            10,
+            2,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        new_ends_at=datetime(
+            2026,
+            10,
+            2,
+            16,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    makeup = MakeupEntitlement.objects.get(
+        student=student,
+        source_lesson=source,
+        target_lesson=replacement,
+    )
+    assert makeup.reason == MakeupEntitlement.Reason.SCHOOL_RESCHEDULE
+    assert makeup.source_subscription_allowance.subscription_id == subscription.id
+    assert makeup.valid_from == date(2026, 10, 2)
+    assert makeup.valid_until == date(2026, 10, 2)
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_creates_matching_weekdays_and_is_idempotent(
+    school_context,
+    admin,
+    settings,
+):
+    coach, group, venue, lesson_type = school_context
+    group.default_minimum_attendees = 4
+    group.save(update_fields=["default_minimum_attendees"])
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 1, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        is_active=True,
+    )
+    settings.SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START = 180
+    settings.SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START = 120
+
+    first = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 1),
+        until_date=date(2026, 9, 15),
+        actor=admin,
+    )
+    second = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 1),
+        until_date=date(2026, 9, 15),
+        actor=admin,
+    )
+
+    assert [lesson.id for lesson in second.lessons] == [
+        lesson.id for lesson in first.lessons
+    ]
+    assert len(first.lessons) == 3
+    assert all(
+        lesson.status == Lesson.Status.DRAFT
+        for lesson in first.lessons
+    )
+    assert all(
+        lesson.minimum_attendees == 4
+        for lesson in first.lessons
+    )
+    assert all(
+        lesson.starts_at - lesson.rsvp_deadline == timedelta(hours=3)
+        for lesson in first.lessons
+    )
+    assert all(
+        lesson.starts_at - lesson.decision_deadline == timedelta(hours=2)
+        for lesson in first.lessons
+    )
+
+
+@pytest.mark.django_db
+def test_generate_lessons_uses_template_minimum_override(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    group.default_minimum_attendees = 5
+    group.save(update_fields=["default_minimum_attendees"])
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 1, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        minimum_attendees_override=2,
+        is_active=True,
+    )
+
+    lessons = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 1),
+        until_date=date(2026, 9, 1),
+        actor=admin,
+    )
+
+    assert len(lessons.lessons) == 1
+    assert lessons.lessons[0].minimum_attendees == 2
+
+
+@pytest.mark.django_db
+def test_generate_lessons_rejects_invalid_deadline_policy(
+    school_context,
+    admin,
+    settings,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 1, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    settings.SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START = 60
+    settings.SCHEDULING_DECISION_DEADLINE_MINUTES_BEFORE_START = 120
+
+    with pytest.raises(ValidationError):
+        generate_lessons(
+            template_id=template.id,
+            from_date=date(2026, 9, 1),
+            until_date=date(2026, 9, 1),
+            actor=admin,
+        )
+
+
+@pytest.mark.django_db
+def test_publish_daily_schedule_only_publishes_requested_date(
+    school_context,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    first_start = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    second_start = first_start + timedelta(days=1)
+    first = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=first_start,
+    )
+    second = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=second_start,
+    )
+
+    published = publish_daily_schedule(
+        school_date=date(2026, 9, 15),
+        now=first_start - timedelta(hours=4),
+    )
+
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert [lesson.id for lesson in published] == [first.id]
+    assert first.status == Lesson.Status.RSVP_OPEN
+    assert second.status == Lesson.Status.DRAFT
+
+
+@pytest.mark.django_db
+def test_add_lesson_enrollment_to_published_lesson_adds_roster(
+    school_context,
+    student,
+    admin,
+):
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at,
+    )
+
+    enrollment = add_lesson_enrollment(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        reason=LessonEnrollment.Reason.GUEST,
+        actor=admin,
+    )
+
+    roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=student,
+    )
+    assert roster.source == LessonRosterEntry.Source.ENROLLMENT
+    assert roster.lesson_enrollment_id == enrollment.id
+    assert roster.is_active is True
+
+
+@pytest.mark.django_db
+def test_add_lesson_enrollment_to_draft_defers_roster_until_publish(
+    school_context,
+    student,
+    admin,
+):
+    starts_at = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=starts_at,
+    )
+
+    enrollment = add_lesson_enrollment(
+        lesson_id=lesson.id,
+        student_id=student.id,
+        reason=LessonEnrollment.Reason.MAKEUP,
+        actor=admin,
+    )
+
+    assert not LessonRosterEntry.objects.filter(
+        lesson=lesson,
+        student=student,
+    ).exists()
+
+    publish_lesson(
+        lesson_id=lesson.id,
+        actor=admin,
+        now=starts_at - timedelta(hours=4),
+    )
+
+    roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=student,
+    )
+    assert roster.lesson_enrollment_id == enrollment.id
+
+
+
+@pytest.mark.django_db
+def test_student_schedule_uses_roster_snapshot_and_excludes_draft(
+    school_context,
+    student,
+    coach_user,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    visible = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at,
+    )
+    hidden = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=starts_at + timedelta(days=1),
+    )
+    cancelled = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at + timedelta(days=2),
+    )
+    cancelled.status = Lesson.Status.CANCELLED
+    cancelled.cancelled_at = starts_at
+    cancelled.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
+    cancelled.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancellation_reason",
+        ]
+    )
+
+    for lesson in (visible, hidden, cancelled):
+        LessonRosterEntry.objects.create(
+            lesson=lesson,
+            student=student,
+            source=LessonRosterEntry.Source.MANUAL,
+            added_by=coach_user,
+        )
+
+    result = get_student_schedule(
+        student_id=student.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 17),
+    )
+
+    assert [item.lesson.id for item in result] == [
+        visible.id,
+        cancelled.id,
+    ]
+
+
+@pytest.mark.django_db
+def test_student_schedule_includes_response_attendance_and_coverage(
+    school_context,
+    student,
+    guardian,
+    coach_user,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.COMPLETED,
+        starts_at=starts_at,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=coach_user,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=coach_user,
+    )
+    coverage = AttendanceCoverage.objects.create(
+        attendance=attendance,
+        one_time_entitlement=entitlement,
+        created_by=coach_user,
+    )
+
+    result = get_student_schedule(
+        student_id=student.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 15),
+    )
+
+    assert len(result) == 1
+    assert result[0].response_status == LessonResponse.Status.YES
+    assert result[0].attendance_status == Attendance.Status.PRESENT
+    assert result[0].coverage.id == coverage.id
+
+
+@pytest.mark.django_db
+def test_coach_schedule_counts_only_active_roster(
+    school_context,
+    student,
+    second_student,
+    guardian,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.RSVP_OPEN,
+        starts_at=starts_at,
+    )
+    active = LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+    )
+    inactive = LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=second_student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+        is_active=False,
+        deactivated_at=starts_at - timedelta(days=1),
+        deactivated_by=coach_user,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+    LessonResponse.objects.create(
+        lesson=lesson,
+        student=second_student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+
+    result = get_coach_schedule(
+        coach_id=coach.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 15),
+    )
+
+    assert len(result) == 1
+    assert result[0].roster_count == 1
+    assert result[0].yes_count == 1
+    assert result[0].no_count == 0
+    assert result[0].no_response_count == 0
+
+
+@pytest.mark.django_db
+def test_coach_schedule_excludes_draft(
+    school_context,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    make_lesson(
+        school_context=school_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=starts_at,
+    )
+
+    result = get_coach_schedule(
+        coach_id=coach.id,
+        from_date=date(2026, 9, 15),
+        until_date=date(2026, 9, 15),
+    )
+
+    assert result == ()
+
+
+
+@pytest.mark.django_db
+def test_group_membership_service_rejects_overlapping_interval(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    create_group_membership(
+        student_id=student.id,
+        group_id=group.id,
+        starts_on=date(2026, 1, 1),
+        ends_on=date(2026, 6, 30),
+        actor=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        create_group_membership(
+            student_id=student.id,
+            group_id=group.id,
+            starts_on=date(2026, 6, 15),
+            ends_on=date(2026, 8, 31),
+            actor=admin,
+        )
+
+
+@pytest.mark.django_db
+def test_reschedule_copies_active_enrollments_without_rsvp(
+    school_context,
+    student,
+    guardian,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        25,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonEnrollment.objects.create(
+        lesson=source,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+    LessonResponse.objects.create(
+        lesson=source,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=guardian,
+    )
+
+    replacement = reschedule_lesson(
+        lesson_id=source.id,
+        new_starts_at=starts_at + timedelta(days=1),
+        new_ends_at=starts_at + timedelta(days=1, hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    copied = LessonEnrollment.objects.get(
+        lesson=replacement,
+        student=student,
+    )
+    assert copied.reason == LessonEnrollment.Reason.GUEST
+    assert not LessonResponse.objects.filter(
+        lesson=replacement,
+        student=student,
+    ).exists()
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_uses_school_timezone_not_active_request_timezone(
+    school_context,
+    admin,
+    settings,
+):
+    coach, group, venue, lesson_type = school_context
+    settings.SCHOOL_TIME_ZONE = "Europe/Riga"
+    timezone.activate("UTC")
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 1, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 1),
+        is_active=True,
+    )
+
+    lessons = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 1),
+        until_date=date(2026, 9, 1),
+        actor=admin,
+    )
+
+    assert len(lessons.lessons) == 1
+    assert (
+        lessons.lessons[0]
+        .starts_at.astimezone(dt_timezone.utc)
+        .hour
+        == 15
+    )
+
+
+
+@pytest.mark.django_db
+def test_reschedule_workflow_rolls_back_when_entitlement_permission_missing(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    actor = User.objects.create_user(
+        username="lesson-only-admin",
+        password="test",
+        is_staff=True,
+    )
+    from django.contrib.auth.models import Permission
+
+    actor.user_permissions.add(
+        Permission.objects.get(
+            content_type__app_label="scheduling",
+            codename="change_lesson",
+        )
+    )
+    starts_at = datetime(
+        2026,
+        9,
+        25,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonResponse.objects.create(
+        lesson=source,
+        student=student,
+        status=LessonResponse.Status.YES,
+        updated_by=admin,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="rollback-permission-plan",
+        name="Rollback permission plan",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category="ice",
+        visit_limit=1,
+    )
+    issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=admin,
+    )
+
+    with pytest.raises(PermissionDenied):
+        reschedule_lesson_with_entitlements(
+            lesson_id=source.id,
+            new_starts_at=datetime(
+                2026, 10, 2, 15, 0, tzinfo=dt_timezone.utc
+            ),
+            new_ends_at=datetime(
+                2026, 10, 2, 16, 0, tzinfo=dt_timezone.utc
+            ),
+            actor=actor,
+            reason=Lesson.CancellationReason.ADMINISTRATIVE,
+            now=starts_at - timedelta(hours=3),
+        )
+
+    source.refresh_from_db()
+    assert source.status == Lesson.Status.RSVP_OPEN
+    assert source.replacement_lesson_id is None
+    assert Lesson.objects.filter(
+        replaced_lesson=source,
+    ).count() == 0
+
+
+
+@pytest.mark.django_db
+def test_reschedule_transfers_unused_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        9,
+        25,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=source,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=source.id,
+        new_starts_at=starts_at + timedelta(days=1),
+        new_ends_at=starts_at + timedelta(days=1, hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(hours=3),
+    )
+
+    entitlement.refresh_from_db()
+    assert entitlement.lesson_id == replacement.id
+    assert AuditEvent.objects.filter(
+        event_type="OneTimeEntitlementTransferred",
+        aggregate_id=entitlement.id,
+    ).exists()
+
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_cancels_future_drafts_and_avoids_duplicates(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 9, 1, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        valid_until=None,
+        is_active=True,
+    )
+    generated = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 21),
+        until_date=date(2026, 10, 5),
+        actor=admin,
+    )
+    assert generated.lessons
+
+    replacement = version_schedule_template(
+        template_id=template.id,
+        effective_from=date(2026, 9, 28),
+        actor=admin,
+        now=datetime(
+            2026,
+            9,
+            23,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        start_time=datetime(2026, 9, 1, 19, 0).time(),
+    )
+
+    template.refresh_from_db()
+    assert template.is_active is True
+    assert template.valid_until == date(2026, 9, 27)
+    assert replacement.valid_from == date(2026, 9, 28)
+    assert replacement.start_time.hour == 19
+
+    assert not Lesson.objects.filter(
+        source_template=template,
+        status=Lesson.Status.DRAFT,
+        starts_at__date__gte=date(2026, 9, 28),
+    ).exists()
+    assert Lesson.objects.filter(
+        source_template=template,
+        status=Lesson.Status.CANCELLED,
+    ).exists()
+
+    generate_lessons(
+        template_id=replacement.id,
+        from_date=date(2026, 9, 28),
+        until_date=date(2026, 10, 5),
+        actor=admin,
+    )
+    active_future = Lesson.objects.filter(
+        source_template=replacement,
+        status=Lesson.Status.DRAFT,
+    )
+    assert active_future.exists()
+    assert all(item.starts_at.hour == 16 for item in active_future)
+
+
+@pytest.mark.django_db
+def test_group_membership_audit_preserves_previous_values(
+    school_context,
+    student,
+    admin,
+):
+    _coach, group, _venue, _lesson_type = school_context
+    membership = create_group_membership(
+        student_id=student.id,
+        group_id=group.id,
+        starts_on=date(2026, 9, 1),
+        ends_on=None,
+        actor=admin,
+    )
+
+    update_group_membership(
+        membership_id=membership.id,
+        starts_on=date(2026, 9, 2),
+        ends_on=date(2026, 12, 31),
+        actor=admin,
+    )
+
+    event = AuditEvent.objects.get(
+        event_type="GroupMembershipChanged",
+        aggregate_id=membership.id,
+    )
+    assert event.payload["previous_starts_on"] == "2026-09-01"
+    assert event.payload["previous_ends_on"] is None
+    assert event.payload["starts_on"] == "2026-09-02"
+    assert event.payload["ends_on"] == "2026-12-31"
+
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_keeps_old_version_generating_until_cutoff(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 9, 21, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 9, 1),
+        until_date=date(2026, 9, 30),
+        actor=admin,
+    )
+
+    replacement = version_schedule_template(
+        template_id=template.id,
+        effective_from=date(2026, 10, 19),
+        actor=admin,
+        now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+        start_time=datetime(2026, 9, 21, 19, 0).time(),
+    )
+
+    template.refresh_from_db()
+    assert template.is_active is True
+    assert template.valid_until == date(2026, 10, 18)
+
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 1),
+        until_date=date(2026, 10, 18),
+        actor=admin,
+    )
+    old_dates = {
+        item.starts_at.date()
+        for item in Lesson.objects.filter(
+            source_template=template,
+            status=Lesson.Status.DRAFT,
+        )
+    }
+    assert date(2026, 10, 5) in old_dates
+    assert date(2026, 10, 12) in old_dates
+
+    generate_lessons(
+        template_id=replacement.id,
+        from_date=date(2026, 10, 19),
+        until_date=date(2026, 10, 31),
+        actor=admin,
+    )
+    assert Lesson.objects.filter(
+        source_template=replacement,
+        status=Lesson.Status.DRAFT,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_rejects_booked_draft(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 10, 5, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    lesson = Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.DRAFT,
+    )
+    LessonEnrollment.objects.create(
+        lesson=lesson,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        version_schedule_template(
+            template_id=template.id,
+            effective_from=date(2026, 10, 1),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+            start_time=datetime(2026, 10, 5, 19, 0).time(),
+        )
+
+    template.refresh_from_db()
+    assert template.valid_until is None
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_rejects_published_lesson(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 10, 5, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.RSVP_OPEN,
+        published_at=datetime(2026, 9, 23, 7, 0, tzinfo=dt_timezone.utc),
+    )
+
+    with pytest.raises(ValidationError):
+        version_schedule_template(
+            template_id=template.id,
+            effective_from=date(2026, 10, 1),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+            start_time=datetime(2026, 10, 5, 19, 0).time(),
+        )
+
+
+
+@pytest.mark.django_db
+def test_version_schedule_template_rejects_draft_with_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 10, 5, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    lesson = Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.DRAFT,
+    )
+    OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        version_schedule_template(
+            template_id=template.id,
+            effective_from=date(2026, 10, 1),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+            start_time=datetime(2026, 10, 5, 19, 0).time(),
+        )
+
+    template.refresh_from_db()
+    assert template.valid_until is None
+
+
+
+@pytest.mark.django_db
+def test_draft_reschedule_moves_enrollment_and_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026,
+        10,
+        5,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    enrollment = LessonEnrollment.objects.create(
+        lesson=source,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=source,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=source.id,
+        new_starts_at=starts_at + timedelta(days=1),
+        new_ends_at=starts_at + timedelta(days=1, hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(days=10),
+    )
+
+    source.refresh_from_db()
+    entitlement.refresh_from_db()
+    assert source.status == Lesson.Status.CANCELLED
+    assert source.replacement_lesson_id == replacement.id
+    assert replacement.status == Lesson.Status.DRAFT
+    assert LessonEnrollment.objects.filter(
+        lesson=replacement,
+        student=student,
+        reason=enrollment.reason,
+        cancelled_at__isnull=True,
+    ).exists()
+    assert entitlement.lesson_id == replacement.id
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_reuses_existing_group_slot_after_draft_reschedule(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    old_template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 10, 20, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    old_lesson = generate_lessons(
+        template_id=old_template.id,
+        from_date=date(2026, 10, 20),
+        until_date=date(2026, 10, 20),
+        actor=admin,
+    ).lessons[0]
+    LessonEnrollment.objects.create(
+        lesson=old_lesson,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=old_lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=old_lesson.id,
+        new_starts_at=old_lesson.starts_at + timedelta(hours=1),
+        new_ends_at=old_lesson.ends_at + timedelta(hours=1),
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+    )
+
+    new_template = version_schedule_template(
+        template_id=old_template.id,
+        effective_from=date(2026, 10, 19),
+        actor=admin,
+        now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+        start_time=datetime(2026, 10, 20, 19, 0).time(),
+    )
+
+    generated = generate_lessons(
+        template_id=new_template.id,
+        from_date=date(2026, 10, 19),
+        until_date=date(2026, 10, 25),
+        actor=admin,
+    )
+
+    slot_lessons = Lesson.objects.filter(
+        group=group,
+        starts_at=replacement.starts_at,
+    ).exclude(status=Lesson.Status.CANCELLED)
+    assert slot_lessons.count() == 1
+    assert slot_lessons.get().id == replacement.id
+    assert generated.lessons == (replacement,)
+
+    entitlement.refresh_from_db()
+    assert entitlement.lesson_id == replacement.id
+    assert LessonEnrollment.objects.filter(
+        lesson=replacement,
+        student=student,
+        cancelled_at__isnull=True,
+    ).exists()
+
+
+
+@pytest.mark.django_db
+def test_reschedule_rejects_overlapping_group_interval(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    source_start = datetime(
+        2026, 10, 20, 15, 0, tzinfo=dt_timezone.utc
+    )
+    source = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=source_start,
+        ends_at=source_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=source_start - timedelta(hours=2),
+        decision_deadline=source_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    conflict_start = source_start + timedelta(hours=4)
+    Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=conflict_start,
+        ends_at=conflict_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=conflict_start - timedelta(hours=2),
+        decision_deadline=conflict_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    with pytest.raises(ValidationError):
+        reschedule_lesson_with_entitlements(
+            lesson_id=source.id,
+            new_starts_at=conflict_start - timedelta(minutes=15),
+            new_ends_at=conflict_start + timedelta(minutes=45),
+            actor=admin,
+            reason=Lesson.CancellationReason.ADMINISTRATIVE,
+            now=source_start - timedelta(days=10),
+        )
+
+    source.refresh_from_db()
+    assert source.status == Lesson.Status.DRAFT
+    assert source.replacement_lesson_id is None
+
+
+@pytest.mark.django_db
+def test_generate_lessons_treats_overlapping_group_lesson_as_occupied(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=1,
+        start_time=datetime(2026, 10, 20, 19, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    existing_start = datetime(
+        2026, 10, 20, 15, 45, tzinfo=dt_timezone.utc
+    )
+    existing = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=existing_start,
+        ends_at=existing_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=existing_start - timedelta(hours=2),
+        decision_deadline=existing_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    generated = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 20),
+        until_date=date(2026, 10, 20),
+        actor=admin,
+    )
+
+    assert generated.lessons == (existing,)
+    assert (
+        Lesson.objects.filter(group=group)
+        .exclude(status=Lesson.Status.CANCELLED)
+        .count()
+        == 1
+    )
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_reports_cross_type_overlap_conflict(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-conflict",
+        name="Hall conflict",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    conflict_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    ice_lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=conflict_start,
+        ends_at=conflict_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=conflict_start - timedelta(hours=2),
+        decision_deadline=conflict_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    result = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert result.lessons == ()
+    assert len(result.conflicts) == 1
+    conflict = result.conflicts[0]
+    assert conflict.conflicting_lesson_id == ice_lesson.id
+    assert conflict.expected_lesson_type_id == hall_type.id
+    assert conflict.conflicting_lesson_type_id == ice_type.id
+    assert AuditEvent.objects.filter(
+        event_type="LessonGenerationConflict",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    ).exists()
+
+
+
+@pytest.mark.django_db
+def test_generate_lessons_respects_cancelled_own_slot_over_cross_type_overlap(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-cancelled-own",
+        name="Hall cancelled own",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    cancelled = Lesson.objects.create(
+        source_template=template,
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CANCELLED,
+        cancelled_at=starts_at - timedelta(days=1),
+        cancelled_by=admin,
+        cancellation_reason=Lesson.CancellationReason.ADMINISTRATIVE,
+    )
+    ice_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=ice_start,
+        ends_at=ice_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=ice_start - timedelta(hours=2),
+        decision_deadline=ice_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    first = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    second = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert first.lessons == (cancelled,)
+    assert second.lessons == (cancelled,)
+    assert first.conflicts == ()
+    assert second.conflicts == ()
+    assert not AuditEvent.objects.filter(
+        event_type="LessonGenerationConflict",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    ).exists()
+
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_resolves_cross_type_generation_conflict(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-skip-conflict",
+        name="Hall skip conflict",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    ice_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    ice_lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=ice_start,
+        ends_at=ice_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=ice_start - timedelta(hours=2),
+        decision_deadline=ice_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    before = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    assert len(before.conflicts) == 1
+
+    skipped = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc),
+    )
+
+    assert skipped.status == Lesson.Status.CANCELLED
+    assert skipped.source_template_id == template.id
+    assert Lesson.objects.get(pk=ice_lesson.id).status == Lesson.Status.DRAFT
+
+    after = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    assert after.lessons == (skipped,)
+    assert after.conflicts == ()
+    assert AuditEvent.objects.filter(
+        event_type="ScheduleTemplateOccurrenceSkipped",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_is_idempotent(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc)
+
+    first = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=now,
+    )
+    second = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=now + timedelta(minutes=1),
+    )
+
+    assert second.id == first.id
+    assert (
+        AuditEvent.objects.filter(
+            event_type="ScheduleTemplateOccurrenceSkipped",
+            aggregate_type="ScheduleTemplate",
+            aggregate_id=template.id,
+        ).count()
+        == 1
+    )
+
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_records_correlated_lesson_cancel_event(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc)
+
+    lesson = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=date(2026, 10, 29),
+        actor=admin,
+        now=now,
+    )
+
+    template_event = AuditEvent.objects.get(
+        event_type="ScheduleTemplateOccurrenceSkipped",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+    )
+    lesson_event = AuditEvent.objects.get(
+        event_type="LessonCancelled",
+        aggregate_type="Lesson",
+        aggregate_id=lesson.id,
+    )
+    assert lesson_event.correlation_id == template_event.correlation_id
+    assert lesson_event.payload["cancelled_at"] == now.isoformat()
+    assert lesson_event.payload["reason"] == (
+        Lesson.CancellationReason.ADMINISTRATIVE
+    )
+    assert lesson_event.payload["source"] == (
+        "schedule_template_occurrence_skipped"
+    )
+    assert lesson_event.payload["source_template_id"] == str(template.id)
+
+@pytest.mark.django_db
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_rejects_past_date(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 9, 3, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 9, 1),
+        is_active=True,
+    )
+
+    with pytest.raises(ValidationError):
+        skip_template_occurrence(
+            template_id=template.id,
+            occurrence_date=date(2026, 9, 3),
+            actor=admin,
+            now=datetime(2026, 9, 23, 12, 0, tzinfo=dt_timezone.utc),
+        )
+
+    assert not Lesson.objects.filter(source_template=template).exists()
+
+
+def test_skip_template_occurrence_rejects_wrong_weekday(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+
+    with pytest.raises(ValidationError):
+        skip_template_occurrence(
+            template_id=template.id,
+            occurrence_date=date(2026, 10, 30),
+            actor=admin,
+            now=datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc),
+        )
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_rejects_existing_non_cancelled_occurrence(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    generated = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    ).lessons[0]
+
+    with pytest.raises(ValidationError):
+        skip_template_occurrence(
+            template_id=template.id,
+            occurrence_date=date(2026, 10, 29),
+            actor=admin,
+            now=datetime(2026, 10, 20, 12, 0, tzinfo=dt_timezone.utc),
+        )
+
+    generated.refresh_from_db()
+    assert generated.status == Lesson.Status.DRAFT
+
+@pytest.mark.django_db
+def test_generation_conflict_audit_is_idempotent_per_template_slot(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-conflict-idempotent",
+        name="Hall conflict idempotent",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    ice_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=ice_start,
+        ends_at=ice_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=ice_start - timedelta(hours=2),
+        decision_deadline=ice_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    first = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    second = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert len(first.conflicts) == 1
+    assert len(second.conflicts) == 1
+    expected_starts_at = first.conflicts[0].starts_at.isoformat()
+    events = AuditEvent.objects.filter(
+        event_type="LessonGenerationConflict",
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        payload__expected_starts_at=expected_starts_at,
+    )
+    assert events.count() == 1
+
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_allows_draft(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    cancelled = cancel_lesson(
+        lesson_id=lesson.id,
+        actor=admin,
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=starts_at - timedelta(days=1),
+    )
+
+    assert cancelled.status == Lesson.Status.CANCELLED
+    assert cancelled.cancelled_at is not None
+    assert cancelled.cancellation_reason == (
+        Lesson.CancellationReason.ADMINISTRATIVE
+    )
+
+
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_rejects_booked_draft_enrollment(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    LessonEnrollment.objects.create(
+        lesson=lesson,
+        student=student,
+        reason=LessonEnrollment.Reason.GUEST,
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        cancel_lesson(
+            lesson_id=lesson.id,
+            actor=admin,
+            reason=Lesson.CancellationReason.ADMINISTRATIVE,
+            now=starts_at - timedelta(days=1),
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.status == Lesson.Status.DRAFT
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_rejects_draft_with_one_time_entitlement(
+    school_context,
+    student,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = datetime(
+        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
+    )
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=admin,
+    )
+
+    with pytest.raises(ValidationError):
+        cancel_lesson(
+            lesson_id=lesson.id,
+            actor=admin,
+            reason=Lesson.CancellationReason.ADMINISTRATIVE,
+            now=starts_at - timedelta(days=1),
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.status == Lesson.Status.DRAFT
+
+@pytest.mark.django_db
+def test_generation_conflict_dedup_key_includes_conflicting_lesson(
+    school_context,
+    admin,
+):
+    coach, group, venue, ice_type = school_context
+    hall_type = LessonType.objects.create(
+        code="hall-conflict-new-lesson",
+        name="Hall conflict new lesson",
+        subscription_category="hall",
+    )
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    first_start = datetime(
+        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
+    )
+    first_conflict = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=first_start,
+        ends_at=first_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=first_start - timedelta(hours=2),
+        decision_deadline=first_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+    generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    first_conflict.status = Lesson.Status.CANCELLED
+    first_conflict.cancelled_at = first_start + timedelta(minutes=1)
+    first_conflict.cancelled_by = admin
+    first_conflict.cancellation_reason = (
+        Lesson.CancellationReason.ADMINISTRATIVE
+    )
+    first_conflict.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+            "cancellation_reason",
+            "updated_at",
+        ]
+    )
+
+    second_start = datetime(
+        2026, 10, 29, 17, 10, tzinfo=dt_timezone.utc
+    )
+    second_conflict = Lesson.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=coach,
+        venue=venue,
+        starts_at=second_start,
+        ends_at=second_start + timedelta(minutes=50),
+        minimum_attendees=1,
+        rsvp_deadline=second_start - timedelta(hours=2),
+        decision_deadline=second_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    result = generate_lessons(
+        template_id=template.id,
+        from_date=date(2026, 10, 29),
+        until_date=date(2026, 10, 29),
+        actor=admin,
+    )
+
+    assert len(result.conflicts) == 1
+    assert result.conflicts[0].conflicting_lesson_id == second_conflict.id
+    assert (
+        AuditEvent.objects.filter(
+            event_type="LessonGenerationConflict",
+            aggregate_type="ScheduleTemplate",
+            aggregate_id=template.id,
+        ).count()
+        == 2
+    )

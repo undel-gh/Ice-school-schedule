@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Расписание тренера{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>{{ coach.display_name }}</h1>
+  <div class="page-header__meta">Расписание тренера</div>
+</header>
+
+<form class="filter-form" method="get">
+  <div class="field">
+    <label for="date">Дата</label>
+    <input id="date" type="date" name="date" value="{{ school_date|date:'Y-m-d' }}">
+  </div>
+  <button class="btn-secondary" type="submit">Показать</button>
+</form>
+
+<div class="card-list card-list--coach">
+{% for item in lessons %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <div class="lesson-card__time">{{ item.lesson.starts_at|date:"H:i" }}</div>
+        <h2>{{ item.lesson.lesson_type.name }}</h2>
+      </div>
+      <span class="badge">{{ item.lesson.status }}</span>
+    </div>
+
+    <p class="lesson-card__meta">
+      {{ item.lesson.group.name }} · {{ item.lesson.venue.name }}
+    </p>
+
+    <div class="lesson-card__stats" aria-label="Ответы участников">
+      <div class="stat">
+        <strong>{{ item.yes_count }}</strong>
+        <span>ожидается</span>
+      </div>
+      <div class="stat">
+        <strong>{{ item.no_count }}</strong>
+        <span>не придут</span>
+      </div>
+      <div class="stat">
+        <strong>{{ item.no_response_count }}</strong>
+        <span>без ответа</span>
+      </div>
+    </div>
+
+    <p>
+      <a class="btn btn-primary" href="{% url 'scheduling:coach_lesson' item.lesson.id %}">
+        Открыть занятие
+      </a>
+    </p>
+  </article>
+{% empty %}
+  <div class="empty-state">Занятий на выбранную дату нет.</div>
+{% endfor %}
+</div>
+{% endblock %}

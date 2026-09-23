@@ -31,6 +31,12 @@ subscriptions/
 audit/
     models.py
     services.py
+
+core/
+    permissions.py
+
+ice_school/
+    workflows.py
 ```
 
 Зависимости:
@@ -48,6 +54,20 @@ audit ← все приложения
 ```
 
 Циклических импортов между service-модулями следует избегать.
+
+Cross-app orchestration, которое по смыслу затрагивает несколько доменов,
+размещается в composition root `ice_school.workflows`, а не в нижнем
+`core` и не создаёт обратную зависимость между domain apps.
+
+Audit persistence централизуется через:
+
+```text
+audit.services.record_event()
+audit.services.event_exists()
+```
+
+Domain services могут иметь тонкие локальные wrappers для удобства payload,
+но не должны писать `AuditEvent.objects.create()` напрямую.
 
 ---
 
@@ -1354,6 +1374,13 @@ class AbsenceJustification(models.Model):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+
+    revocation_reason = models.CharField(
+        max_length=32,
+        choices=["attendance_correction", "administrative"],
+        null=True,
+        blank=True,
+    )
 ```
 
 Никаких полей:
@@ -1373,7 +1400,8 @@ file
 ```python
 models.UniqueConstraint(
     fields=["student", "lesson", "type"],
-    name="absencejust_student_lesson_type_uniq",
+    condition=models.Q(status__in=["pending", "verified"]),
+    name="absence_active_student_lesson_uq",
 )
 ```
 
@@ -1402,6 +1430,7 @@ models.CheckConstraint(
             status=Status.REVOKED,
             reviewed_at__isnull=False,
             revoked_at__isnull=False,
+            revocation_reason__isnull=False,
         )
     ),
     name="absencejust_status_metadata_consistency",
@@ -1981,6 +2010,11 @@ Attendance для отменённого занятия создавать не�
 
 # 36. scheduling.services.reschedule_lesson()
 
+Это low-level scheduling transition. Интерактивные callers не должны вызывать
+его напрямую: административный UI/CLI использует
+`ice_school.workflows.reschedule_lesson_with_entitlements()`, чтобы перенос
+Lesson и entitlement'ов был одной транзакцией.
+
 ```python
 reschedule_lesson(
     *,
@@ -1989,6 +2023,7 @@ reschedule_lesson(
     new_ends_at: datetime,
     actor: User,
     reason: CancellationReason,
+    now: datetime,
 ) -> Lesson
 ```
 
@@ -2011,13 +2046,52 @@ Event:
 
 RSVP не копируются.
 
+Активные `LessonEnrollment` переносятся на replacement как новые enrollment
+records. RSVP при этом не копируются.
+
 После этого replacement публикуется отдельно.
 
 ---
 
 # 37. Entitlements при переносе школы
 
-Если replacement Lesson выходит за обычный срок, для участников с `RSVP=YES` определяется `SubscriptionAllowance` той же категории, который мог покрыть исходный Lesson. При необходимости создаётся `MakeupEntitlement(source_subscription_allowance=..., target_lesson=replacement)`.
+Создание make-up entitlement не находится в `scheduling.services`.
+
+Subscription-domain service:
+
+```python
+subscriptions.services.apply_school_reschedule_entitlements(
+    *,
+    source_lesson_id: UUID,
+    replacement_lesson_id: UUID,
+    actor: User,
+)
+```
+
+Для атомарного пользовательского/административного сценария используется
+cross-app orchestration:
+
+```python
+ice_school.workflows.reschedule_lesson_with_entitlements(...)
+```
+
+Workflow в одной транзакции вызывает:
+
+```text
+scheduling.services.reschedule_lesson()
+        ↓
+subscriptions.services.apply_school_reschedule_entitlements()
+```
+
+Неиспользованный и неотменённый `OneTimeEntitlement`, привязанный к
+исходному Lesson и совпадающий по категории, перепривязывается к replacement.
+Использованный one-time entitlement остаётся исторически привязанным к исходному
+занятию. Новое разовое право при переносе не создаётся.
+
+Если replacement Lesson выходит за обычный срок, для участников с `RSVP=YES`
+определяется `SubscriptionAllowance` той же категории, который мог покрыть
+исходный Lesson. При необходимости создаётся
+`MakeupEntitlement(source_subscription_allowance=..., target_lesson=replacement)`.
 
 Никакого `GRANT` при этом не создаётся.
 
@@ -2494,13 +2568,27 @@ PENDING
 MEDICAL
 ```
 
+Если предыдущая justification была автоматически отозвана из-за коррекции
+Attendance в PRESENT и Attendance снова становится ABSENT, создаётся **новая**
+PENDING justification с новым UUID. Старые REVOKED/REJECTED строки не
+перезаписываются. Административно REVOKED justification автоматически заново
+не заявляется.
+
 Справку в систему не загружаем.
 
 ---
 
 # 65. attendance.services.verify_medical_absence()
 
-При VERIFIED определяется конкретный `SubscriptionAllowance` категории исходного Lesson, который мог покрыть пропуск. Если allowance найден, создаётся MakeupEntitlement на него. Если подходящего allowance нет, justification остаётся VERIFIED, но entitlement не создаётся.
+Lock order для коррекции/верификации:
+
+```text
+Lesson → Attendance → AbsenceJustification → entitlement/allowance
+```
+
+При VERIFIED определяется конкретный `SubscriptionAllowance` категории исходного Lesson, который мог покрыть пропуск. Если allowance найден, создаётся MakeupEntitlement на него. При повторном заявлении создаётся новая justification, а новая верификация
+создаёт новый MakeupEntitlement. Отменённый entitlement не реактивируется и
+сохраняет прежние даты/статус как историческую запись. Если подходящего allowance нет, justification остаётся VERIFIED, но entitlement не создаётся.
 
 ---
 
@@ -2585,6 +2673,11 @@ uncovered_count
 
 # 73. Admin protection
 
+Прямое изменение operational models запрещено даже для обычного `is_staff`.
+
+Просмотр использует стандартные Django model permissions. Service-backed
+actions дополнительно требуют соответствующий `change_*` permission.
+
 Read-only через обычный Admin: `Attendance`, `AttendanceCoverage`, `SubscriptionLedgerEntry`, lifecycle fields justification/lesson. Изменения выполняются application services.
 
 ---
@@ -2650,6 +2743,8 @@ Payload содержит идентификаторы `subscription_id`, `allowa
 ---
 
 # 78. correlation_id
+
+Запись audit events выполняется через `audit.services.record_event()`.
 
 Все события одной операции `Attendance → Coverage → Ledger` используют общий correlation_id.
 
@@ -2748,4 +2843,101 @@ Attendance ──► AttendanceCoverage
 
 После утверждения консолидированной модели реализация идёт в порядке: accounts/scheduling → Attendance → allowance-based subscriptions + ledger → AttendanceCoverage + concurrency tests → OneTimeEntitlement → Makeup flow → Admin/UI → future Billing.
 
+Server-rendered presentation layer должен соблюдать UX-контракт раздела:
+
+```text
+«Mobile-first UI и адаптивность»
+```
+
+в основной системной спецификации.
+
+Mobile/desktop responsive presentation не меняет domain semantics: views/templates не создают и не изменяют Lesson lifecycle, Attendance, Coverage, Ledger или entitlements напрямую; пользовательские действия вызывают application services.
+
 Критическую цепочку `Attendance → AttendanceCoverage → optional Ledger` необходимо покрыть transaction tests до разработки финансового UI.
+
+
+---
+
+# 91. Versioning ScheduleTemplate
+
+ScheduleTemplate, который уже используется для генерации, не редактируется
+in-place. Для изменения используется:
+
+```python
+version_schedule_template(
+    *,
+    template_id: UUID,
+    effective_from: date,
+    actor: User,
+    now: datetime,
+    ...new_values,
+) -> ScheduleTemplate
+```
+
+Старая версия сохраняет `is_active=True`, но получает
+`valid_until = effective_from - 1`, поэтому cron продолжает генерировать
+занятия старой версии до границы периода.
+
+Операция блокируется, если в затрагиваемом диапазоне существуют:
+
+- RSVP_OPEN / CONFIRMED / COMPLETED / CLOSED lessons;
+- DRAFT lesson с активным LessonEnrollment;
+- DRAFT lesson с активным OneTimeEntitlement.
+
+Для забронированного DRAFT доступен
+`ice_school.workflows.reschedule_lesson_with_entitlements()`: DRAFT входит в
+разрешённые source states, активные enrollment копируются, а неиспользованные
+one-time entitlement переносятся на replacement. Replacement остаётся разовым exception lesson (`source_template=None`), но
+может занимать тот же `group + starts_at`, который затем соответствует новой
+регулярной сетке. `generate_lessons()` перед созданием шаблонного занятия
+проверяет уже существующее неотменённое занятие той же группы на пересечение
+интервалов `[starts_at, ends_at)` и считает такой интервал покрытым, поэтому
+дубль не создаётся. `reschedule_lesson()` использует ту же блокировку
+TrainingGroup и запрещает пересекающийся replacement.
+
+Безопасные DRAFT без броней отменяются с audit event, после чего новая версия
+может генерироваться начиная с `effective_from`.
+
+
+---
+
+# 92. Lesson generation conflicts
+
+`generate_lessons()` сериализуется по `TrainingGroup` и проверяет пересечение
+интервалов `[starts_at, ends_at)` с неотменёнными Lesson той же группы.
+
+Правила:
+
+- overlap + тот же `lesson_type` → существующий Lesson считается покрывающим
+  регулярный слот и новый Lesson не создаётся;
+- если у самого template уже есть concrete Lesson с точным
+  `source_template + starts_at`, его статус (включая CANCELLED) является
+  окончательным решением по слоту;
+- overlap + другой `lesson_type` → возвращается conflict, слот не считается
+  успешно сгенерированным;
+- `LessonGenerationConflict` записывается в audit идемпотентно по
+  `template + expected_starts_at + conflicting_lesson_id`;
+- management command собирает такие конфликты и завершает каждый unresolved
+  запуск `CommandError`, не размножая одинаковые audit events.
+
+Таким образом ручной перенос ICE в новый ICE-слот не создаёт дубль, но ICE не
+может молча вытеснить регулярный HALL и наоборот.
+
+
+`generate_lessons()` возвращает явный value object:
+
+```python
+LessonGenerationResult(
+    lessons=(...),
+    conflicts=(...),
+)
+```
+
+Callers используют поля `.lessons` и `.conflicts`; result не является
+подклассом list.
+
+
+DRAFT может быть отменён через обычный `cancel_lesson()`. Это позволяет
+оператору сначала сгенерировать occurrence шаблона, затем отменить его и тем
+самым явно принять занятие другого типа в этом временном слоте без публикации
+дня.

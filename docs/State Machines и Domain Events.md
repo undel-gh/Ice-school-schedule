@@ -108,33 +108,34 @@ minimum_attendees:
 ```text
                      ┌─────────────┐
                      │    DRAFT    │
-                     └──────┬──────┘
-                            │ publish
-                            ▼
-                     ┌─────────────┐
-                     │  RSVP_OPEN  │
-                     └──────┬──────┘
-                            │
-             ┌──────────────┼───────────────┐
-             │              │               │
-          confirm         cancel         reschedule
-             │              │               │
-             ▼              ▼               ▼
-       ┌───────────┐   ┌───────────┐   CANCELLED
-       │ CONFIRMED │   │ CANCELLED │       +
-       └─────┬─────┘   └───────────┘    new Lesson
-             │
-             │ lesson ends
-             ▼
-       ┌───────────┐
-       │ COMPLETED │
-       └─────┬─────┘
-             │ trainer submits
-             │ attendance
-             ▼
-       ┌───────────┐
-       │  CLOSED   │
-       └───────────┘
+                     └──┬────┬─────┘
+                        │    │
+                   cancel   publish
+                        │    │
+                        ▼    ▼
+                 CANCELLED  RSVP_OPEN
+                        ▲      │  │  │
+                        │      │  │  └─ reschedule → CANCELLED + new DRAFT
+                        │      │  └──── cancel ──────→ CANCELLED
+                        │      └─────── confirm
+                        │                 │
+                        │                 ▼
+                        │             CONFIRMED
+                        │              │  │  │
+                        │              │  │  └─ reschedule → CANCELLED + new DRAFT
+                        │              │  └──── cancel ──────→ CANCELLED
+                        │              └─────── complete
+                        │                         │
+ DRAFT ─ reschedule ────┘                         ▼
+                                   ┌───────────┐
+                                   │ COMPLETED │
+                                   └─────┬─────┘
+                                         │ trainer submits
+                                         │ attendance
+                                         ▼
+                                   ┌───────────┐
+                                   │  CLOSED   │
+                                   └───────────┘
 ```
 
 Администратор может выполнить:
@@ -164,6 +165,30 @@ COMPLETED
 - как замена перенесённому занятию.
 
 В этом состоянии RSVP невозможен.
+
+Администратор может отменить ещё не опубликованное занятие:
+
+```text
+DRAFT → CANCELLED
+```
+
+Если у DRAFT есть активный `LessonEnrollment` или `OneTimeEntitlement`,
+прямая отмена запрещена: нужно использовать перенос, чтобы бронь могла
+перейти на replacement lesson.
+
+Для ещё не сгенерированного occurrence шаблона намеренный пропуск фиксируется
+отдельной операцией:
+
+```text
+ScheduleTemplate occurrence
+        │
+        │ skip_template_occurrence
+        ▼
+    CANCELLED
+```
+
+Она создаёт template-owned CANCELLED occurrence напрямую, в том числе когда
+его слот уже занят занятием другого типа.
 
 ---
 
@@ -1183,6 +1208,32 @@ VERIFIED
 ```
 
 Сам документ не сохраняется.
+
+Если после VERIFIED тренер исправляет Attendance с ABSENT на PRESENT:
+
+```text
+VERIFIED → REVOKED
+```
+
+неиспользованный medical MakeupEntitlement отменяется.
+
+Если затем Attendance снова исправлен на ABSENT, пользователь может повторно
+заявить медицинское основание **только если предыдущий отзыв был автоматическим
+из-за коррекции attendance**.
+
+При этом старая REVOKED justification остаётся неизменной, а создаётся новая
+PENDING justification с новым UUID. Аналогично, новая верификация создаёт новый
+MakeupEntitlement; отменённый entitlement не реактивируется и сохраняет прежние
+сроки как историческая запись.
+
+Административно REVOKED justification считается терминальной для автоматического
+redeclare и должна требовать отдельного административного решения.
+
+Статус REJECTED в MVP также терминальный: обычный пользователь не может
+повторно заявить ту же медицинскую justification после отказа. Если школа
+решит поддерживать пересмотр ошибочного отказа, это будет отдельная
+административная операция с новым audit event, а не неявный переход обратно
+в PENDING.
 
 ---
 
