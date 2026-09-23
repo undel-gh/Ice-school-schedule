@@ -394,3 +394,38 @@ def test_generate_lessons_command_fails_on_cross_type_conflict(
         ).count()
         == 1
     )
+
+
+
+@pytest.mark.django_db
+def test_cancel_lesson_command_allows_draft(ops_context):
+    actor, *_ = ops_context
+    starts_at = datetime(
+        2099,
+        10,
+        1,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        ops_context=ops_context,
+        status=Lesson.Status.DRAFT,
+        starts_at=starts_at,
+    )
+
+    out = StringIO()
+    call_command(
+        "cancel_lesson",
+        "--lesson",
+        str(lesson.id),
+        "--reason",
+        Lesson.CancellationReason.ADMINISTRATIVE,
+        "--actor",
+        actor.username,
+        stdout=out,
+    )
+
+    lesson.refresh_from_db()
+    assert lesson.status == Lesson.Status.CANCELLED
+    assert "cancelled" in out.getvalue().lower()
