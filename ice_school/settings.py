@@ -27,6 +27,11 @@ TRUSTED_PROXY_IPS = tuple(
     for value in os.environ.get("TRUSTED_PROXY_IPS", "").split(",")
     if value.strip()
 )
+SILENCED_SYSTEM_CHECKS = [
+    value.strip()
+    for value in os.environ.get("SILENCED_SYSTEM_CHECKS", "").split(",")
+    if value.strip()
+]
 
 INSTALLED_APPS = [
     "ice_school.apps.IceSchoolConfig",
