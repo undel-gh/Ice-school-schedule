@@ -127,8 +127,8 @@ def test_guardian_sees_only_accessible_student_schedule(client, web_context):
     response = client.get(
         reverse("scheduling:student_schedule"),
         {
-            "from": "2099-09-25",
-            "until": "2099-09-25",
+            "from": "2026-09-25",
+            "until": "2026-09-25",
         },
     )
 
@@ -299,8 +299,8 @@ def test_student_schedule_renders_mobile_touch_controls(client, web_context):
     response = client.get(
         reverse("scheduling:student_schedule"),
         {
-            "from": "2026-09-25",
-            "until": "2026-09-25",
+            "from": "2099-09-25",
+            "until": "2099-09-25",
         },
     )
 
