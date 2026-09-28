@@ -74,7 +74,19 @@ Use `docker compose down -v` only when you intentionally want to delete the deve
 ## Operational commands
 
 The current foundation exposes the recurring scheduling/lifecycle operations as
-Django management commands:
+Django management commands. These commands are a secondary interface for
+system administration, automation, diagnostics and emergency operations.
+
+The product requirement is **web-first**: managers and coaches must be able to
+perform every normal human workflow through the authenticated web interface.
+A management command must not be the only UI for a manager/coach operation.
+Pure scheduler/lifecycle jobs may remain CLI/cron-only, but their failures and
+conflicts must be visible and resolvable from the manager web UI.
+
+The next subscription/web iteration is specified in
+`docs/Абонементы — расчётные периоды, заморозка и web-операции.md`.
+
+Available management commands:
 
 ```bash
 python manage.py generate_lessons \
