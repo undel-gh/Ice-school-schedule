@@ -1475,6 +1475,49 @@ CheckConstraint(condition=Q(visit_limit__gt=0), name="subplan_allowance_limit_gt
 CheckConstraint(condition=Q(validity_months=1), name="subscriptionplan_one_month")
 ```
 
+> **Current implementation note.** `validity_months=1` and
+> `subscriptionplan_one_month` describe the current foundation only. They are
+> scheduled for replacement by the target period-policy model below.
+
+## Target period-policy model
+
+The next subscription iteration must support:
+
+```python
+class PeriodPolicy(models.TextChoices):
+    CALENDAR_MONTH = "calendar_month"
+    FIRST_ATTENDANCE_28_DAYS = "first_attendance_28_days"
+    FIXED_28_DAYS = "fixed_28_days"
+```
+
+`SubscriptionPlan` stores the selected policy. `Subscription` snapshots it.
+
+For shared fixed periods introduce a school-level entity, working name
+`SubscriptionPeriod`:
+
+```python
+class SubscriptionPeriod(models.Model):
+    id = UUIDField(...)
+    policy = models.CharField(...)
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+    label = models.CharField(...)
+```
+
+For `FIXED_28_DAYS`, issued subscriptions reference one shared period.
+For `FIRST_ATTENDANCE_28_DAYS`, `valid_from/valid_until` cannot be required
+before activation; the first covered `Attendance=PRESENT` sets them
+atomically and permanently.
+
+For every activated 28-day subscription:
+
+```text
+valid_until = valid_from + 27 days
+```
+
+The schema migration must preserve existing Subscription history without
+recalculating dates.
+
 ---
 
 # 21. Subscription и SubscriptionAllowance
@@ -2941,3 +2984,71 @@ DRAFT может быть отменён через обычный `cancel_lesso
 оператору сначала сгенерировать occurrence шаблона, затем отменить его и тем
 самым явно принять занятие другого типа в этом временном слоте без публикации
 дня.
+
+
+---
+
+# 37. Planned carry-over / freeze model
+
+This section is a target requirement and is not yet implemented.
+
+A freeze carries at most `N` unused visits from a source
+`SubscriptionAllowance` into the student's next billing period.
+
+It must be represented as an explicit auditable grant/right with:
+
+```text
+source_subscription_allowance
+target_subscription / target_allowance / target_period
+category
+granted_visits
+remaining_visits
+created_at / created_by
+cancelled_at / cancelled_by
+```
+
+The original ledger and original Subscription dates remain immutable.
+
+For mixed subscriptions, whether `N` is per allowance category or one total
+subscription limit remains a business decision to confirm before migration.
+
+---
+
+# 38. Planned GroupPlaceHold model
+
+A paid one-period group-place reservation is a separate domain concept:
+
+```text
+GroupPlaceHold
+    student
+    group
+    period
+    status
+    created_at / created_by
+    cancelled_at / cancelled_by
+```
+
+It preserves the student's place in a TrainingGroup while the student skips
+one billing period. It grants no AttendanceCoverage and no ICE/HALL visits.
+
+The future Billing domain may attach payment data, but payment details are not
+required in the scheduling/subscriptions foundation.
+
+---
+
+# 39. Web-first application-service requirement
+
+Every normal manager/trainer action must have an authenticated server-rendered
+web flow calling the same application service as CLI/automation.
+
+Management commands are secondary/sysadmin interfaces. Human workflows must
+not remain CLI-only.
+
+Required manager web coverage includes schedule template management,
+generation-conflict resolution, `skip_template_occurrence`, lesson
+cancel/reschedule, memberships, subscription issuance/cancellation, period
+selection, carry-over/freeze, group place hold, one-time/makeup administration,
+medical review and relevant audit history.
+
+Pure background jobs may stay management-command/cron only, but their failures
+and conflicts must surface in manager-facing web UI.
