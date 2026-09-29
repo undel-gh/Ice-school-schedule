@@ -421,22 +421,51 @@ max_eligible_absences = 4
 
 ## 5.7. Платная заморозка
 
-Платная заморозка — entitlement на отработку конкретного допустимого пропуска
-за пределами исходного расчётного периода.
-
-Текущая policy предполагает:
+Платная заморозка реализована как двухфазный PAID_MAKEUP grant для конкретного
+допустимого пропуска.
 
 ```text
-freeze fee paid
-AND
-next-period Subscription acquired
+OPEN + ELIGIBLE case
+        ↓ authorize
+MATERIALIZED case + pending PAID_MAKEUP grant
         ↓
-entitlement becomes usable in target period
+оплата подтверждена
+и, если требует policy, выбран target Subscription
+        ↓ activate
+MakeupEntitlement становится usable
 ```
 
-Пока полноценного Billing нет, состояние оплаты может подтверждаться
-менеджером через service-backed web action. В будущем Billing должен заменить
-ручное подтверждение, не меняя entitlement semantics.
+Authorization уже замораживает eligibility и резервирует место в лимите, но
+до activation не создаёт MakeupEntitlement. Поэтому поздний backdated case не
+отзывает принятое решение, а неоплаченная/неактивированная заморозка ещё не
+может использоваться для AttendanceCoverage.
+
+Поддерживаются требования:
+
+```text
+FEE_REQUIRED
+FEE_AND_TARGET_SUBSCRIPTION_REQUIRED
+```
+
+PAID_MAKEUP без требования оплаты считается ошибкой конфигурации.
+
+Для CURRENT_PERIOD используется период source Subscription.
+Для EXPLICIT_TARGET_WINDOW используется сохранённое seasonal window; если
+нужен target Subscription, usable window ограничивается пересечением его дат
+с seasonal window.
+
+Для NEXT_STUDENT_PERIOD до появления общего period resolver менеджер явно
+выбирает target Subscription. Он должен принадлежать тому же ученику,
+содержать нужную ICE/HALL category и не быть отменён. Entitlement получает
+его `valid_from/valid_until`.
+
+Пока полноценного Billing нет, оплату подтверждает менеджер через
+`confirm_paid_makeup_fee(...)`. В будущем Billing должен заменить это
+подтверждение, не меняя grant/entitlement semantics.
+
+Pending или activated PAID_MAKEUP использует тот же explicit reversal
+workflow, что FREE_MAKEUP. Уже использованное entitlement нельзя отменить,
+пока соответствующий AttendanceCoverage не reverse/rebind.
 
 ## 5.8. Сезонные переходы между периодами
 
