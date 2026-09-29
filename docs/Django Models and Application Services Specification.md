@@ -2988,9 +2988,56 @@ DRAFT может быть отменён через обычный `cancel_lesso
 
 ---
 
-# 37. Planned absence-compensation policy
+# 37. Absence-compensation policy configuration
 
-This section is a target requirement and is not yet implemented.
+The typed/versioned policy configuration layer is implemented. Policy execution
+against a concrete absence and creation of `AbsenceCompensationCase` remain
+a subsequent stage.
+
+
+
+Implemented configuration entities:
+
+\`\`\`text
+AbsenceCompensationPolicy
+    code + version
+    absence_reason
+    justification_requirement
+    max_eligible_absences
+    limit_scope
+    effective_from / effective_until
+    is_active
+
+AbsenceCompensationPolicyAction
+    action_type
+    target_period_rule
+    requirement
+    validity_days
+    priority
+    is_active
+
+AbsenceCompensationPolicyWindow
+    source date window
+    explicit target date window
+    optional requirement override
+    priority
+    is_active
+\`\`\`
+
+The selector layer provides:
+
+\`\`\`python
+get_applicable_absence_policy(...)
+resolve_compensation_actions(...)
+\`\`\`
+
+Ambiguous active policies are rejected instead of silently choosing one.
+When several seasonal windows match one action, priority resolves them;
+equal-priority matches are rejected as configuration error.
+
+The policy models are exposed in Django Admin as an interim configuration
+surface. Manager-facing server-rendered policy management remains required by
+the web-first product rule.
 
 Compensation is tied to a concrete missed Lesson / `Attendance=ABSENT`, not
 to an arbitrary positive allowance balance.
