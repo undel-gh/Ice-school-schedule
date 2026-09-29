@@ -428,6 +428,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
 class AbsenceCompensationCase(UUIDModel):
     class Status(models.TextChoices):
         OPEN = "open", "Open"
+        MATERIALIZED = "materialized", "Materialized"
         CANCELLED = "cancelled", "Cancelled"
 
     class EligibilityStatus(models.TextChoices):
@@ -516,6 +517,14 @@ class AbsenceCompensationCase(UUIDModel):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    materialized_at = models.DateTimeField(null=True, blank=True)
+    materialized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancelled_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -529,8 +538,8 @@ class AbsenceCompensationCase(UUIDModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["attendance"],
-                condition=models.Q(status="open"),
-                name="absence_case_one_open_attendance_uq",
+                condition=models.Q(status__in=["open", "materialized"]),
+                name="absence_case_one_active_attendance_uq",
             ),
             models.CheckConstraint(
                 condition=models.Q(policy_version_snapshot__gt=0),
@@ -571,6 +580,14 @@ class AbsenceCompensationCase(UUIDModel):
                 condition=(
                     models.Q(
                         status="open",
+                        materialized_at__isnull=True,
+                        materialized_by__isnull=True,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                    )
+                    | models.Q(
+                        status="materialized",
+                        materialized_at__isnull=False,
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
                     )
@@ -579,7 +596,7 @@ class AbsenceCompensationCase(UUIDModel):
                         cancelled_at__isnull=False,
                     )
                 ),
-                name="absence_case_status_cancel_ck",
+                name="absence_case_status_ck",
             ),
         ]
         indexes = [
@@ -693,6 +710,10 @@ class MakeupEntitlement(UUIDModel):
         MEDICAL_VERIFIED = "medical", "Verified medical absence"
         SCHOOL_RESCHEDULE = "school_reschedule", "School reschedule"
         ADMINISTRATIVE = "administrative", "Administrative"
+        ABSENCE_COMPENSATION = (
+            "absence_compensation",
+            "Absence compensation",
+        )
 
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="makeup_entitlements")
     source_lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="generated_makeup_entitlements")
@@ -757,6 +778,57 @@ class MakeupEntitlement(UUIDModel):
                 name="makeup_available_ix",
             )
         ]
+
+
+class AbsenceCompensationActionGrant(UUIDModel):
+    case = models.ForeignKey(
+        AbsenceCompensationCase,
+        on_delete=models.PROTECT,
+        related_name="action_grants",
+    )
+    action_type = models.CharField(
+        max_length=32,
+        choices=AbsenceCompensationPolicyAction.ActionType.choices,
+    )
+    action_snapshot = models.JSONField(default=dict)
+    makeup_entitlement = models.OneToOneField(
+        MakeupEntitlement,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="compensation_action_grant",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["case", "action_type"],
+                name="absence_action_grant_type_uq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(action_type="free_makeup")
+                    | models.Q(makeup_entitlement__isnull=False)
+                ),
+                name="absence_grant_free_makeup_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["case", "created_at"],
+                name="absence_grant_case_created_ix",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.case_id} / {self.action_type}"
 
 
 class AttendanceCoverage(UUIDModel):
