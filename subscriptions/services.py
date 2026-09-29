@@ -1118,6 +1118,14 @@ def activate_paid_makeup_grant(
     ).get(pk=grant_ref.case_id)
     Student.objects.select_for_update().get(pk=case_ref.student_id)
 
+    case = (
+        AbsenceCompensationCase.objects.select_for_update(of=("self",))
+        .select_related(
+            "attendance",
+            "source_subscription_allowance__subscription",
+        )
+        .get(pk=grant_ref.case_id)
+    )
     grant = AbsenceCompensationActionGrant.objects.select_for_update().get(
         pk=grant_id
     )
@@ -1131,14 +1139,6 @@ def activate_paid_makeup_grant(
     if grant.activated_at is not None:
         return grant
 
-    case = (
-        AbsenceCompensationCase.objects.select_for_update(of=("self",))
-        .select_related(
-            "attendance",
-            "source_subscription_allowance__subscription",
-        )
-        .get(pk=grant.case_id)
-    )
     if case.status != AbsenceCompensationCase.Status.MATERIALIZED:
         raise ValidationError(
             {"case": "PAID_MAKEUP activation requires a MATERIALIZED case."}
