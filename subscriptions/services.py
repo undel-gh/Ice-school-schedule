@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
@@ -23,6 +23,7 @@ from .balances import (
     locked_eligible_source_allowance,
 )
 from .models import (
+    AbsenceCompensationActionGrant,
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AttendanceCoverage,
@@ -549,6 +550,217 @@ def _cancel_open_absence_compensation_cases(
             evaluated_at=at,
         )
     return cancelled
+
+
+def _case_action_snapshot(
+    *,
+    case: AbsenceCompensationCase,
+    action_type: str,
+) -> dict | None:
+    for item in case.actions_snapshot:
+        if item.get("action_type") == action_type:
+            return item
+    return None
+
+
+@transaction.atomic
+def materialize_free_makeup_from_case(
+    *,
+    case_id: UUID,
+    actor: User,
+    now=None,
+) -> AbsenceCompensationActionGrant:
+    require_permission(
+        actor,
+        "subscriptions.add_makeupentitlement",
+        "Make-up entitlement permission is required.",
+    )
+
+    case_ref = AbsenceCompensationCase.objects.only(
+        "student_id",
+    ).get(pk=case_id)
+    Student.objects.select_for_update().get(pk=case_ref.student_id)
+
+    existing = (
+        AbsenceCompensationActionGrant.objects.select_for_update()
+        .select_related("makeup_entitlement")
+        .filter(
+            case_id=case_id,
+            action_type=(
+                AbsenceCompensationPolicy.ActionType.FREE_MAKEUP
+                if hasattr(AbsenceCompensationPolicy, "ActionType")
+                else "free_makeup"
+            ),
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    case = (
+        AbsenceCompensationCase.objects.select_for_update()
+        .select_related(
+            "attendance",
+            "source_lesson__lesson_type",
+            "source_subscription_allowance__subscription",
+        )
+        .get(pk=case_id)
+    )
+    if case.status != AbsenceCompensationCase.Status.OPEN:
+        raise ValidationError(
+            {"case": "Only an OPEN compensation case can be materialized."}
+        )
+    if (
+        case.eligibility_status
+        != AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    ):
+        raise ValidationError(
+            {
+                "case": (
+                    "Compensation case must be ELIGIBLE before "
+                    "materialization."
+                )
+            }
+        )
+    if case.attendance.status != Attendance.Status.ABSENT:
+        raise ValidationError(
+            {"attendance": "Source attendance is no longer ABSENT."}
+        )
+
+    action = _case_action_snapshot(
+        case=case,
+        action_type="free_makeup",
+    )
+    if action is None:
+        raise ValidationError(
+            {"case": "FREE_MAKEUP is not allowed by this case policy."}
+        )
+    if action.get("requirement") not in (None, "", "none"):
+        raise ValidationError(
+            {
+                "case": (
+                    "FREE_MAKEUP action has unmet additional requirements."
+                )
+            }
+        )
+
+    allowance = case.source_subscription_allowance
+    if allowance is None:
+        raise ValidationError(
+            {
+                "case": (
+                    "FREE_MAKEUP requires a source subscription allowance."
+                )
+            }
+        )
+    subscription = allowance.subscription
+    if subscription.cancelled_at is not None:
+        raise ValidationError(
+            {"case": "Source subscription is cancelled."}
+        )
+
+    target_rule = action.get("target_period_rule")
+    target_from = action.get("target_from")
+    target_until = action.get("target_until")
+
+    if target_rule == "current_period":
+        valid_from = case.source_date
+        valid_until = subscription.valid_until
+    elif target_rule == "next_student_period":
+        raise ValidationError(
+            {
+                "case": (
+                    "NEXT_STUDENT_PERIOD materialization requires the "
+                    "subscription-period model and is not implemented yet."
+                )
+            }
+        )
+    elif target_rule == "explicit_target_window":
+        if not target_from or not target_until:
+            raise ValidationError(
+                {"case": "Explicit target window is missing."}
+            )
+        valid_from = date.fromisoformat(target_from)
+        valid_until = date.fromisoformat(target_until)
+    else:
+        raise ValidationError(
+            {"case": "Unsupported target-period rule."}
+        )
+
+    validity_days = action.get("validity_days")
+    if validity_days is not None:
+        bounded_until = valid_from + timedelta(days=int(validity_days) - 1)
+        if bounded_until < valid_until:
+            valid_until = bounded_until
+
+    materialized_at = now or timezone.now()
+    entitlement = MakeupEntitlement.objects.create(
+        student_id=case.student_id,
+        source_lesson_id=case.source_lesson_id,
+        source_subscription_allowance=allowance,
+        source_justification=case.source_justification,
+        category=case.category,
+        reason=MakeupEntitlement.Reason.ABSENCE_COMPENSATION,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        created_by=actor,
+    )
+
+    grant = AbsenceCompensationActionGrant.objects.create(
+        case=case,
+        action_type="free_makeup",
+        action_snapshot=action,
+        makeup_entitlement=entitlement,
+        created_by=actor,
+    )
+
+    case.status = AbsenceCompensationCase.Status.MATERIALIZED
+    case.materialized_at = materialized_at
+    case.materialized_by = actor
+    case.save(
+        update_fields=[
+            "status",
+            "materialized_at",
+            "materialized_by",
+        ]
+    )
+
+    correlation_id = uuid4()
+    _audit(
+        event_type="AbsenceCompensationMaterialized",
+        aggregate_type="AbsenceCompensationCase",
+        aggregate_id=case.id,
+        actor=actor,
+        correlation_id=correlation_id,
+        payload={
+            "action_type": grant.action_type,
+            "grant_id": str(grant.id),
+            "makeup_entitlement_id": str(entitlement.id),
+            "eligibility_status": case.eligibility_status,
+            "eligible_absence_ordinal": case.eligible_absence_ordinal,
+            "valid_from": valid_from.isoformat(),
+            "valid_until": valid_until.isoformat(),
+        },
+    )
+    _audit(
+        event_type="MakeupEntitlementGranted",
+        aggregate_type="MakeupEntitlement",
+        aggregate_id=entitlement.id,
+        actor=actor,
+        correlation_id=correlation_id,
+        payload={
+            "student_id": str(case.student_id),
+            "source_lesson_id": str(case.source_lesson_id),
+            "source_allowance_id": str(allowance.id),
+            "category": case.category,
+            "valid_from": valid_from.isoformat(),
+            "valid_until": valid_until.isoformat(),
+            "reason": entitlement.reason,
+            "compensation_case_id": str(case.id),
+            "compensation_grant_id": str(grant.id),
+        },
+    )
+    return grant
 
 
 @transaction.atomic
