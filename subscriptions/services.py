@@ -2372,14 +2372,13 @@ def cancel_subscription(
 
     if MakeupEntitlement.objects.filter(
         source_subscription_allowance__subscription_id=subscription.id,
-        reason=MakeupEntitlement.Reason.ABSENCE_COMPENSATION,
         cancelled_at__isnull=True,
     ).exists():
         raise ValidationError(
             {
                 "subscription": (
-                    "Subscription funds an active absence-compensation "
-                    "make-up. Reverse or cancel that compensation right "
+                    "Subscription funds an active make-up entitlement. "
+                    "Reverse or cancel that make-up right "
                     "before cancelling the subscription."
                 )
             }
