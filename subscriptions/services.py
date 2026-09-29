@@ -148,7 +148,7 @@ def _locked_source_allowance_for_absence(
 
 def _eligibility_period_for_case(
     case: AbsenceCompensationCase,
-) -> tuple[date, date] | None:
+) -> tuple[UUID, date, date] | None:
     if case.source_subscription_allowance_id is None:
         return None
     allowance = (
@@ -156,22 +156,20 @@ def _eligibility_period_for_case(
         .get(pk=case.source_subscription_allowance_id)
     )
     subscription = allowance.subscription
-    return subscription.valid_from, subscription.valid_until
+    return subscription.id, subscription.valid_from, subscription.valid_until
 
 
 def _case_limit_peers(
     *,
     case: AbsenceCompensationCase,
-    period_from: date,
-    period_until: date,
+    source_subscription_id: UUID,
 ):
     peers = AbsenceCompensationCase.objects.filter(
         student_id=case.student_id,
         status=AbsenceCompensationCase.Status.OPEN,
         absence_reason=case.absence_reason,
         policy_code_snapshot=case.policy_code_snapshot,
-        source_date__gte=period_from,
-        source_date__lte=period_until,
+        source_subscription_allowance__subscription_id=source_subscription_id,
     )
     if (
         case.limit_scope_snapshot
@@ -223,12 +221,11 @@ def _evaluate_case_eligibility(
             case.eligibility_period_from = None
             case.eligibility_period_until = None
         else:
-            period_from, period_until = period
+            source_subscription_id, period_from, period_until = period
             peer_ids = list(
                 _case_limit_peers(
                     case=case,
-                    period_from=period_from,
-                    period_until=period_until,
+                    source_subscription_id=source_subscription_id,
                 ).values_list("id", flat=True)
             )
             try:
@@ -329,6 +326,7 @@ def create_absence_compensation_case(
     actor: User,
     policy_code: str | None = None,
     source_justification_id: UUID | None = None,
+    now=None,
 ) -> AbsenceCompensationCase:
     require_permission(
         actor,
@@ -465,7 +463,7 @@ def create_absence_compensation_case(
         actions_snapshot=_resolved_action_snapshot(resolved),
         created_by=actor,
     )
-    evaluated_at = timezone.now()
+    evaluated_at = now or timezone.now()
     _reevaluate_open_compensation_cases_for_student(
         student_id=attendance.student_id,
         actor=actor,
@@ -514,15 +512,14 @@ def cancel_absence_compensation_case(
         "subscriptions.change_absencecompensationcase",
         "Absence compensation case change permission is required.",
     )
-    case = (
-        AbsenceCompensationCase.objects.select_for_update()
-        .select_related("student")
-        .get(pk=case_id)
-    )
+    case_ref = AbsenceCompensationCase.objects.only(
+        "student_id",
+    ).get(pk=case_id)
+    Student.objects.select_for_update().get(pk=case_ref.student_id)
+    case = AbsenceCompensationCase.objects.select_for_update().get(pk=case_id)
     if case.status == AbsenceCompensationCase.Status.CANCELLED:
         return case
 
-    Student.objects.select_for_update().get(pk=case.student_id)
     at = at or timezone.now()
     case.status = AbsenceCompensationCase.Status.CANCELLED
     case.cancelled_at = at
