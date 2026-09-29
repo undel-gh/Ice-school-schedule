@@ -53,16 +53,28 @@ def context(db, actor):
         name="Case Ice",
         subscription_category=SubscriptionCategory.ICE,
     )
+    hall = LessonType.objects.create(
+        code="case-hall",
+        name="Case Hall",
+        subscription_category=SubscriptionCategory.HALL,
+    )
     return {
         "student": student,
         "coach": coach,
         "group": group,
         "venue": venue,
         "ice": ice,
+        "hall": hall,
     }
 
 
-def make_absence(*, context, actor, starts_at=None) -> Attendance:
+def make_absence(
+    *,
+    context,
+    actor,
+    starts_at=None,
+    lesson_type=None,
+) -> Attendance:
     starts_at = starts_at or datetime(
         2026,
         9,
@@ -73,7 +85,7 @@ def make_absence(*, context, actor, starts_at=None) -> Attendance:
     )
     lesson = Lesson.objects.create(
         group=context["group"],
-        lesson_type=context["ice"],
+        lesson_type=lesson_type or context["ice"],
         coach=context["coach"],
         venue=context["venue"],
         starts_at=starts_at,
@@ -571,3 +583,88 @@ def test_eligibility_evaluation_is_audited(actor, context):
     assert event.payload["max_eligible_absences"] == 4
     assert event.payload["period_from"] == "2026-09-01"
     assert event.payload["period_until"] == "2026-09-30"
+
+
+@pytest.mark.django_db
+def test_category_period_limit_counts_ice_and_hall_separately(actor, context):
+    policy = make_policy()
+    policy.max_eligible_absences = 1
+    policy.limit_scope = (
+        AbsenceCompensationPolicy.LimitScope.CATEGORY_PERIOD
+    )
+    policy.save(
+        update_fields=["max_eligible_absences", "limit_scope"]
+    )
+
+    plan = SubscriptionPlan.objects.create(
+        code="category-limit-sub",
+        name="Category limit subscription",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=4,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.HALL,
+        visit_limit=4,
+    )
+    issue_subscription(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+
+    ice_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(
+            2026,
+            9,
+            10,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        lesson_type=context["ice"],
+    )
+    hall_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(
+            2026,
+            9,
+            11,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        lesson_type=context["hall"],
+    )
+
+    ice_case = create_absence_compensation_case(
+        attendance_id=ice_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+    )
+    hall_case = create_absence_compensation_case(
+        attendance_id=hall_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+    )
+
+    ice_case.refresh_from_db()
+    hall_case.refresh_from_db()
+    assert ice_case.eligible_absence_ordinal == 1
+    assert hall_case.eligible_absence_ordinal == 1
+    assert (
+        ice_case.eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
+    assert (
+        hall_case.eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
