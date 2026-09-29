@@ -3,6 +3,9 @@ from django.contrib import admin
 from core.admin import ReadOnlyAdmin
 
 from .models import (
+    AbsenceCompensationPolicy,
+    AbsenceCompensationPolicyAction,
+    AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
     MakeupEntitlement,
     OneTimeEntitlement,
@@ -13,6 +16,56 @@ from .models import (
     SubscriptionPlanAllowance,
 )
 
+
+
+
+class AbsenceCompensationPolicyActionInline(admin.TabularInline):
+    model = AbsenceCompensationPolicyAction
+    extra = 0
+
+
+@admin.register(AbsenceCompensationPolicy)
+class AbsenceCompensationPolicyAdmin(admin.ModelAdmin):
+    list_display = (
+        "code",
+        "version",
+        "name",
+        "absence_reason",
+        "effective_from",
+        "effective_until",
+        "is_active",
+    )
+    list_filter = ("absence_reason", "is_active")
+    search_fields = ("code", "name")
+    inlines = (AbsenceCompensationPolicyActionInline,)
+
+
+@admin.register(AbsenceCompensationPolicyAction)
+class AbsenceCompensationPolicyActionAdmin(admin.ModelAdmin):
+    list_display = (
+        "policy",
+        "action_type",
+        "target_period_rule",
+        "requirement",
+        "priority",
+        "is_active",
+    )
+    list_filter = ("action_type", "target_period_rule", "requirement", "is_active")
+
+
+@admin.register(AbsenceCompensationPolicyWindow)
+class AbsenceCompensationPolicyWindowAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "policy_action",
+        "source_from",
+        "source_until",
+        "target_from",
+        "target_until",
+        "priority",
+        "is_active",
+    )
+    list_filter = ("is_active",)
 
 admin.site.register(SubscriptionPlan)
 admin.site.register(SubscriptionPlanAllowance)
