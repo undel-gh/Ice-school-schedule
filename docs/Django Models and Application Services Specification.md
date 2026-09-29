@@ -3224,10 +3224,10 @@ Target-period resolution:
 - EXPLICIT_TARGET_WINDOW uses the snapshotted window; when a target
   Subscription is required, entitlement validity is the intersection of the
   window and that Subscription;
-- NEXT_STUDENT_PERIOD currently requires an explicitly supplied target
-  Subscription. The grant uses its valid_from/valid_until. Automatic
-  next-period resolution remains deferred until the subscription-period model
-  is implemented.
+- NEXT_STUDENT_PERIOD requires an explicitly supplied target Subscription
+  before authorization. Until the subscription-period resolver exists, the
+  case stays OPEN and no paid grant is materialized without that concrete
+  target. The grant uses the target Subscription valid_from/valid_until.
 
 Manual payment confirmation is currently provided by
 `confirm_paid_makeup_fee(...)`. Future Billing integration may replace this
@@ -3237,7 +3237,9 @@ Paid reversal has explicit financial semantics. Once `fee_confirmed_at` is
 set, automatic source invalidation (attendance correction, medical
 supersession/revocation, etc.) must not silently reverse the paid grant.
 Instead it raises a validation error directing the manager to
-`reverse_absence_compensation_case(...)`.
+`reverse_absence_compensation_case(...)`. The error also includes the
+structured key `manager_action_required`, so the future trainer-facing web UI
+can render this as an escalation to a manager rather than a generic failure.
 
 For a paid grant with confirmed fee, explicit reversal must include
 `refund_required=True|False`. The decision is stored on the grant and copied
@@ -3247,16 +3249,25 @@ reporting paid-but-reversed grants and filtering those requiring refund.
 
 Unpaid, non-activated PAID_MAKEUP authorizations are not allowed to reserve a
 limit slot forever. `process_subscription_lifecycle(...)` reverses them with
-reason `authorization_expired` after their authorization deadline. The
-deadline is the source Subscription end date, capped by an earlier
-EXPLICIT_TARGET_WINDOW `target_until`. Paid pending grants are never expired
-automatically.
+reason `authorization_expired` after their authorization deadline:
 
-Both target and source Subscription dependencies are protected. A target
-Subscription supplied at authorization is validated immediately against the
-target-period rule. An active paid grant prevents cancellation of its target
-Subscription. Any active MakeupEntitlement, and any active PAID_MAKEUP grant,
-prevents cancellation of the source Subscription that funds its allowance.
+- CURRENT_PERIOD: source Subscription `valid_until`;
+- NEXT_STUDENT_PERIOD: target Subscription `valid_until`;
+- EXPLICIT_TARGET_WINDOW: snapshotted `target_until`.
+
+Paid pending grants are never expired automatically. During expiry processing,
+payment state is rechecked after the normal row locks are acquired; a grant
+that became paid concurrently is skipped rather than aborting the lifecycle
+batch.
+
+Both target and source Subscription dependencies are protected, but only while
+they still matter operationally. A target Subscription supplied at
+authorization is validated immediately against the target-period rule.
+Pending paid grants block cancellation of their source/target Subscription.
+After activation, cancellation is blocked only while the linked make-up is
+still usable: not cancelled, not expired as of the cancellation date, and not
+already consumed by active AttendanceCoverage. Used or expired make-ups remain
+historical records but do not permanently prevent Subscription cancellation.
 
 If a target Subscription is selected during authorization, activation cannot
 silently replace it with another Subscription. An unreversed PAID_MAKEUP grant
