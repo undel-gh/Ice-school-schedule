@@ -463,6 +463,11 @@ PAID_MAKEUP без требования оплаты считается ошиб
 `confirm_paid_makeup_fee(...)`. В будущем Billing должен заменить это
 подтверждение, не меняя grant/entitlement semantics.
 
+Если target Subscription выбран уже при authorization, activation не может
+молча заменить его другим. Пока unreversed PAID_MAKEUP ссылается на target
+Subscription, штатная отмена этого Subscription блокируется; сначала менеджер
+должен сделать explicit reversal paid-grant.
+
 Pending или activated PAID_MAKEUP использует тот же explicit reversal
 workflow, что FREE_MAKEUP. Уже использованное entitlement нельзя отменить,
 пока соответствующий AttendanceCoverage не reverse/rebind.
