@@ -2023,27 +2023,20 @@ def test_paid_makeup_next_period_rejects_overlapping_target_subscription(
         actor=actor,
         now=attendance.marked_at,
     )
-    grant = authorize_paid_makeup_from_case(
-        case_id=case.id,
-        actor=actor,
-        fee_confirmed=True,
-        target_subscription_id=target.id,
-        now=attendance.marked_at + timedelta(hours=1),
-    )
-
     with pytest.raises(
         ValidationError,
         match="must start after the source subscription ends",
     ):
-        activate_paid_makeup_grant(
-            grant_id=grant.id,
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
             actor=actor,
-            now=attendance.marked_at + timedelta(hours=2),
+            fee_confirmed=True,
+            target_subscription_id=target.id,
+            now=attendance.marked_at + timedelta(hours=1),
         )
 
-    grant.refresh_from_db()
-    assert grant.activated_at is None
-    assert grant.makeup_entitlement_id is None
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
 
 
 @pytest.mark.django_db
