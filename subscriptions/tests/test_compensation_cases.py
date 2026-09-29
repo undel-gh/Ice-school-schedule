@@ -853,3 +853,31 @@ def test_student_period_limit_uses_source_subscription_identity(actor, context):
         hall_case.eligibility_status
         == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
     )
+
+
+@pytest.mark.django_db
+def test_referenced_policy_and_actions_are_immutable(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    assert case.policy_id == policy.id
+
+    policy.max_eligible_absences = 7
+    with pytest.raises(
+        ValidationError,
+        match="policy versions are immutable",
+    ):
+        policy.save(update_fields=["max_eligible_absences"])
+
+    action = policy.actions.get()
+    action.priority = 99
+    with pytest.raises(
+        ValidationError,
+        match="referenced compensation policies are immutable",
+    ):
+        action.save(update_fields=["priority"])
