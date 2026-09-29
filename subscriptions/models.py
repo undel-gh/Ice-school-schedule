@@ -254,6 +254,132 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
         return self.name
 
 
+class AbsenceCompensationCase(UUIDModel):
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        CANCELLED = "cancelled", "Cancelled"
+
+    attendance = models.ForeignKey(
+        Attendance,
+        on_delete=models.PROTECT,
+        related_name="compensation_cases",
+    )
+    student = models.ForeignKey(
+        Student,
+        on_delete=models.PROTECT,
+        related_name="absence_compensation_cases",
+    )
+    source_lesson = models.ForeignKey(
+        Lesson,
+        on_delete=models.PROTECT,
+        related_name="absence_compensation_cases",
+    )
+    source_subscription_allowance = models.ForeignKey(
+        "SubscriptionAllowance",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="absence_compensation_cases",
+    )
+    source_justification = models.ForeignKey(
+        AbsenceJustification,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="compensation_cases",
+    )
+    policy = models.ForeignKey(
+        AbsenceCompensationPolicy,
+        on_delete=models.PROTECT,
+        related_name="compensation_cases",
+    )
+
+    absence_reason = models.CharField(
+        max_length=24,
+        choices=AbsenceCompensationPolicy.AbsenceReason.choices,
+    )
+    source_date = models.DateField()
+    category = models.CharField(
+        max_length=16,
+        choices=SubscriptionCategory.choices,
+    )
+
+    policy_code_snapshot = models.SlugField(max_length=64)
+    policy_version_snapshot = models.PositiveSmallIntegerField()
+    policy_name_snapshot = models.CharField(max_length=128)
+    justification_requirement_snapshot = models.CharField(max_length=32)
+    max_eligible_absences_snapshot = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    limit_scope_snapshot = models.CharField(max_length=32)
+    actions_snapshot = models.JSONField(default=list)
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["attendance"],
+                condition=models.Q(status="open"),
+                name="absence_case_one_open_attendance_uq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(policy_version_snapshot__gt=0),
+                name="absence_case_policy_version_gt0",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status="open",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                    )
+                    | models.Q(
+                        status="cancelled",
+                        cancelled_at__isnull=False,
+                    )
+                ),
+                name="absence_case_status_cancel_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["student", "source_date", "status"],
+                name="absence_case_student_date_ix",
+            ),
+            models.Index(
+                fields=["policy", "status"],
+                name="absence_case_policy_status_ix",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.student} / {self.source_date} / "
+            f"{self.absence_reason}"
+        )
+
+
 class Subscription(UUIDModel):
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="subscriptions")
     plan = models.ForeignKey(SubscriptionPlan, on_delete=models.PROTECT, related_name="subscriptions")
