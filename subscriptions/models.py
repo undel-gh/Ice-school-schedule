@@ -370,23 +370,23 @@ class AbsenceCompensationCase(UUIDModel):
                     models.Q(
                         eligibility_status="undetermined",
                         eligible_absence_ordinal__isnull=True,
+                        eligibility_period_from__isnull=True,
+                        eligibility_period_until__isnull=True,
+                    )
+                    | models.Q(
+                        eligibility_status="eligible",
+                        max_eligible_absences_snapshot__isnull=True,
+                        eligible_absence_ordinal__isnull=True,
+                        eligibility_period_from__isnull=True,
+                        eligibility_period_until__isnull=True,
                     )
                     | models.Q(
                         eligibility_status__in=[
                             "eligible",
                             "limit_exceeded",
                         ],
-                    )
-                ),
-                name="absence_case_eligibility_ck",
-            ),
-            models.CheckConstraint(
-                condition=(
-                    models.Q(
-                        eligibility_period_from__isnull=True,
-                        eligibility_period_until__isnull=True,
-                    )
-                    | models.Q(
+                        max_eligible_absences_snapshot__isnull=False,
+                        eligible_absence_ordinal__isnull=False,
                         eligibility_period_from__isnull=False,
                         eligibility_period_until__isnull=False,
                         eligibility_period_until__gte=models.F(
@@ -394,7 +394,7 @@ class AbsenceCompensationCase(UUIDModel):
                         ),
                     )
                 ),
-                name="absence_case_period_ck",
+                name="absence_case_eligibility_ck",
             ),
             models.CheckConstraint(
                 condition=(
