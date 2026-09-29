@@ -24,6 +24,7 @@ from subscriptions.models import (
 )
 from subscriptions.services import (
     _cancel_open_absence_compensation_cases,
+    _reverse_materialized_absence_compensation_cases,
     assign_attendance_coverage,
     reverse_attendance_coverage,
 )
@@ -341,6 +342,13 @@ def set_attendance(
         previous_status == Attendance.Status.ABSENT
         and status == Attendance.Status.PRESENT
     ):
+        _reverse_materialized_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=now,
+            reason="attendance_corrected_to_present",
+            correlation_id=correlation_id,
+        )
         _revoke_verified_medical_justifications_for_present_correction(
             attendance=attendance,
             actor=actor,
@@ -949,6 +957,15 @@ def revoke_medical_absence(
                     "Only a VERIFIED justification can be revoked."
                 )
             }
+        )
+
+    if attendance is not None:
+        _reverse_materialized_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=revoked_at,
+            reason="medical_justification_revoked",
+            source_justification_id=justification.id,
         )
 
     entitlements = list(
