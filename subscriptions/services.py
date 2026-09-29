@@ -226,14 +226,20 @@ def _evaluate_case_eligibility(
             case.eligibility_period_until = None
         else:
             source_subscription_id, period_from, period_until = period
-            peer_ids = list(
-                _case_limit_peers(
-                    case=case,
-                    source_subscription_id=source_subscription_id,
+            peers = _case_limit_peers(
+                case=case,
+                source_subscription_id=source_subscription_id,
+            )
+            materialized_count = peers.filter(
+                status=AbsenceCompensationCase.Status.MATERIALIZED,
+            ).count()
+            open_ids = list(
+                peers.filter(
+                    status=AbsenceCompensationCase.Status.OPEN,
                 ).values_list("id", flat=True)
             )
             try:
-                ordinal = peer_ids.index(case.id) + 1
+                ordinal = materialized_count + open_ids.index(case.id) + 1
             except ValueError as exc:
                 raise ValidationError(
                     {
