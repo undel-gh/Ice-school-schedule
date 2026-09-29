@@ -2988,29 +2988,61 @@ DRAFT может быть отменён через обычный `cancel_lesso
 
 ---
 
-# 37. Planned carry-over / freeze model
+# 37. Planned absence-compensation policy
 
 This section is a target requirement and is not yet implemented.
 
-A freeze carries at most `N` unused visits from a source
-`SubscriptionAllowance` into the student's next billing period.
+Compensation is tied to a concrete missed Lesson / `Attendance=ABSENT`, not
+to an arbitrary positive allowance balance.
 
-It must be represented as an explicit auditable grant/right with:
+The target model must support versioned policy parameters for:
 
 ```text
-source_subscription_allowance
-target_subscription / target_allowance / target_period
-category
-granted_visits
-remaining_visits
-created_at / created_by
-cancelled_at / cancelled_by
+absence reason / justification requirement
+maximum eligible misses and counting scope
+compensation kind
+target-period rule
+fee requirement
+target Subscription requirement
+validity window
+effective policy interval
+seasonal exceptions
 ```
 
-The original ledger and original Subscription dates remain immutable.
+Working aggregate:
 
-For mixed subscriptions, whether `N` is per allowance category or one total
-subscription limit remains a business decision to confirm before migration.
+```text
+AbsenceCompensationCase
+    student
+    source_lesson
+    attendance
+    source_subscription_allowance (optional)
+    absence_reason
+    policy version/snapshot
+    status
+    created_at
+    resolved_at
+```
+
+Possible results include:
+
+```text
+free makeup entitlement
+paid/deferred makeup entitlement
+billing recalculation reference
+no compensation
+```
+
+The current school policy is provisional and includes a configurable four-miss
+limit for unexcused absences plus May→June and June→August seasonal
+exceptions. These values must not be hard-coded.
+
+The original Subscription dates, Attendance history and ledger remain
+immutable. Any entitlement/recalculation must retain a traceable reference to
+its source compensation case.
+
+The existing medical `AbsenceJustification` / `MakeupEntitlement` flow
+must continue to work during migration toward the generalized mechanism.
 
 ---
 
