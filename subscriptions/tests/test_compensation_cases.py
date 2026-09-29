@@ -2082,7 +2082,7 @@ def test_target_subscription_cannot_be_cancelled_while_paid_grant_active(
 
     with pytest.raises(
         ValidationError,
-        match="required by an active PAID_MAKEUP grant",
+        match="required by a pending PAID_MAKEUP grant",
     ):
         cancel_subscription(
             subscription_id=target.id,
@@ -2602,7 +2602,7 @@ def test_source_subscription_cannot_be_cancelled_while_compensation_makeup_activ
 
     with pytest.raises(
         ValidationError,
-        match="funds an active make-up entitlement",
+        match="funds an unused, unexpired make-up entitlement",
     ):
         cancel_subscription(
             subscription_id=source.id,
@@ -2798,3 +2798,43 @@ def test_used_compensation_makeup_does_not_block_source_subscription_cancellatio
         at=datetime(2026, 9, 26, 12, 0, tzinfo=dt_timezone.utc),
     )
     assert cancelled.cancelled_at is not None
+
+
+@pytest.mark.django_db
+def test_next_period_paid_makeup_requires_target_before_authorization(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="next-target-required-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="requires an explicit target subscription before authorization",
+    ):
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert not AbsenceCompensationActionGrant.objects.filter(
+        case=case,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+    ).exists()
