@@ -3183,9 +3183,55 @@ preventing the grant from freeing an extra limit slot.
 Currently implemented:
 
 ```text
-FREE_MAKEUP → MakeupEntitlement
+FREE_MAKEUP
+    → MakeupEntitlement
+    → grant activated immediately
+
+PAID_MAKEUP
+    OPEN + ELIGIBLE case
+        → PaidFreezeAuthorized
+        → case = MATERIALIZED
+        → fee confirmation and/or target Subscription
+        → PaidFreezeActivated
+        → MakeupEntitlement
+
 MATERIALIZED → REVERSED when the source absence is invalidated
 ```
+
+For PAID_MAKEUP, authorization freezes eligibility and reserves the policy
+limit slot but does not itself create a usable MakeupEntitlement. The grant
+stores:
+
+```text
+fee_confirmed_at / fee_confirmed_by
+target_subscription
+activated_at
+makeup_entitlement
+```
+
+Supported requirement combinations for PAID_MAKEUP are:
+
+```text
+FEE_REQUIRED
+FEE_AND_TARGET_SUBSCRIPTION_REQUIRED
+```
+
+A paid action without a fee requirement is rejected as invalid configuration.
+
+Target-period resolution:
+
+- CURRENT_PERIOD uses the source Subscription period;
+- EXPLICIT_TARGET_WINDOW uses the snapshotted window; when a target
+  Subscription is required, entitlement validity is the intersection of the
+  window and that Subscription;
+- NEXT_STUDENT_PERIOD currently requires an explicitly supplied target
+  Subscription. The grant uses its valid_from/valid_until. Automatic
+  next-period resolution remains deferred until the subscription-period model
+  is implemented.
+
+Manual payment confirmation is currently provided by
+`confirm_paid_makeup_fee(...)`. Future Billing integration may replace this
+manual confirmation without changing the grant/entitlement lifecycle.
 
 If Attendance is corrected from ABSENT to PRESENT, or a linked VERIFIED
 medical justification is revoked, a MATERIALIZED case is handled explicitly:
@@ -3231,9 +3277,8 @@ a compensation makeup that is already used by active AttendanceCoverage.
 Intentionally not yet implemented:
 
 ```text
-PAID_MAKEUP
 BILLING_RECALCULATION
-NEXT_STUDENT_PERIOD resolution
+automatic NEXT_STUDENT_PERIOD resolution
 ```
 
 The first future service that grants a makeup entitlement, paid freeze or
