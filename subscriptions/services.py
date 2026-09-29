@@ -310,7 +310,6 @@ def _reevaluate_open_compensation_cases_for_student(
         )
         .select_related(
             "source_lesson__lesson_type",
-            "source_subscription_allowance__subscription",
         )
         .order_by("source_lesson__starts_at", "source_lesson_id", "id")
     )
