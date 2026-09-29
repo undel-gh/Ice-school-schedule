@@ -37,7 +37,7 @@ class AbsenceCompensationActionGrantAdmin(ReadOnlyAdmin):
         "created_at",
         "created_by",
     )
-    list_filter = ("action_type",)
+    list_filter = ("action_type", "refund_required")
 
 
 @admin.register(AbsenceCompensationCase)
