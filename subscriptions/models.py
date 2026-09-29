@@ -259,6 +259,11 @@ class AbsenceCompensationCase(UUIDModel):
         OPEN = "open", "Open"
         CANCELLED = "cancelled", "Cancelled"
 
+    class EligibilityStatus(models.TextChoices):
+        ELIGIBLE = "eligible", "Eligible"
+        LIMIT_EXCEEDED = "limit_exceeded", "Limit exceeded"
+        UNDETERMINED = "undetermined", "Undetermined"
+
     attendance = models.ForeignKey(
         Attendance,
         on_delete=models.PROTECT,
@@ -315,6 +320,19 @@ class AbsenceCompensationCase(UUIDModel):
     limit_scope_snapshot = models.CharField(max_length=32)
     actions_snapshot = models.JSONField(default=list)
 
+    eligibility_status = models.CharField(
+        max_length=24,
+        choices=EligibilityStatus.choices,
+        default=EligibilityStatus.UNDETERMINED,
+    )
+    eligible_absence_ordinal = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    eligibility_period_from = models.DateField(null=True, blank=True)
+    eligibility_period_until = models.DateField(null=True, blank=True)
+    eligibility_evaluated_at = models.DateTimeField(null=True, blank=True)
+
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
@@ -346,6 +364,37 @@ class AbsenceCompensationCase(UUIDModel):
             models.CheckConstraint(
                 condition=models.Q(policy_version_snapshot__gt=0),
                 name="absence_case_policy_version_gt0",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        eligibility_status="undetermined",
+                        eligible_absence_ordinal__isnull=True,
+                    )
+                    | models.Q(
+                        eligibility_status__in=[
+                            "eligible",
+                            "limit_exceeded",
+                        ],
+                    )
+                ),
+                name="absence_case_eligibility_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        eligibility_period_from__isnull=True,
+                        eligibility_period_until__isnull=True,
+                    )
+                    | models.Q(
+                        eligibility_period_from__isnull=False,
+                        eligibility_period_until__isnull=False,
+                        eligibility_period_until__gte=models.F(
+                            "eligibility_period_from"
+                        ),
+                    )
+                ),
+                name="absence_case_period_ck",
             ),
             models.CheckConstraint(
                 condition=(
