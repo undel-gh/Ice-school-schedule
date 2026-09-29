@@ -1986,3 +1986,54 @@ def test_paid_makeup_rejects_non_fee_policy_requirement(actor, context):
             actor=actor,
             now=attendance.marked_at + timedelta(hours=1),
         )
+
+
+@pytest.mark.django_db
+def test_paid_makeup_next_period_rejects_overlapping_target_subscription(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-overlap-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-overlap-target",
+        valid_from=date(2026, 9, 20),
+        valid_until=date(2026, 10, 17),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        fee_confirmed=True,
+        target_subscription_id=target.id,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="must start after the source subscription ends",
+    ):
+        activate_paid_makeup_grant(
+            grant_id=grant.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=2),
+        )
+
+    grant.refresh_from_db()
+    assert grant.activated_at is None
+    assert grant.makeup_entitlement_id is None
