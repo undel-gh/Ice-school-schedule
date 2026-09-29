@@ -454,10 +454,12 @@ PAID_MAKEUP без требования оплаты считается ошиб
 нужен target Subscription, usable window ограничивается пересечением его дат
 с seasonal window.
 
-Для NEXT_STUDENT_PERIOD до появления общего period resolver менеджер явно
-выбирает target Subscription. Он должен принадлежать тому же ученику,
-содержать нужную ICE/HALL category и не быть отменён. Entitlement получает
-его `valid_from/valid_until`.
+Для NEXT_STUDENT_PERIOD до появления общего period resolver менеджер обязан
+выбрать target Subscription **до authorization**. Пока следующего абонемента
+нет, case остаётся OPEN и не занимает лимит как MATERIALIZED paid grant.
+Target Subscription должен принадлежать тому же ученику, содержать нужную
+ICE/HALL category, не быть отменён и начинаться после окончания source
+Subscription. Entitlement получает его `valid_from/valid_until`.
 
 Пока полноценного Billing нет, оплату подтверждает менеджер через
 `confirm_paid_makeup_fee(...)`. В будущем Billing должен заменить это
@@ -467,7 +469,9 @@ PAID_MAKEUP без требования оплаты считается ошиб
 отменить PAID_MAKEUP. Исправление Attendance, medical supersession/revocation
 и другие автоматические invalidation-paths должны остановиться с
 `ValidationError` и потребовать явный
-`reverse_absence_compensation_case(...)`.
+`reverse_absence_compensation_case(...)`. Ошибка содержит отдельный ключ
+`manager_action_required`, чтобы будущий интерфейс тренера показывал
+«требуется решение менеджера», а не обычную техническую ошибку.
 
 Для оплаченного grant ручной reversal обязан явно зафиксировать:
 `refund_required=True` или `False`. Решение сохраняется в grant и audit.
@@ -477,15 +481,28 @@ Selector `get_reversed_paid_makeups(...)` даёт отчёт «оплачено
 
 Неоплаченная и неактивированная authorization не занимает слот лимита
 бессрочно. `process_subscription_lifecycle(...)` автоматически переводит её
-в REVERSED с причиной `authorization_expired` после deadline. Deadline —
-конец source Subscription, либо более ранний `target_until` для
-EXPLICIT_TARGET_WINDOW. Уже оплаченная pending authorization автоматически не
-истекает.
+в REVERSED с причиной `authorization_expired` после deadline:
 
-Target Subscription, если он указан при authorization, валидируется сразу, а
-не только при activation. Source Subscription также защищён: пока существует
-active paid grant или любой active MakeupEntitlement, использующий его
-allowance, штатная отмена source Subscription блокируется.
+```text
+CURRENT_PERIOD          → source Subscription.valid_until
+NEXT_STUDENT_PERIOD     → target Subscription.valid_until
+EXPLICIT_TARGET_WINDOW  → target_until
+```
+
+Поэтому заморозка «на следующий период» не истекает в первый день этого
+периода: неоплаченная authorization остаётся действующей до конца выбранного
+target Subscription. Уже оплаченная pending authorization автоматически не
+истекает. При lifecycle-проверке состояние оплаты повторно проверяется после
+получения row locks; если оплата успела подтвердиться конкурентно, grant тихо
+пропускается и весь lifecycle batch продолжает работу.
+
+Target Subscription валидируется уже при authorization, а не только при
+activation. Защита source/target Subscription действует только пока зависимое
+право ещё операционно значимо. Pending paid grant блокирует cancellation.
+После activation cancellation блокирует лишь makeup, который ещё можно
+использовать: он не отменён, не истёк на дату cancellation и не покрыт active
+AttendanceCoverage. Использованный или истёкший makeup остаётся в истории, но
+не делает исходный абонемент «неотменяемым навсегда».
 
 Если target Subscription выбран уже при authorization, activation не может
 молча заменить его другим. Пока unreversed PAID_MAKEUP ссылается на target
