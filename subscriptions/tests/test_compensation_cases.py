@@ -1703,6 +1703,10 @@ def test_authorize_paid_makeup_freezes_case_without_entitlement(actor, context):
     )
     assert grant.makeup_entitlement_id is None
     assert grant.activated_at is None
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeCancelled",
+        aggregate_id=grant.id,
+    ).count() == 1
     assert grant.fee_confirmed_at is None
     assert grant.target_subscription_id is None
     assert AuditEvent.objects.filter(
