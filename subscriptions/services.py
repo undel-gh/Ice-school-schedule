@@ -597,7 +597,6 @@ def materialize_free_makeup_from_case(
 
     existing = (
         AbsenceCompensationActionGrant.objects.select_for_update()
-        .select_related("makeup_entitlement")
         .filter(
             case_id=case_id,
             action_type="free_makeup",
