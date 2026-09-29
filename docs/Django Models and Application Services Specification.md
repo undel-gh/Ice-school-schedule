@@ -3233,6 +3233,31 @@ Manual payment confirmation is currently provided by
 `confirm_paid_makeup_fee(...)`. Future Billing integration may replace this
 manual confirmation without changing the grant/entitlement lifecycle.
 
+Paid reversal has explicit financial semantics. Once `fee_confirmed_at` is
+set, automatic source invalidation (attendance correction, medical
+supersession/revocation, etc.) must not silently reverse the paid grant.
+Instead it raises a validation error directing the manager to
+`reverse_absence_compensation_case(...)`.
+
+For a paid grant with confirmed fee, explicit reversal must include
+`refund_required=True|False`. The decision is stored on the grant and copied
+into reversal audit payloads. `PaidFreezeRefundRequired` is emitted when the
+decision is true. The selector `get_reversed_paid_makeups(...)` supports
+reporting paid-but-reversed grants and filtering those requiring refund.
+
+Unpaid, non-activated PAID_MAKEUP authorizations are not allowed to reserve a
+limit slot forever. `process_subscription_lifecycle(...)` reverses them with
+reason `authorization_expired` after their authorization deadline. The
+deadline is the source Subscription end date, capped by an earlier
+EXPLICIT_TARGET_WINDOW `target_until`. Paid pending grants are never expired
+automatically.
+
+Both target and source Subscription dependencies are protected. A target
+Subscription supplied at authorization is validated immediately against the
+target-period rule. An active paid grant prevents cancellation of its target
+Subscription. Any active MakeupEntitlement, and any active PAID_MAKEUP grant,
+prevents cancellation of the source Subscription that funds its allowance.
+
 If a target Subscription is selected during authorization, activation cannot
 silently replace it with another Subscription. An unreversed PAID_MAKEUP grant
 also protects its target Subscription from ordinary cancellation; the grant
