@@ -987,15 +987,12 @@ def reverse_absence_compensation_case(
         )
 
     case_ref = AbsenceCompensationCase.objects.only(
-        "student_id",
         "attendance_id",
+        "status",
     ).get(pk=case_id)
-    Student.objects.select_for_update().get(pk=case_ref.student_id)
-    case = AbsenceCompensationCase.objects.select_for_update().get(pk=case_id)
-
-    if case.status == AbsenceCompensationCase.Status.REVERSED:
-        return case
-    if case.status != AbsenceCompensationCase.Status.MATERIALIZED:
+    if case_ref.status == AbsenceCompensationCase.Status.REVERSED:
+        return case_ref
+    if case_ref.status != AbsenceCompensationCase.Status.MATERIALIZED:
         raise ValidationError(
             {
                 "case": (
@@ -1012,8 +1009,8 @@ def reverse_absence_compensation_case(
         at=reversed_at,
         reason=reason,
     )
-    case.refresh_from_db()
-    return case
+    case_ref.refresh_from_db()
+    return case_ref
 
 
 @transaction.atomic
