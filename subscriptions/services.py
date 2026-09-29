@@ -2355,6 +2355,36 @@ def cancel_subscription(
             }
         )
 
+    if AbsenceCompensationActionGrant.objects.filter(
+        case__source_subscription_allowance__subscription_id=subscription.id,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+        reversed_at__isnull=True,
+    ).exists():
+        raise ValidationError(
+            {
+                "subscription": (
+                    "Subscription funds an active PAID_MAKEUP grant. "
+                    "Reverse that compensation grant before cancelling the "
+                    "subscription."
+                )
+            }
+        )
+
+    if MakeupEntitlement.objects.filter(
+        source_subscription_allowance__subscription_id=subscription.id,
+        reason=MakeupEntitlement.Reason.ABSENCE_COMPENSATION,
+        cancelled_at__isnull=True,
+    ).exists():
+        raise ValidationError(
+            {
+                "subscription": (
+                    "Subscription funds an active absence-compensation "
+                    "make-up. Reverse or cancel that compensation right "
+                    "before cancelling the subscription."
+                )
+            }
+        )
+
     list(
         SubscriptionAllowance.objects.select_for_update()
         .filter(subscription_id=subscription.id)
@@ -3346,6 +3376,72 @@ def _process_one_makeup_expiry(
     return 1
 
 
+def _paid_makeup_authorization_deadline(
+    grant: AbsenceCompensationActionGrant,
+) -> date:
+    source_subscription = (
+        grant.case.source_subscription_allowance.subscription
+    )
+    deadline = source_subscription.valid_until
+    if (
+        grant.action_snapshot.get("target_period_rule")
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
+    ):
+        target_until = grant.action_snapshot.get("target_until")
+        if target_until:
+            deadline = min(deadline, date.fromisoformat(target_until))
+    return deadline
+
+
+@transaction.atomic
+def _process_one_paid_makeup_authorization_expiry(
+    *,
+    grant_id: UUID,
+    as_of: date,
+    actor: User | None,
+) -> int:
+    grant = (
+        AbsenceCompensationActionGrant.objects.select_related(
+            "case",
+            "case__source_subscription_allowance__subscription",
+        )
+        .get(pk=grant_id)
+    )
+    if (
+        grant.action_type
+        != AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+        or grant.reversed_at is not None
+        or grant.activated_at is not None
+        or grant.fee_confirmed_at is not None
+        or grant.case.status != AbsenceCompensationCase.Status.MATERIALIZED
+        or _paid_makeup_authorization_deadline(grant) >= as_of
+    ):
+        return 0
+
+    reversed_at = timezone.now()
+    count = _reverse_materialized_absence_compensation_cases(
+        attendance_id=grant.case.attendance_id,
+        actor=actor,
+        at=reversed_at,
+        reason="authorization_expired",
+        allow_paid_automatic=True,
+    )
+    if count:
+        _audit(
+            event_type="PaidFreezeAuthorizationExpired",
+            aggregate_type="AbsenceCompensationActionGrant",
+            aggregate_id=grant.id,
+            actor=actor,
+            payload={
+                "case_id": str(grant.case_id),
+                "deadline": _paid_makeup_authorization_deadline(grant).isoformat(),
+                "as_of": as_of.isoformat(),
+            },
+        )
+        return 1
+    return 0
+
+
 def process_subscription_lifecycle(
     *,
     as_of: date,
@@ -3357,6 +3453,7 @@ def process_subscription_lifecycle(
         "expired": 0,
         "expired_with_unused": 0,
         "makeup_expired": 0,
+        "paid_authorization_expired": 0,
     }
 
     activated_event = AuditEvent.objects.filter(
@@ -3438,6 +3535,26 @@ def process_subscription_lifecycle(
     for makeup_id in makeup_ids:
         counts["makeup_expired"] += _process_one_makeup_expiry(
             makeup_id=makeup_id,
+            as_of=as_of,
+            actor=actor,
+        )
+
+    pending_paid_ids = list(
+        AbsenceCompensationActionGrant.objects.filter(
+            action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+            reversed_at__isnull=True,
+            activated_at__isnull=True,
+            fee_confirmed_at__isnull=True,
+            case__status=AbsenceCompensationCase.Status.MATERIALIZED,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    for grant_id in pending_paid_ids:
+        counts[
+            "paid_authorization_expired"
+        ] += _process_one_paid_makeup_authorization_expiry(
+            grant_id=grant_id,
             as_of=as_of,
             actor=actor,
         )
