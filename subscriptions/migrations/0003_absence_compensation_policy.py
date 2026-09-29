@@ -776,6 +776,24 @@ migrations.RemoveConstraint(
                 ),
                 ("action_snapshot", models.JSONField(default=dict)),
                 (
+                    "fee_confirmed_at",
+                    models.DateTimeField(blank=True, null=True),
+                ),
+                (
+                    "fee_confirmed_by",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="+",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "activated_at",
+                    models.DateTimeField(blank=True, null=True),
+                ),
+                (
                     "reversed_at",
                     models.DateTimeField(blank=True, null=True),
                 ),
@@ -821,6 +839,16 @@ migrations.RemoveConstraint(
                         to="subscriptions.makeupentitlement",
                     ),
                 ),
+                (
+                    "target_subscription",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="compensation_action_grants",
+                        to="subscriptions.subscription",
+                    ),
+                ),
             ],
         ),
         migrations.AddConstraint(
@@ -838,6 +866,51 @@ migrations.RemoveConstraint(
                     | models.Q(("makeup_entitlement__isnull", False))
                 ),
                 name="absence_grant_free_makeup_ck",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="absencecompensationactiongrant",
+            constraint=models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        fee_confirmed_at__isnull=True,
+                        fee_confirmed_by__isnull=True,
+                    )
+                    | models.Q(
+                        fee_confirmed_at__isnull=False,
+                        fee_confirmed_by__isnull=False,
+                    )
+                ),
+                name="absence_grant_fee_confirm_ck",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="absencecompensationactiongrant",
+            constraint=models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        activated_at__isnull=True,
+                        makeup_entitlement__isnull=True,
+                    )
+                    | models.Q(
+                        activated_at__isnull=False,
+                        makeup_entitlement__isnull=False,
+                    )
+                ),
+                name="absence_grant_activation_ck",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="absencecompensationactiongrant",
+            constraint=models.CheckConstraint(
+                condition=(
+                    ~models.Q(
+                        action_type="paid_makeup",
+                        activated_at__isnull=False,
+                    )
+                    | models.Q(fee_confirmed_at__isnull=False)
+                ),
+                name="absence_grant_paid_fee_ck",
             ),
         ),
         migrations.AddConstraint(
