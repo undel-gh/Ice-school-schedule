@@ -17,6 +17,7 @@ from subscriptions.models import (
     SubscriptionPlanAllowance,
 )
 from subscriptions.services import (
+    adjust_allowance,
     cancel_absence_compensation_case,
     create_absence_compensation_case,
     issue_subscription,
@@ -358,3 +359,40 @@ def test_cancel_case_is_idempotent(actor, context):
         event_type="AbsenceCompensationCaseCancelled",
         aggregate_id=case.id,
     ).count() == 1
+
+
+@pytest.mark.django_db
+def test_case_keeps_fully_consumed_historical_source_allowance(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    plan = SubscriptionPlan.objects.create(
+        code="case-consumed-source",
+        name="Case consumed source",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=1,
+    )
+    subscription = issue_subscription(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    adjust_allowance(
+        allowance_id=allowance.id,
+        delta=-1,
+        reason="Consume source for provenance test",
+        actor=actor,
+    )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+    )
+
+    assert case.source_subscription_allowance_id == allowance.id
