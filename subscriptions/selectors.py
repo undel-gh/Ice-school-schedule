@@ -11,6 +11,7 @@ from scheduling.models import Lesson
 
 from .balances import ledger_balance
 from .models import (
+    AbsenceCompensationActionGrant,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
     AbsenceCompensationPolicyWindow,
@@ -308,6 +309,28 @@ def get_available_makeups(
     )
     return tuple(usable)
 
+
+
+def get_reversed_paid_makeups(
+    *,
+    refund_required: bool | None = None,
+) -> tuple[AbsenceCompensationActionGrant, ...]:
+    """Return paid grants reversed after payment confirmation."""
+    grants = AbsenceCompensationActionGrant.objects.filter(
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+        fee_confirmed_at__isnull=False,
+        reversed_at__isnull=False,
+    )
+    if refund_required is not None:
+        grants = grants.filter(refund_required=refund_required)
+    return tuple(
+        grants.select_related(
+            "case",
+            "case__student",
+            "target_subscription",
+            "makeup_entitlement",
+        ).order_by("-reversed_at", "id")
+    )
 
 
 def subscription_state(
