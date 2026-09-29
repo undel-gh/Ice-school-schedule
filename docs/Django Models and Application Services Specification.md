@@ -2990,15 +2990,16 @@ DRAFT может быть отменён через обычный `cancel_lesso
 
 # 37. Absence-compensation policy configuration
 
-The typed/versioned policy configuration layer is implemented. Policy execution
-against a concrete absence and creation of `AbsenceCompensationCase` remain
-a subsequent stage.
+The typed/versioned policy configuration layer and
+`AbsenceCompensationCase` evaluation are implemented. Materialization of
+compensation actions into entitlements or billing operations remains a
+subsequent stage.
 
 
 
 Implemented configuration entities:
 
-\`\`\`text
+```text
 AbsenceCompensationPolicy
     code + version
     absence_reason
@@ -3022,14 +3023,14 @@ AbsenceCompensationPolicyWindow
     optional requirement override
     priority
     is_active
-\`\`\`
+```
 
 The selector layer provides:
 
-\`\`\`python
+```python
 get_applicable_absence_policy(...)
 resolve_compensation_actions(...)
-\`\`\`
+```
 
 Ambiguous active policies are rejected instead of silently choosing one.
 When several seasonal windows match one action, priority resolves them;
@@ -3096,59 +3097,118 @@ must continue to work during migration toward the generalized mechanism.
 
 The case stores an evaluated eligibility result:
 
-\`\`\`text
+```text
 ELIGIBLE
 LIMIT_EXCEEDED
 UNDETERMINED
-\`\`\`
+```
 
-For a policy with \`max_eligible_absences = N\`, the evaluator derives the
-source billing period from the historical \`source_subscription_allowance\`
+For a policy with `max_eligible_absences = N`, the evaluator derives the
+source billing period from the historical `source_subscription_allowance`
 and counts OPEN compensation cases in deterministic Lesson order.
 
 The counting set always matches:
 
-\`\`\`text
+```text
 student
 + absence_reason
 + policy_code_snapshot
-+ source billing period
-\`\`\`
++ source Subscription identity
+```
 
-and is additionally narrowed according to \`limit_scope_snapshot\`:
+The source period is identified by
+`source_subscription_allowance.subscription_id`, not by overlapping date
+ranges. The period dates are retained only as explanatory snapshot values.
+This prevents one absence from being counted in multiple overlapping billing
+periods when the student has different subscriptions.
 
-\`\`\`text
+and is additionally narrowed according to `limit_scope_snapshot`:
+
+```text
 STUDENT_PERIOD
 CATEGORY_PERIOD
 LESSON_TYPE_PERIOD
-\`\`\`
+```
 
 The ordinal and source period are snapshotted on the case:
 
-\`\`\`text
+```text
 eligible_absence_ordinal
 eligibility_period_from
 eligibility_period_until
 eligibility_evaluated_at
-\`\`\`
+```
 
 Rule:
 
-\`\`\`text
+```text
 ordinal <= max_eligible_absences → ELIGIBLE
 ordinal >  max_eligible_absences → LIMIT_EXCEEDED
-\`\`\`
+```
 
-An unlimited policy (\`max_eligible_absences = NULL\`) is immediately
-\`ELIGIBLE\`.
+An unlimited policy (`max_eligible_absences = NULL`) is immediately
+`ELIGIBLE`.
 
 A limited policy without a resolvable source billing period is
-\`UNDETERMINED\`; the implementation must not silently substitute a calendar
+`UNDETERMINED`; the implementation must not silently substitute a calendar
 month for a future subscription-period model.
 
 Creation/cancellation serializes by Student and reevaluates that student's
 OPEN cases, so cancellation of an earlier case can release a limit slot for a
-later absence. Eligibility changes emit \`AbsenceCompensationEvaluated\`.
+later absence. Eligibility changes emit `AbsenceCompensationEvaluated`.
+
+### Materialization boundary
+
+Eligibility is intentionally dynamic **only before a compensation action is
+materialized**.
+
+The first future service that grants a makeup entitlement, paid freeze or
+billing recalculation from a case must, in the same transaction:
+
+1. lock the Student and AbsenceCompensationCase using the established lock
+   order;
+2. validate that the case is OPEN and ELIGIBLE;
+3. persist the exact eligibility/action snapshot used for the grant;
+4. mark that eligibility decision as materialized/frozen;
+5. create the entitlement or billing operation and correlated audit events.
+
+After materialization, later backdated cases or cancellations must not revoke
+or rewrite the already granted right automatically. The materialized case is
+historical evidence of the decision made at grant time. If the school needs to
+reverse an already granted right, that is an explicit compensated/reversal
+workflow, not ordinary eligibility reevaluation.
+
+The concrete lock fields and grant service are deliberately introduced together
+with the first action-materialization implementation, rather than exposing a
+partially enforced lock before any grant exists.
+
+
+### Source invalidation
+
+An OPEN case is automatically cancelled when its source ceases to represent an
+eligible absence:
+
+- `Attendance: ABSENT → PRESENT`;
+- a linked VERIFIED medical justification is revoked.
+
+Cancellation triggers reevaluation of the remaining OPEN cases for that
+student. This prevents a corrected attendance or revoked certificate from
+continuing to consume a limit slot.
+
+### Policy configuration errors
+
+Ambiguous active policies and equal-priority overlapping seasonal windows are
+reported as `ValidationError`, suitable for CLI/web presentation rather than
+uncaught `ValueError`.
+
+For `EXPLICIT_TARGET_WINDOW`, an action with no matching active window is not
+materialized in `actions_snapshot`.
+
+Admin validation rejects overlapping active policies for the same absence
+reason and overlapping same-priority windows. Once a policy version has been
+referenced by a compensation case, that policy and its actions/windows become
+read-only in Django Admin; changes require a new version.
+
 
 ---
 
