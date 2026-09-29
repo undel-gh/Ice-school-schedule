@@ -396,3 +396,178 @@ def test_case_keeps_fully_consumed_historical_source_allowance(actor, context):
     )
 
     assert case.source_subscription_allowance_id == allowance.id
+
+
+def issue_ice_subscription_for_period(*, actor, context, code="limit-sub"):
+    plan = SubscriptionPlan.objects.create(
+        code=code,
+        name=code,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    return issue_subscription(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+
+
+@pytest.mark.django_db
+def test_limit_marks_first_four_eligible_and_fifth_exceeded(actor, context):
+    make_policy()
+    issue_ice_subscription_for_period(actor=actor, context=context)
+
+    cases = []
+    for day in range(1, 6):
+        attendance = make_absence(
+            context=context,
+            actor=actor,
+            starts_at=datetime(
+                2026,
+                9,
+                day,
+                15,
+                0,
+                tzinfo=dt_timezone.utc,
+            ),
+        )
+        cases.append(
+            create_absence_compensation_case(
+                attendance_id=attendance.id,
+                absence_reason=(
+                    AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED
+                ),
+                actor=actor,
+            )
+        )
+
+    for case in cases:
+        case.refresh_from_db()
+
+    assert [case.eligible_absence_ordinal for case in cases] == [1, 2, 3, 4, 5]
+    assert [case.eligibility_status for case in cases[:4]] == [
+        AbsenceCompensationCase.EligibilityStatus.ELIGIBLE,
+    ] * 4
+    assert (
+        cases[4].eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
+    )
+    assert cases[4].eligibility_period_from == date(2026, 9, 1)
+    assert cases[4].eligibility_period_until == date(2026, 9, 30)
+
+
+@pytest.mark.django_db
+def test_cancelling_earlier_case_releases_limit_slot(actor, context):
+    make_policy()
+    issue_ice_subscription_for_period(actor=actor, context=context)
+
+    cases = []
+    for day in range(1, 6):
+        attendance = make_absence(
+            context=context,
+            actor=actor,
+            starts_at=datetime(
+                2026,
+                9,
+                day,
+                15,
+                0,
+                tzinfo=dt_timezone.utc,
+            ),
+        )
+        cases.append(
+            create_absence_compensation_case(
+                attendance_id=attendance.id,
+                absence_reason=(
+                    AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED
+                ),
+                actor=actor,
+            )
+        )
+
+    cancel_absence_compensation_case(
+        case_id=cases[0].id,
+        actor=actor,
+        at=datetime(2026, 9, 20, 12, 0, tzinfo=dt_timezone.utc),
+    )
+
+    cases[4].refresh_from_db()
+    assert cases[4].eligible_absence_ordinal == 4
+    assert (
+        cases[4].eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
+
+
+@pytest.mark.django_db
+def test_limited_case_without_source_period_is_undetermined(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+    )
+
+    assert (
+        case.eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.UNDETERMINED
+    )
+    assert case.eligible_absence_ordinal is None
+    assert case.eligibility_period_from is None
+    assert case.eligibility_period_until is None
+
+
+@pytest.mark.django_db
+def test_unlimited_policy_is_eligible_without_source_period(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    policy.max_eligible_absences = None
+    policy.save(update_fields=["max_eligible_absences"])
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+    )
+
+    assert (
+        case.eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
+    assert case.eligible_absence_ordinal is None
+    assert case.eligibility_period_from is None
+    assert case.eligibility_period_until is None
+
+
+@pytest.mark.django_db
+def test_eligibility_evaluation_is_audited(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="audit-limit-sub",
+    )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+    )
+
+    event = AuditEvent.objects.get(
+        event_type="AbsenceCompensationEvaluated",
+        aggregate_id=case.id,
+    )
+    assert event.payload["eligibility_status"] == "eligible"
+    assert event.payload["eligible_absence_ordinal"] == 1
+    assert event.payload["max_eligible_absences"] == 4
+    assert event.payload["period_from"] == "2026-09-01"
+    assert event.payload["period_until"] == "2026-09-30"
