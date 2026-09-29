@@ -2233,11 +2233,30 @@ def cancel_subscription(
         "subscriptions.change_subscription",
         "Subscription cancellation permission is required.",
     )
+    subscription_ref = Subscription.objects.only(
+        "student_id",
+    ).get(pk=subscription_id)
+    Student.objects.select_for_update().get(pk=subscription_ref.student_id)
     subscription = Subscription.objects.select_for_update().get(
         pk=subscription_id
     )
     if subscription.cancelled_at is not None:
         return subscription
+
+    if AbsenceCompensationActionGrant.objects.filter(
+        target_subscription_id=subscription.id,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+        reversed_at__isnull=True,
+    ).exists():
+        raise ValidationError(
+            {
+                "subscription": (
+                    "Subscription is required by an active PAID_MAKEUP grant. "
+                    "Reverse that compensation grant before cancelling the "
+                    "subscription."
+                )
+            }
+        )
 
     list(
         SubscriptionAllowance.objects.select_for_update()
