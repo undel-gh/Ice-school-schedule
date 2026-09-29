@@ -783,6 +783,17 @@ class MakeupEntitlement(UUIDModel):
                 condition=models.Q(cancelled_at__isnull=True),
                 name="makeup_active_student_lesson_uq",
             ),
+            models.UniqueConstraint(
+                fields=["student", "source_lesson"],
+                condition=models.Q(
+                    cancelled_at__isnull=True,
+                    reason__in=[
+                        "medical",
+                        "absence_compensation",
+                    ],
+                ),
+                name="makeup_active_absence_source_uq",
+            ),
             models.CheckConstraint(
                 condition=~models.Q(reason="medical")
                 | models.Q(source_justification__isnull=False),
