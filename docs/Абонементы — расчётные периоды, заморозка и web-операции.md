@@ -371,6 +371,20 @@ REVERSED. Если makeup уже использован активным Attenda
 и того же пропуска одновременно через MEDICAL_VERIFIED и
 ABSENCE_COMPENSATION.
 
+Инвариант действует в обе стороны: если сначала выдана compensation-отработка,
+а затем подтверждается медицинская справка, неиспользованное compensation-право
+автоматически переводится в REVERSED с причиной `superseded_by_medical`, после
+чего выдаётся medical makeup. Если compensation-право уже использовано активным
+AttendanceCoverage, верификация справки блокируется до reverse/rebind coverage.
+
+На уровне БД действует partial UniqueConstraint: для одной пары
+`student + source_lesson` одновременно может существовать не более одного
+активного makeup с причиной MEDICAL_VERIFIED или ABSENCE_COMPENSATION.
+
+Для ошибочно выданного права существует явный административный application
+service `reverse_absence_compensation_case(...)`. Он использует тот же
+reversal lifecycle и не обходит проверку уже использованного makeup.
+
 Если Attendance исправлен из ABSENT в PRESENT либо отозвано VERIFIED medical
 основание, OPEN case до материализации автоматически отменяется и лимит
 пересчитывается.
