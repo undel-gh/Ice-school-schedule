@@ -772,6 +772,7 @@ def materialize_free_makeup_from_case(
         action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
         action_snapshot=action,
         makeup_entitlement=entitlement,
+        activated_at=materialized_at,
         created_by=actor,
     )
 
