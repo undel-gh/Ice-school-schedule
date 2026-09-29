@@ -784,7 +784,7 @@ migrations.RemoveConstraint(
                     models.ForeignKey(
                         blank=True,
                         null=True,
-                        on_delete=django.db.models.deletion.SET_NULL,
+                        on_delete=django.db.models.deletion.PROTECT,
                         related_name="+",
                         to=settings.AUTH_USER_MODEL,
                     ),
@@ -792,6 +792,10 @@ migrations.RemoveConstraint(
                 (
                     "activated_at",
                     models.DateTimeField(blank=True, null=True),
+                ),
+                (
+                    "refund_required",
+                    models.BooleanField(blank=True, null=True),
                 ),
                 (
                     "reversed_at",
@@ -928,6 +932,28 @@ migrations.RemoveConstraint(
                     )
                 ),
                 name="absence_grant_reversal_ck",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="absencecompensationactiongrant",
+            constraint=models.CheckConstraint(
+                condition=(
+                    (
+                        models.Q(refund_required__isnull=True)
+                        & ~models.Q(
+                            action_type="paid_makeup",
+                            fee_confirmed_at__isnull=False,
+                            reversed_at__isnull=False,
+                        )
+                    )
+                    | models.Q(
+                        refund_required__isnull=False,
+                        action_type="paid_makeup",
+                        fee_confirmed_at__isnull=False,
+                        reversed_at__isnull=False,
+                    )
+                ),
+                name="absence_grant_refund_ck",
             ),
         ),
         migrations.AddIndex(
