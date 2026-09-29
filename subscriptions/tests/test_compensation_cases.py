@@ -1704,10 +1704,6 @@ def test_authorize_paid_makeup_freezes_case_without_entitlement(actor, context):
     )
     assert grant.makeup_entitlement_id is None
     assert grant.activated_at is None
-    assert AuditEvent.objects.filter(
-        event_type="PaidFreezeCancelled",
-        aggregate_id=grant.id,
-    ).count() == 1
     assert grant.fee_confirmed_at is None
     assert grant.target_subscription_id is None
     assert AuditEvent.objects.filter(
@@ -1955,6 +1951,10 @@ def test_pending_paid_makeup_can_be_reversed_before_activation(actor, context):
     assert grant.reversed_at is not None
     assert grant.makeup_entitlement_id is None
     assert grant.activated_at is None
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeCancelled",
+        aggregate_id=grant.id,
+    ).count() == 1
 
 
 @pytest.mark.django_db
