@@ -848,10 +848,11 @@ class AbsenceCompensationActionGrant(UUIDModel):
         settings.AUTH_USER_MODEL,
         null=True,
         blank=True,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         related_name="+",
     )
     activated_at = models.DateTimeField(null=True, blank=True)
+    refund_required = models.BooleanField(null=True, blank=True)
     reversed_at = models.DateTimeField(null=True, blank=True)
     reversed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -931,6 +932,25 @@ class AbsenceCompensationActionGrant(UUIDModel):
                     )
                 ),
                 name="absence_grant_reversal_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        models.Q(refund_required__isnull=True)
+                        & ~models.Q(
+                            action_type="paid_makeup",
+                            fee_confirmed_at__isnull=False,
+                            reversed_at__isnull=False,
+                        )
+                    )
+                    | models.Q(
+                        refund_required__isnull=False,
+                        action_type="paid_makeup",
+                        fee_confirmed_at__isnull=False,
+                        reversed_at__isnull=False,
+                    )
+                ),
+                name="absence_grant_refund_ck",
             ),
         ]
         indexes = [
