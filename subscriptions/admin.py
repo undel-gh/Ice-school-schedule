@@ -33,6 +33,7 @@ class AbsenceCompensationActionGrantAdmin(ReadOnlyAdmin):
         "activated_at",
         "makeup_entitlement",
         "reversed_at",
+        "refund_required",
         "created_at",
         "created_by",
     )
