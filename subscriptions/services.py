@@ -1038,6 +1038,20 @@ def authorize_paid_makeup_from_case(
             "eligible_absence_ordinal": case.eligible_absence_ordinal,
         },
     )
+    _audit(
+        event_type="AbsenceCompensationMaterialized",
+        aggregate_type="AbsenceCompensationCase",
+        aggregate_id=case.id,
+        actor=actor,
+        correlation_id=correlation_id,
+        payload={
+            "action_type": grant.action_type,
+            "grant_id": str(grant.id),
+            "makeup_entitlement_id": None,
+            "eligibility_status": case.eligibility_status,
+            "eligible_absence_ordinal": case.eligible_absence_ordinal,
+        },
+    )
     return grant
 
 
@@ -1459,6 +1473,24 @@ def _reverse_materialized_absence_compensation_cases(
                 "reversed_at": at.isoformat(),
             },
         )
+        if (
+            grant.action_type
+            == AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+        ):
+            _audit(
+                event_type="PaidFreezeCancelled",
+                aggregate_type="AbsenceCompensationActionGrant",
+                aggregate_id=grant.id,
+                actor=actor,
+                correlation_id=effective_correlation_id,
+                payload={
+                    "case_id": str(grant.case_id),
+                    "reason": reason,
+                    "reversed_at": at.isoformat(),
+                    "activated": grant.activated_at is not None,
+                    "fee_confirmed": grant.fee_confirmed_at is not None,
+                },
+            )
 
     for case in cases:
         case.status = AbsenceCompensationCase.Status.REVERSED
