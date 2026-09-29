@@ -1,6 +1,7 @@
 from datetime import date
 
 import pytest
+from django.core.exceptions import ValidationError
 
 from subscriptions.models import (
     AbsenceCompensationPolicy,
@@ -79,7 +80,7 @@ def test_policy_resolution_rejects_ambiguous_configuration():
     make_policy(code="second")
 
     with pytest.raises(
-        ValueError,
+        ValidationError,
         match="Multiple active absence compensation policies",
     ):
         get_applicable_absence_policy(
@@ -244,10 +245,96 @@ def test_matching_windows_with_same_priority_are_configuration_error():
         )
 
     with pytest.raises(
-        ValueError,
+        ValidationError,
         match="Multiple absence compensation windows with the same priority",
     ):
         resolve_compensation_actions(
             policy=policy,
             source_date=date(2027, 5, 15),
         )
+
+
+@pytest.mark.django_db
+def test_explicit_target_action_without_matching_window_is_not_resolved():
+    policy = make_policy()
+    AbsenceCompensationPolicyAction.objects.create(
+        policy=policy,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.FEE_REQUIRED,
+    )
+    AbsenceCompensationPolicyWindow.objects.create(
+        policy_action=policy.actions.get(),
+        name="May only",
+        source_from=date(2027, 5, 1),
+        source_until=date(2027, 5, 31),
+        target_from=date(2027, 6, 1),
+        target_until=date(2027, 6, 30),
+    )
+
+    resolved = resolve_compensation_actions(
+        policy=policy,
+        source_date=date(2027, 9, 15),
+    )
+
+    assert resolved == ()
+
+
+@pytest.mark.django_db
+def test_policy_clean_rejects_overlapping_active_policy():
+    make_policy(
+        code="first-overlap",
+        effective_from=date(2026, 1, 1),
+        effective_until=date(2026, 12, 31),
+    )
+    second = AbsenceCompensationPolicy(
+        code="second-overlap",
+        version=1,
+        name="Second overlap",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        effective_from=date(2026, 6, 1),
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="overlaps this effective interval",
+    ):
+        second.full_clean()
+
+
+@pytest.mark.django_db
+def test_window_clean_rejects_same_priority_overlap():
+    policy = make_policy()
+    action = AbsenceCompensationPolicyAction.objects.create(
+        policy=policy,
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
+        ),
+    )
+    AbsenceCompensationPolicyWindow.objects.create(
+        policy_action=action,
+        name="First",
+        source_from=date(2027, 5, 1),
+        source_until=date(2027, 5, 31),
+        target_from=date(2027, 6, 1),
+        target_until=date(2027, 6, 30),
+        priority=10,
+    )
+    second = AbsenceCompensationPolicyWindow(
+        policy_action=action,
+        name="Second",
+        source_from=date(2027, 5, 15),
+        source_until=date(2027, 6, 15),
+        target_from=date(2027, 7, 1),
+        target_until=date(2027, 7, 31),
+        priority=10,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="same priority",
+    ):
+        second.full_clean()
