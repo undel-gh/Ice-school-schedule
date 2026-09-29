@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from uuid import UUID
 
+from django.core.exceptions import ValidationError
 from django.db.models import Exists, OuterRef, Q, Sum
 
 from scheduling.models import Lesson
@@ -81,9 +82,13 @@ def get_applicable_absence_policy(
     if not matches:
         return None
     if len(matches) > 1:
-        raise ValueError(
-            "Multiple active absence compensation policies match "
-            f"{absence_reason!r} on {source_date.isoformat()}."
+        raise ValidationError(
+            {
+                "policy": (
+                    "Multiple active absence compensation policies match "
+                    f"{absence_reason!r} on {source_date.isoformat()}."
+                )
+            }
         )
     return matches[0]
 
@@ -118,13 +123,23 @@ def resolve_compensation_actions(
             ).order_by("priority", "source_from", "id")
         )
         if len(windows) > 1 and windows[0].priority == windows[1].priority:
-            raise ValueError(
-                "Multiple absence compensation windows with the same "
-                f"priority match action {action.id} on "
-                f"{source_date.isoformat()}."
+            raise ValidationError(
+                {
+                    "policy": (
+                        "Multiple absence compensation windows with the same "
+                        f"priority match action {action.id} on "
+                        f"{source_date.isoformat()}."
+                    )
+                }
             )
 
         window = windows[0] if windows else None
+        if (
+            action.target_period_rule
+            == AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
+            and window is None
+        ):
+            continue
         requirement = (
             window.requirement_override
             if window is not None and window.requirement_override
