@@ -804,6 +804,19 @@ def verify_medical_absence(
             }
         )
 
+    _reverse_materialized_absence_compensation_cases(
+        attendance_id=attendance.id,
+        actor=actor,
+        at=reviewed_at,
+        reason="superseded_by_medical",
+    )
+    _cancel_open_absence_compensation_cases(
+        attendance_id=attendance.id,
+        actor=actor,
+        at=reviewed_at,
+        reason="superseded_by_medical",
+    )
+
     justification.status = AbsenceJustification.Status.VERIFIED
     justification.reviewed_at = reviewed_at
     justification.reviewed_by = actor
