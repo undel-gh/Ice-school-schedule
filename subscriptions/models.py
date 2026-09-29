@@ -890,6 +890,7 @@ class AbsenceCompensationActionGrant(UUIDModel):
                     )
                     | models.Q(
                         fee_confirmed_at__isnull=False,
+                        fee_confirmed_by__isnull=False,
                     )
                 ),
                 name="absence_grant_fee_confirm_ck",
