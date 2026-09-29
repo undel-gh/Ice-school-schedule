@@ -3,6 +3,7 @@ from django.contrib import admin
 from core.admin import ReadOnlyAdmin
 
 from .models import (
+    AbsenceCompensationActionGrant,
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
@@ -22,6 +23,18 @@ from .models import (
 
 
 
+@admin.register(AbsenceCompensationActionGrant)
+class AbsenceCompensationActionGrantAdmin(ReadOnlyAdmin):
+    list_display = (
+        "case",
+        "action_type",
+        "makeup_entitlement",
+        "created_at",
+        "created_by",
+    )
+    list_filter = ("action_type",)
+
+
 @admin.register(AbsenceCompensationCase)
 class AbsenceCompensationCaseAdmin(ReadOnlyAdmin):
     list_display = (
@@ -33,6 +46,7 @@ class AbsenceCompensationCaseAdmin(ReadOnlyAdmin):
         "eligibility_status",
         "eligible_absence_ordinal",
         "status",
+        "materialized_at",
         "created_at",
     )
     list_filter = (
