@@ -32,6 +32,7 @@ from subscriptions.models import (
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
+from subscriptions.selectors import get_reversed_paid_makeups
 from subscriptions.services import (
     activate_paid_makeup_grant,
     adjust_allowance,
@@ -42,6 +43,7 @@ from subscriptions.services import (
     create_absence_compensation_case,
     issue_subscription,
     materialize_free_makeup_from_case,
+    process_subscription_lifecycle,
     reverse_absence_compensation_case,
 )
 
@@ -2218,3 +2220,382 @@ def test_paid_makeup_activation_cannot_replace_authorized_target_subscription(
     assert grant.target_subscription_id == first_target.id
     assert grant.activated_at is None
     assert grant.makeup_entitlement_id is None
+
+
+@pytest.mark.django_db
+def test_paid_authorization_validates_target_during_authorize(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-auth-source-validation",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    overlapping = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-auth-overlap-target",
+        valid_from=date(2026, 9, 20),
+        valid_until=date(2026, 10, 17),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="must start after the source subscription ends",
+    ):
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            target_subscription_id=overlapping.id,
+            fee_confirmed=True,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert not AbsenceCompensationActionGrant.objects.filter(
+        case=case,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_paid_explicit_window_validates_target_during_authorize(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    action = add_paid_action(
+        policy,
+        target_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
+        ),
+    )
+    AbsenceCompensationPolicyWindow.objects.create(
+        policy_action=action,
+        name="October only",
+        source_from=date(2026, 9, 1),
+        source_until=date(2026, 9, 30),
+        target_from=date(2026, 10, 1),
+        target_until=date(2026, 10, 31),
+    )
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-explicit-source-validation",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    november = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-explicit-bad-target",
+        valid_from=date(2026, 11, 1),
+        valid_until=date(2026, 11, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="does not overlap the explicit target window",
+    ):
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            target_subscription_id=november.id,
+            fee_confirmed=True,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+
+
+@pytest.mark.django_db
+def test_automatic_source_invalidation_rejects_confirmed_paid_makeup(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-auto-reversal-target",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-auto-reversal-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        fee_confirmed=True,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    LessonRosterEntry.objects.create(
+        lesson=attendance.lesson,
+        student=context["student"],
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=actor,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="explicit compensation reversal workflow",
+    ):
+        set_attendance(
+            lesson_id=attendance.lesson_id,
+            student_id=context["student"].id,
+            status=Attendance.Status.PRESENT,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=2),
+        )
+
+    attendance.refresh_from_db()
+    grant.refresh_from_db()
+    case.refresh_from_db()
+    assert attendance.status == Attendance.Status.ABSENT
+    assert grant.reversed_at is None
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+
+
+@pytest.mark.django_db
+def test_paid_manual_reversal_requires_refund_decision_and_reports_it(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-refund-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-refund-target",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        fee_confirmed=True,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="Refund decision is required",
+    ):
+        reverse_absence_compensation_case(
+            case_id=case.id,
+            actor=actor,
+            reason="issued_by_mistake",
+            now=attendance.marked_at + timedelta(hours=2),
+        )
+
+    reversed_case = reverse_absence_compensation_case(
+        case_id=case.id,
+        actor=actor,
+        reason="issued_by_mistake",
+        refund_required=True,
+        now=attendance.marked_at + timedelta(hours=3),
+    )
+
+    grant.refresh_from_db()
+    assert reversed_case.status == AbsenceCompensationCase.Status.REVERSED
+    assert grant.refund_required is True
+    reversed_paid = get_reversed_paid_makeups(refund_required=True)
+    assert [item.id for item in reversed_paid] == [grant.id]
+    event = AuditEvent.objects.get(
+        event_type="AbsenceCompensationActionReversed",
+        aggregate_id=grant.id,
+    )
+    assert event.payload["fee_confirmed"] is True
+    assert event.payload["refund_required"] is True
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeRefundRequired",
+        aggregate_id=grant.id,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_unpaid_paid_authorization_expires_and_releases_limit(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    policy.max_eligible_absences = 1
+    policy.save(update_fields=["max_eligible_absences"])
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-expiry-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    first = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=first.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    second_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(2026, 9, 25, 15, 0, tzinfo=dt_timezone.utc),
+    )
+    second = create_absence_compensation_case(
+        attendance_id=second_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=second_attendance.marked_at,
+    )
+    assert second.eligibility_status == (
+        AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 10, 1),
+        actor=actor,
+    )
+
+    first.refresh_from_db()
+    grant.refresh_from_db()
+    second.refresh_from_db()
+    assert result["paid_authorization_expired"] == 1
+    assert first.status == AbsenceCompensationCase.Status.REVERSED
+    assert first.reversal_reason == "authorization_expired"
+    assert grant.reversed_at is not None
+    assert grant.refund_required is None
+    assert second.eligibility_status == (
+        AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeAuthorizationExpired",
+        aggregate_id=grant.id,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_paid_authorization_with_confirmed_fee_does_not_auto_expire(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-no-auto-expiry-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        fee_confirmed=True,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 10, 15),
+        actor=actor,
+    )
+
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert result["paid_authorization_expired"] == 0
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert grant.reversed_at is None
+
+
+@pytest.mark.django_db
+def test_source_subscription_cannot_be_cancelled_while_compensation_makeup_active(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    source = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="source-cancel-guard",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="funds an active make-up entitlement",
+    ):
+        cancel_subscription(
+            subscription_id=source.id,
+            actor=actor,
+            at=attendance.marked_at + timedelta(hours=2),
+        )
+
+    reverse_absence_compensation_case(
+        case_id=case.id,
+        actor=actor,
+        reason="cancel_source",
+        now=attendance.marked_at + timedelta(hours=3),
+    )
+    cancelled = cancel_subscription(
+        subscription_id=source.id,
+        actor=actor,
+        at=attendance.marked_at + timedelta(hours=4),
+    )
+    assert cancelled.cancelled_at is not None
