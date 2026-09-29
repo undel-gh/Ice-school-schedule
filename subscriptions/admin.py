@@ -30,10 +30,17 @@ class AbsenceCompensationCaseAdmin(ReadOnlyAdmin):
         "absence_reason",
         "policy_code_snapshot",
         "policy_version_snapshot",
+        "eligibility_status",
+        "eligible_absence_ordinal",
         "status",
         "created_at",
     )
-    list_filter = ("absence_reason", "status", "category")
+    list_filter = (
+        "absence_reason",
+        "eligibility_status",
+        "status",
+        "category",
+    )
     search_fields = (
         "student__display_name",
         "policy_code_snapshot",
