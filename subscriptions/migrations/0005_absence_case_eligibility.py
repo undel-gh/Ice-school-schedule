@@ -78,9 +78,4 @@ class Migration(migrations.Migration):
                 name="absence_case_eligibility_ck",
             ),
         ),
-                    )
-                ),
-                name="absence_case_period_ck",
-            ),
-        ),
     ]
