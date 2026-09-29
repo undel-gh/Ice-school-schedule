@@ -51,6 +51,21 @@ class AbsenceCompensationPolicyActionInline(admin.TabularInline):
     model = AbsenceCompensationPolicyAction
     extra = 0
 
+    def has_add_permission(self, request, obj=None):
+        if obj is not None and obj.compensation_cases.exists():
+            return False
+        return super().has_add_permission(request, obj)
+
+    def has_change_permission(self, request, obj=None):
+        if obj is not None and obj.compensation_cases.exists():
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.compensation_cases.exists():
+            return False
+        return super().has_delete_permission(request, obj)
+
 
 @admin.register(AbsenceCompensationPolicy)
 class AbsenceCompensationPolicyAdmin(admin.ModelAdmin):
@@ -67,6 +82,16 @@ class AbsenceCompensationPolicyAdmin(admin.ModelAdmin):
     search_fields = ("code", "name")
     inlines = (AbsenceCompensationPolicyActionInline,)
 
+    def has_change_permission(self, request, obj=None):
+        if obj is not None and obj.compensation_cases.exists():
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.compensation_cases.exists():
+            return False
+        return super().has_delete_permission(request, obj)
+
 
 @admin.register(AbsenceCompensationPolicyAction)
 class AbsenceCompensationPolicyActionAdmin(admin.ModelAdmin):
@@ -79,6 +104,22 @@ class AbsenceCompensationPolicyActionAdmin(admin.ModelAdmin):
         "is_active",
     )
     list_filter = ("action_type", "target_period_rule", "requirement", "is_active")
+
+    def has_change_permission(self, request, obj=None):
+        if (
+            obj is not None
+            and obj.policy.compensation_cases.exists()
+        ):
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if (
+            obj is not None
+            and obj.policy.compensation_cases.exists()
+        ):
+            return False
+        return super().has_delete_permission(request, obj)
 
 
 @admin.register(AbsenceCompensationPolicyWindow)
@@ -94,6 +135,22 @@ class AbsenceCompensationPolicyWindowAdmin(admin.ModelAdmin):
         "is_active",
     )
     list_filter = ("is_active",)
+
+    def has_change_permission(self, request, obj=None):
+        if (
+            obj is not None
+            and obj.policy_action.policy.compensation_cases.exists()
+        ):
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if (
+            obj is not None
+            and obj.policy_action.policy.compensation_cases.exists()
+        ):
+            return False
+        return super().has_delete_permission(request, obj)
 
 admin.site.register(SubscriptionPlan)
 admin.site.register(SubscriptionPlanAllowance)
