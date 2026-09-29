@@ -17,6 +17,7 @@ from scheduling.models import (
     Venue,
 )
 from subscriptions.models import (
+    AbsenceCompensationActionGrant,
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
@@ -28,6 +29,7 @@ from subscriptions.services import (
     cancel_absence_compensation_case,
     create_absence_compensation_case,
     issue_subscription,
+    materialize_free_makeup_from_case,
 )
 
 User = get_user_model()
@@ -881,3 +883,268 @@ def test_referenced_policy_and_actions_are_immutable(actor, context):
         match="referenced compensation policies are immutable",
     ):
         action.save(update_fields=["priority"])
+
+
+@pytest.mark.django_db
+def test_materialize_free_makeup_freezes_case_and_creates_grant(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    subscription = issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="materialize-free",
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    assert case.eligibility_status == (
+        AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
+
+    grant = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    entitlement = grant.makeup_entitlement
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert case.materialized_at == attendance.marked_at + timedelta(hours=1)
+    assert grant.action_type == "free_makeup"
+    assert entitlement is not None
+    assert entitlement.reason == "absence_compensation"
+    assert entitlement.student_id == context["student"].id
+    assert entitlement.source_lesson_id == attendance.lesson_id
+    assert (
+        entitlement.source_subscription_allowance.subscription_id
+        == subscription.id
+    )
+    assert entitlement.valid_from == attendance.lesson.starts_at.date()
+    assert entitlement.valid_until == date(2026, 9, 30)
+    assert AuditEvent.objects.filter(
+        event_type="AbsenceCompensationMaterialized",
+        aggregate_id=case.id,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_materialize_free_makeup_is_idempotent(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="materialize-idempotent",
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    first = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    second = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=2),
+    )
+
+    assert second.id == first.id
+    assert AbsenceCompensationActionGrant.objects.filter(case=case).count() == 1
+    assert AuditEvent.objects.filter(
+        event_type="AbsenceCompensationMaterialized",
+        aggregate_id=case.id,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_materialize_rejects_limit_exceeded_case(actor, context):
+    policy = make_policy()
+    policy.max_eligible_absences = 1
+    policy.save(update_fields=["max_eligible_absences"])
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="materialize-limit",
+    )
+
+    first_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(2026, 9, 10, 15, 0, tzinfo=dt_timezone.utc),
+    )
+    second_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(2026, 9, 11, 15, 0, tzinfo=dt_timezone.utc),
+    )
+    create_absence_compensation_case(
+        attendance_id=first_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=first_attendance.marked_at,
+    )
+    second = create_absence_compensation_case(
+        attendance_id=second_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=second_attendance.marked_at,
+    )
+    assert second.eligibility_status == (
+        AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
+    )
+
+    with pytest.raises(ValidationError, match="must be ELIGIBLE"):
+        materialize_free_makeup_from_case(
+            case_id=second.id,
+            actor=actor,
+            now=second_attendance.marked_at + timedelta(hours=1),
+        )
+
+
+@pytest.mark.django_db
+def test_backdated_case_does_not_revoke_materialized_right(actor, context):
+    make_policy()
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="materialize-backdated",
+    )
+
+    cases = []
+    for day in (10, 14, 17, 24):
+        attendance = make_absence(
+            context=context,
+            actor=actor,
+            starts_at=datetime(
+                2026,
+                9,
+                day,
+                15,
+                0,
+                tzinfo=dt_timezone.utc,
+            ),
+        )
+        cases.append(
+            create_absence_compensation_case(
+                attendance_id=attendance.id,
+                absence_reason=(
+                    AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED
+                ),
+                actor=actor,
+                now=attendance.marked_at,
+            )
+        )
+
+    materialized = cases[-1]
+    original_ordinal = materialized.eligible_absence_ordinal
+    grant = materialize_free_makeup_from_case(
+        case_id=materialized.id,
+        actor=actor,
+        now=datetime(
+            2026,
+            9,
+            25,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    early_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(
+            2026,
+            9,
+            3,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    early_case = create_absence_compensation_case(
+        attendance_id=early_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=datetime(
+            2026,
+            9,
+            26,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    materialized.refresh_from_db()
+    early_case.refresh_from_db()
+    assert materialized.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert materialized.eligible_absence_ordinal == original_ordinal
+    assert grant.makeup_entitlement_id is not None
+    assert (
+        AbsenceCompensationCase.objects.filter(
+            student=context["student"],
+            status=AbsenceCompensationCase.Status.OPEN,
+            eligibility_status=(
+                AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
+            ),
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+def test_materialized_case_keeps_limit_slot(actor, context):
+    policy = make_policy()
+    policy.max_eligible_absences = 1
+    policy.save(update_fields=["max_eligible_absences"])
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="materialized-slot",
+    )
+
+    first_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(2026, 9, 10, 15, 0, tzinfo=dt_timezone.utc),
+    )
+    first = create_absence_compensation_case(
+        attendance_id=first_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=first_attendance.marked_at,
+    )
+    materialize_free_makeup_from_case(
+        case_id=first.id,
+        actor=actor,
+        now=first_attendance.marked_at + timedelta(hours=1),
+    )
+
+    second_attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(2026, 9, 11, 15, 0, tzinfo=dt_timezone.utc),
+    )
+    second = create_absence_compensation_case(
+        attendance_id=second_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=second_attendance.marked_at,
+    )
+
+    assert second.eligible_absence_ordinal == 2
+    assert second.eligibility_status == (
+        AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
+    )
