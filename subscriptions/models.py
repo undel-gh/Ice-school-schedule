@@ -37,6 +37,223 @@ class SubscriptionPlanAllowance(UUIDModel):
         indexes = [models.Index(fields=["category", "visit_limit"], name="subplan_allow_lookup_ix")]
 
 
+class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
+    class AbsenceReason(models.TextChoices):
+        MEDICAL = "medical", "Medical"
+        UNEXCUSED = "unexcused", "Unexcused"
+        OTHER = "other", "Other"
+
+    class JustificationRequirement(models.TextChoices):
+        NONE = "none", "No justification required"
+        VERIFIED_MEDICAL = "verified_medical", "Verified medical justification"
+
+    class LimitScope(models.TextChoices):
+        STUDENT_PERIOD = "student_period", "Student + period"
+        CATEGORY_PERIOD = "category_period", "Student + category + period"
+        LESSON_TYPE_PERIOD = (
+            "lesson_type_period",
+            "Student + lesson type + period",
+        )
+
+    code = models.SlugField(max_length=64)
+    version = models.PositiveSmallIntegerField()
+    name = models.CharField(max_length=128)
+    absence_reason = models.CharField(
+        max_length=24,
+        choices=AbsenceReason.choices,
+    )
+    justification_requirement = models.CharField(
+        max_length=32,
+        choices=JustificationRequirement.choices,
+        default=JustificationRequirement.NONE,
+    )
+    max_eligible_absences = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    limit_scope = models.CharField(
+        max_length=32,
+        choices=LimitScope.choices,
+        default=LimitScope.STUDENT_PERIOD,
+    )
+    effective_from = models.DateField()
+    effective_until = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["code", "version"],
+                name="absence_policy_code_version_uq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0),
+                name="absence_policy_version_gt0",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(max_eligible_absences__isnull=True)
+                    | models.Q(max_eligible_absences__gt=0)
+                ),
+                name="absence_policy_max_gt0",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(effective_until__isnull=True)
+                    | models.Q(effective_until__gte=models.F("effective_from"))
+                ),
+                name="absence_policy_dates_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["absence_reason", "is_active", "effective_from"],
+                name="absence_policy_lookup_ix",
+            ),
+            models.Index(
+                fields=["code", "-version"],
+                name="absence_policy_version_ix",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} v{self.version}"
+
+
+class AbsenceCompensationPolicyAction(UUIDModel):
+    class ActionType(models.TextChoices):
+        FREE_MAKEUP = "free_makeup", "Free makeup"
+        PAID_MAKEUP = "paid_makeup", "Paid/deferred makeup"
+        BILLING_RECALCULATION = (
+            "billing_recalculation",
+            "Billing recalculation",
+        )
+
+    class TargetPeriodRule(models.TextChoices):
+        CURRENT_PERIOD = "current_period", "Current period"
+        NEXT_STUDENT_PERIOD = "next_student_period", "Next student period"
+        EXPLICIT_TARGET_WINDOW = (
+            "explicit_target_window",
+            "Explicit target window",
+        )
+
+    class Requirement(models.TextChoices):
+        NONE = "none", "No additional requirement"
+        FEE_REQUIRED = "fee_required", "Fee required"
+        TARGET_SUBSCRIPTION_REQUIRED = (
+            "target_subscription_required",
+            "Target subscription required",
+        )
+        FEE_AND_TARGET_SUBSCRIPTION_REQUIRED = (
+            "fee_and_target_subscription_required",
+            "Fee and target subscription required",
+        )
+
+    policy = models.ForeignKey(
+        AbsenceCompensationPolicy,
+        on_delete=models.CASCADE,
+        related_name="actions",
+    )
+    action_type = models.CharField(
+        max_length=32,
+        choices=ActionType.choices,
+    )
+    target_period_rule = models.CharField(
+        max_length=32,
+        choices=TargetPeriodRule.choices,
+    )
+    requirement = models.CharField(
+        max_length=48,
+        choices=Requirement.choices,
+        default=Requirement.NONE,
+    )
+    validity_days = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    priority = models.PositiveSmallIntegerField(default=100)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["policy", "action_type"],
+                name="absence_policy_action_type_uq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(validity_days__isnull=True)
+                    | models.Q(validity_days__gt=0)
+                ),
+                name="absence_action_validity_gt0",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(priority__gt=0),
+                name="absence_action_priority_gt0",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["policy", "is_active", "priority"],
+                name="absence_action_lookup_ix",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.policy} / {self.action_type}"
+
+
+class AbsenceCompensationPolicyWindow(UUIDModel):
+    policy_action = models.ForeignKey(
+        AbsenceCompensationPolicyAction,
+        on_delete=models.CASCADE,
+        related_name="windows",
+    )
+    name = models.CharField(max_length=128)
+    source_from = models.DateField()
+    source_until = models.DateField()
+    target_from = models.DateField()
+    target_until = models.DateField()
+    requirement_override = models.CharField(
+        max_length=48,
+        choices=AbsenceCompensationPolicyAction.Requirement.choices,
+        blank=True,
+        default="",
+    )
+    priority = models.PositiveSmallIntegerField(default=100)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(source_until__gte=models.F("source_from")),
+                name="absence_window_source_dates_ck",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(target_until__gte=models.F("target_from")),
+                name="absence_window_target_dates_ck",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(priority__gt=0),
+                name="absence_window_priority_gt0",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=[
+                    "policy_action",
+                    "is_active",
+                    "source_from",
+                    "source_until",
+                ],
+                name="absence_window_lookup_ix",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class Subscription(UUIDModel):
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="subscriptions")
     plan = models.ForeignKey(SubscriptionPlan, on_delete=models.PROTECT, related_name="subscriptions")
