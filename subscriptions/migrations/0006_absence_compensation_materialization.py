@@ -36,6 +36,27 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
+        migrations.AddField(
+            model_name="absencecompensationcase",
+            name="reversed_at",
+            field=models.DateTimeField(blank=True, null=True),
+        ),
+        migrations.AddField(
+            model_name="absencecompensationcase",
+            name="reversed_by",
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="+",
+                to=settings.AUTH_USER_MODEL,
+            ),
+        ),
+        migrations.AddField(
+            model_name="absencecompensationcase",
+            name="reversal_reason",
+            field=models.CharField(blank=True, default="", max_length=64),
+        ),
         migrations.AlterField(
             model_name="absencecompensationcase",
             name="status",
@@ -43,6 +64,7 @@ class Migration(migrations.Migration):
                 choices=[
                     ("open", "Open"),
                     ("materialized", "Materialized"),
+                    ("reversed", "Reversed"),
                     ("cancelled", "Cancelled"),
                 ],
                 default="open",
@@ -80,21 +102,38 @@ class Migration(migrations.Migration):
             constraint=models.CheckConstraint(
                 condition=(
                     models.Q(
-                        ("cancelled_at__isnull", True),
-                        ("cancelled_by__isnull", True),
-                        ("materialized_at__isnull", True),
-                        ("materialized_by__isnull", True),
-                        ("status", "open"),
+                        status="open",
+                        materialized_at__isnull=True,
+                        materialized_by__isnull=True,
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
                     )
                     | models.Q(
-                        ("cancelled_at__isnull", True),
-                        ("cancelled_by__isnull", True),
-                        ("materialized_at__isnull", False),
-                        ("status", "materialized"),
+                        status="materialized",
+                        materialized_at__isnull=False,
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
                     )
                     | models.Q(
-                        ("cancelled_at__isnull", False),
-                        ("status", "cancelled"),
+                        status="reversed",
+                        materialized_at__isnull=False,
+                        reversed_at__isnull=False,
+                        reversal_reason__gt="",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                    )
+                    | models.Q(
+                        status="cancelled",
+                        materialized_at__isnull=True,
+                        reversed_at__isnull=True,
+                        reversal_reason="",
+                        cancelled_at__isnull=False,
                     )
                 ),
                 name="absence_case_status_ck",
@@ -130,6 +169,24 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("action_snapshot", models.JSONField(default=dict)),
+                (
+                    "reversed_at",
+                    models.DateTimeField(blank=True, null=True),
+                ),
+                (
+                    "reversed_by",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="+",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "reversal_reason",
+                    models.CharField(blank=True, default="", max_length=64),
+                ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 (
                     "case",
@@ -175,6 +232,23 @@ class Migration(migrations.Migration):
                     | models.Q(("makeup_entitlement__isnull", False))
                 ),
                 name="absence_grant_free_makeup_ck",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="absencecompensationactiongrant",
+            constraint=models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                    )
+                    | models.Q(
+                        reversed_at__isnull=False,
+                        reversal_reason__gt="",
+                    )
+                ),
+                name="absence_grant_reversal_ck",
             ),
         ),
         migrations.AddIndex(
