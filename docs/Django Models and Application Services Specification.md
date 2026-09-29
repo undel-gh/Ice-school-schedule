@@ -3184,7 +3184,22 @@ Currently implemented:
 
 ```text
 FREE_MAKEUP → MakeupEntitlement
+MATERIALIZED → REVERSED when the source absence is invalidated
 ```
+
+If Attendance is corrected from ABSENT to PRESENT, or a linked VERIFIED
+medical justification is revoked, a MATERIALIZED case is handled explicitly:
+
+- if its compensation MakeupEntitlement is unused, the entitlement is
+  cancelled, the action grant is marked reversed, and the case becomes
+  `REVERSED`;
+- if that entitlement is already used by active AttendanceCoverage, the source
+  correction/revocation is rejected until the coverage is reversed or rebound.
+
+A medical absence cannot receive both an active legacy
+`MEDICAL_VERIFIED` makeup and a new `ABSENCE_COMPENSATION` makeup for the
+same student/source lesson. Until the medical flow is migrated onto cases,
+materialization rejects that duplicate.
 
 Intentionally not yet implemented:
 
