@@ -965,6 +965,29 @@ def authorize_paid_makeup_from_case(
             {"case": "Source allowance has no remaining visits."}
         )
 
+    duplicate_makeup = (
+        MakeupEntitlement.objects.select_for_update()
+        .filter(
+            student_id=case.student_id,
+            source_lesson_id=case.source_lesson_id,
+            cancelled_at__isnull=True,
+            reason__in=[
+                MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+                MakeupEntitlement.Reason.ABSENCE_COMPENSATION,
+            ],
+        )
+        .first()
+    )
+    if duplicate_makeup is not None:
+        raise ValidationError(
+            {
+                "case": (
+                    "This absence already has an active compensation "
+                    "make-up entitlement."
+                )
+            }
+        )
+
     target_subscription = None
     if target_subscription_id is not None:
         target_subscription = _lock_paid_makeup_target_subscription(
@@ -1171,8 +1194,21 @@ def activate_paid_makeup_grant(
         )
 
     target_subscription = None
+    if (
+        target_subscription_id is not None
+        and grant.target_subscription_id is not None
+        and target_subscription_id != grant.target_subscription_id
+    ):
+        raise ValidationError(
+            {
+                "target_subscription": (
+                    "Target subscription was already fixed when the paid "
+                    "make-up was authorized."
+                )
+            }
+        )
     resolved_target_subscription_id = (
-        target_subscription_id or grant.target_subscription_id
+        grant.target_subscription_id or target_subscription_id
     )
     if resolved_target_subscription_id is not None:
         target_subscription = _lock_paid_makeup_target_subscription(
