@@ -874,6 +874,74 @@ def _lock_paid_makeup_target_subscription(
     return subscription
 
 
+def _validate_paid_makeup_target(
+    *,
+    case: AbsenceCompensationCase,
+    action: dict,
+    source_subscription: Subscription,
+    target_subscription: Subscription | None,
+) -> tuple[date | None, date | None]:
+    target_rule = action.get("target_period_rule")
+    target_from = action.get("target_from")
+    target_until = action.get("target_until")
+
+    if (
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+    ):
+        return case.source_date, source_subscription.valid_until
+
+    if (
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+    ):
+        if target_subscription is None:
+            return None, None
+        if target_subscription.id == source_subscription.id:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target subscription must differ from the source "
+                        "subscription."
+                    )
+                }
+            )
+        if target_subscription.valid_from <= source_subscription.valid_until:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target subscription for NEXT_STUDENT_PERIOD must "
+                        "start after the source subscription ends."
+                    )
+                }
+            )
+        return target_subscription.valid_from, target_subscription.valid_until
+
+    if (
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
+    ):
+        if not target_from or not target_until:
+            raise ValidationError({"grant": "Explicit target window is missing."})
+        valid_from = date.fromisoformat(target_from)
+        valid_until = date.fromisoformat(target_until)
+        if target_subscription is not None:
+            valid_from = max(valid_from, target_subscription.valid_from)
+            valid_until = min(valid_until, target_subscription.valid_until)
+            if valid_until < valid_from:
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription does not overlap the "
+                            "explicit target window."
+                        )
+                    }
+                )
+        return valid_from, valid_until
+
+    raise ValidationError({"grant": "Unsupported target-period rule."})
+
+
 @transaction.atomic
 def authorize_paid_makeup_from_case(
     *,
@@ -1000,13 +1068,7 @@ def authorize_paid_makeup_from_case(
         target_rule
         == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
         and target_subscription is None
-        and target_subscription_required
-    ):
-        pass
-    elif (
-        target_rule
-        == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
-        and target_subscription is None
+        and not target_subscription_required
     ):
         raise ValidationError(
             {
@@ -1016,6 +1078,13 @@ def authorize_paid_makeup_from_case(
                     "is implemented."
                 )
             }
+        )
+    if target_subscription is not None:
+        _validate_paid_makeup_target(
+            case=case,
+            action=action,
+            source_subscription=source_subscription,
+            target_subscription=target_subscription,
         )
 
     materialized_at = now or timezone.now()
@@ -1261,74 +1330,15 @@ def activate_paid_makeup_grant(
         )
 
     action = grant.action_snapshot
-    target_rule = action.get("target_period_rule")
-    target_from = action.get("target_from")
-    target_until = action.get("target_until")
-
-    if (
-        target_rule
-        == AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
-    ):
-        valid_from = case.source_date
-        valid_until = source_subscription.valid_until
-    elif (
-        target_rule
-        == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
-    ):
-        if target_subscription is None:
-            raise ValidationError(
-                {
-                    "target_subscription": (
-                        "NEXT_STUDENT_PERIOD requires an explicit target "
-                        "subscription."
-                    )
-                }
-            )
-        if target_subscription.id == source_subscription.id:
-            raise ValidationError(
-                {
-                    "target_subscription": (
-                        "Target subscription must differ from the source "
-                        "subscription."
-                    )
-                }
-            )
-        if target_subscription.valid_from <= source_subscription.valid_until:
-            raise ValidationError(
-                {
-                    "target_subscription": (
-                        "Target subscription for NEXT_STUDENT_PERIOD must "
-                        "start after the source subscription ends."
-                    )
-                }
-            )
-        valid_from = target_subscription.valid_from
-        valid_until = target_subscription.valid_until
-    elif (
-        target_rule
-        == AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
-    ):
-        if not target_from or not target_until:
-            raise ValidationError(
-                {"grant": "Explicit target window is missing."}
-            )
-        valid_from = date.fromisoformat(target_from)
-        valid_until = date.fromisoformat(target_until)
-        if target_subscription is not None:
-            valid_from = max(valid_from, target_subscription.valid_from)
-            valid_until = min(valid_until, target_subscription.valid_until)
-            if valid_until < valid_from:
-                raise ValidationError(
-                    {
-                        "target_subscription": (
-                            "Target subscription does not overlap the "
-                            "explicit target window."
-                        )
-                    }
-                )
-    else:
+    valid_from, valid_until = _validate_paid_makeup_target(
+        case=case,
+        action=action,
+        source_subscription=source_subscription,
+        target_subscription=target_subscription,
+    )
+    if valid_from is None or valid_until is None:
         raise ValidationError(
-            {"grant": "Unsupported target-period rule."}
+            {"target_subscription": "Target subscription is required."}
         )
 
     validity_days = action.get("validity_days")
@@ -1409,6 +1419,8 @@ def _reverse_materialized_absence_compensation_cases(
     reason: str,
     source_justification_id: UUID | None = None,
     correlation_id: UUID | None = None,
+    refund_required: bool | None = None,
+    allow_paid_automatic: bool = False,
 ) -> int:
     attendance = Attendance.objects.select_for_update().get(pk=attendance_id)
     Student.objects.select_for_update().get(pk=attendance.student_id)
@@ -1432,6 +1444,29 @@ def _reverse_materialized_absence_compensation_cases(
         )
         .order_by("id")
     )
+    paid_confirmed = [
+        grant
+        for grant in grants
+        if (
+            grant.action_type
+            == AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+            and grant.fee_confirmed_at is not None
+        )
+    ]
+    if paid_confirmed and not allow_paid_automatic and refund_required is None:
+        raise ValidationError(
+            {
+                "case": (
+                    "Paid make-up has a confirmed fee. Use the explicit "
+                    "compensation reversal workflow and record whether a "
+                    "refund is required."
+                )
+            }
+        )
+    if paid_confirmed and refund_required is None:
+        raise ValidationError(
+            {"refund_required": "Refund decision is required for paid reversal."}
+        )
     entitlement_ids = [
         grant.makeup_entitlement_id
         for grant in grants
@@ -1489,11 +1524,18 @@ def _reverse_materialized_absence_compensation_cases(
         grant.reversed_at = at
         grant.reversed_by = actor
         grant.reversal_reason = reason
+        if (
+            grant.action_type
+            == AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+            and grant.fee_confirmed_at is not None
+        ):
+            grant.refund_required = refund_required
         grant.save(
             update_fields=[
                 "reversed_at",
                 "reversed_by",
                 "reversal_reason",
+                "refund_required",
             ]
         )
         _audit(
@@ -1507,6 +1549,8 @@ def _reverse_materialized_absence_compensation_cases(
                 "action_type": grant.action_type,
                 "reason": reason,
                 "reversed_at": at.isoformat(),
+                "fee_confirmed": grant.fee_confirmed_at is not None,
+                "refund_required": grant.refund_required,
             },
         )
         if (
@@ -1525,8 +1569,22 @@ def _reverse_materialized_absence_compensation_cases(
                     "reversed_at": at.isoformat(),
                     "activated": grant.activated_at is not None,
                     "fee_confirmed": grant.fee_confirmed_at is not None,
+                    "refund_required": grant.refund_required,
                 },
             )
+            if grant.fee_confirmed_at is not None and grant.refund_required:
+                _audit(
+                    event_type="PaidFreezeRefundRequired",
+                    aggregate_type="AbsenceCompensationActionGrant",
+                    aggregate_id=grant.id,
+                    actor=actor,
+                    correlation_id=effective_correlation_id,
+                    payload={
+                        "case_id": str(grant.case_id),
+                        "reason": reason,
+                        "reversed_at": at.isoformat(),
+                    },
+                )
 
     for case in cases:
         case.status = AbsenceCompensationCase.Status.REVERSED
@@ -1568,6 +1626,7 @@ def reverse_absence_compensation_case(
     case_id: UUID,
     actor: User,
     reason: str,
+    refund_required: bool | None = None,
     now=None,
 ) -> AbsenceCompensationCase:
     require_permission(
@@ -1603,6 +1662,8 @@ def reverse_absence_compensation_case(
         actor=actor,
         at=reversed_at,
         reason=reason,
+        refund_required=refund_required,
+        allow_paid_automatic=True,
     )
     case_ref.refresh_from_db()
     return case_ref
