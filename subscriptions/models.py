@@ -429,6 +429,7 @@ class AbsenceCompensationCase(UUIDModel):
     class Status(models.TextChoices):
         OPEN = "open", "Open"
         MATERIALIZED = "materialized", "Materialized"
+        REVERSED = "reversed", "Reversed"
         CANCELLED = "cancelled", "Cancelled"
 
     class EligibilityStatus(models.TextChoices):
@@ -525,6 +526,15 @@ class AbsenceCompensationCase(UUIDModel):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reversal_reason = models.CharField(max_length=64, blank=True, default="")
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancelled_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -582,17 +592,34 @@ class AbsenceCompensationCase(UUIDModel):
                         status="open",
                         materialized_at__isnull=True,
                         materialized_by__isnull=True,
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
                     )
                     | models.Q(
                         status="materialized",
                         materialized_at__isnull=False,
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                    )
+                    | models.Q(
+                        status="reversed",
+                        materialized_at__isnull=False,
+                        reversed_at__isnull=False,
+                        reversal_reason__gt="",
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
                     )
                     | models.Q(
                         status="cancelled",
+                        materialized_at__isnull=True,
+                        reversed_at__isnull=True,
+                        reversal_reason="",
                         cancelled_at__isnull=False,
                     )
                 ),
@@ -798,6 +825,15 @@ class AbsenceCompensationActionGrant(UUIDModel):
         on_delete=models.PROTECT,
         related_name="compensation_action_grant",
     )
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reversal_reason = models.CharField(max_length=64, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -818,6 +854,20 @@ class AbsenceCompensationActionGrant(UUIDModel):
                     | models.Q(makeup_entitlement__isnull=False)
                 ),
                 name="absence_grant_free_makeup_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                    )
+                    | models.Q(
+                        reversed_at__isnull=False,
+                        reversal_reason__gt="",
+                    )
+                ),
+                name="absence_grant_reversal_ck",
             ),
         ]
         indexes = [
