@@ -680,6 +680,20 @@ migrations.RemoveConstraint(
             ),
         ),
         migrations.AddConstraint(
+            model_name="makeupentitlement",
+            constraint=models.UniqueConstraint(
+                condition=models.Q(
+                    cancelled_at__isnull=True,
+                    reason__in=[
+                        "medical",
+                        "absence_compensation",
+                    ],
+                ),
+                fields=("student", "source_lesson"),
+                name="makeup_active_absence_source_uq",
+            ),
+        ),
+        migrations.AddConstraint(
             model_name="absencecompensationcase",
             constraint=models.UniqueConstraint(
                 condition=models.Q(
