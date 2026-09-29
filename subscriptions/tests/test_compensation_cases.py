@@ -2592,3 +2592,69 @@ def test_source_subscription_cannot_be_cancelled_while_compensation_makeup_activ
         at=attendance.marked_at + timedelta(hours=4),
     )
     assert cancelled.cancelled_at is not None
+
+
+@pytest.mark.django_db
+def test_medical_verification_rejects_confirmed_paid_makeup_until_refund_decision(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-medical-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-medical-target",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        fee_confirmed=True,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    justification = AbsenceJustification.objects.create(
+        student=context["student"],
+        lesson=attendance.lesson,
+        status=AbsenceJustification.Status.PENDING,
+        declared_by=actor,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="explicit compensation reversal workflow",
+    ):
+        verify_medical_absence(
+            justification_id=justification.id,
+            actor=actor,
+            valid_until=date(2026, 10, 31),
+            now=attendance.marked_at + timedelta(days=1),
+        )
+
+    justification.refresh_from_db()
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert justification.status == AbsenceJustification.Status.PENDING
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert grant.reversed_at is None
+    assert not MakeupEntitlement.objects.filter(
+        source_justification=justification,
+        reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+        cancelled_at__isnull=True,
+    ).exists()
