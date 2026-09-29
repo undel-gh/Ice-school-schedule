@@ -26,6 +26,7 @@ from .models import (
     AbsenceCompensationActionGrant,
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
+    AbsenceCompensationPolicyAction,
     AttendanceCoverage,
     MakeupEntitlement,
     OneTimeEntitlement,
@@ -606,7 +607,7 @@ def materialize_free_makeup_from_case(
         AbsenceCompensationActionGrant.objects.select_for_update()
         .filter(
             case_id=case_id,
-            action_type="free_makeup",
+            action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
         )
         .first()
     )
@@ -614,7 +615,7 @@ def materialize_free_makeup_from_case(
         return existing
 
     case = (
-        AbsenceCompensationCase.objects.select_for_update()
+        AbsenceCompensationCase.objects.select_for_update(of=("self",))
         .select_related(
             "attendance",
             "source_lesson__lesson_type",
@@ -645,13 +646,17 @@ def materialize_free_makeup_from_case(
 
     action = _case_action_snapshot(
         case=case,
-        action_type="free_makeup",
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
     )
     if action is None:
         raise ValidationError(
             {"case": "FREE_MAKEUP is not allowed by this case policy."}
         )
-    if action.get("requirement") not in (None, "", "none"):
+    if action.get("requirement") not in (
+        None,
+        "",
+        AbsenceCompensationPolicyAction.Requirement.NONE,
+    ):
         raise ValidationError(
             {
                 "case": (
@@ -683,14 +688,43 @@ def materialize_free_makeup_from_case(
             {"case": "Source allowance has no remaining visits."}
         )
 
+    duplicate_makeup = (
+        MakeupEntitlement.objects.select_for_update()
+        .filter(
+            student_id=case.student_id,
+            source_lesson_id=case.source_lesson_id,
+            cancelled_at__isnull=True,
+            reason__in=[
+                MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+                MakeupEntitlement.Reason.ABSENCE_COMPENSATION,
+            ],
+        )
+        .first()
+    )
+    if duplicate_makeup is not None:
+        raise ValidationError(
+            {
+                "case": (
+                    "This absence already has an active compensation "
+                    "make-up entitlement."
+                )
+            }
+        )
+
     target_rule = action.get("target_period_rule")
     target_from = action.get("target_from")
     target_until = action.get("target_until")
 
-    if target_rule == "current_period":
+    if (
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+    ):
         valid_from = case.source_date
         valid_until = subscription.valid_until
-    elif target_rule == "next_student_period":
+    elif (
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+    ):
         raise ValidationError(
             {
                 "case": (
@@ -699,7 +733,10 @@ def materialize_free_makeup_from_case(
                 )
             }
         )
-    elif target_rule == "explicit_target_window":
+    elif (
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
+    ):
         if not target_from or not target_until:
             raise ValidationError(
                 {"case": "Explicit target window is missing."}
@@ -732,7 +769,7 @@ def materialize_free_makeup_from_case(
 
     grant = AbsenceCompensationActionGrant.objects.create(
         case=case,
-        action_type="free_makeup",
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
         action_snapshot=action,
         makeup_entitlement=entitlement,
         created_by=actor,
@@ -785,6 +822,149 @@ def materialize_free_makeup_from_case(
         },
     )
     return grant
+
+
+def _reverse_materialized_absence_compensation_cases(
+    *,
+    attendance_id: UUID,
+    actor: User | None,
+    at,
+    reason: str,
+    source_justification_id: UUID | None = None,
+    correlation_id: UUID | None = None,
+) -> int:
+    attendance = Attendance.objects.select_for_update().get(pk=attendance_id)
+    Student.objects.select_for_update().get(pk=attendance.student_id)
+
+    cases = AbsenceCompensationCase.objects.select_for_update().filter(
+        attendance_id=attendance.id,
+        status=AbsenceCompensationCase.Status.MATERIALIZED,
+    )
+    if source_justification_id is not None:
+        cases = cases.filter(source_justification_id=source_justification_id)
+    cases = list(cases.order_by("id"))
+    if not cases:
+        return 0
+
+    case_ids = [case.id for case in cases]
+    grants = list(
+        AbsenceCompensationActionGrant.objects.select_for_update()
+        .filter(
+            case_id__in=case_ids,
+            reversed_at__isnull=True,
+        )
+        .order_by("id")
+    )
+    entitlement_ids = [
+        grant.makeup_entitlement_id
+        for grant in grants
+        if grant.makeup_entitlement_id is not None
+    ]
+    entitlements = {
+        item.id: item
+        for item in MakeupEntitlement.objects.select_for_update()
+        .filter(id__in=entitlement_ids)
+        .order_by("id")
+    }
+
+    for entitlement_id in entitlement_ids:
+        if AttendanceCoverage.objects.filter(
+            makeup_entitlement_id=entitlement_id,
+            reversed_at__isnull=True,
+        ).exists():
+            raise ValidationError(
+                {
+                    "attendance": (
+                        "The compensation make-up is already used. Reverse "
+                        "or rebind that coverage before changing the source "
+                        "absence."
+                    )
+                }
+            )
+
+    effective_correlation_id = correlation_id or uuid4()
+    for grant in grants:
+        entitlement = (
+            entitlements.get(grant.makeup_entitlement_id)
+            if grant.makeup_entitlement_id is not None
+            else None
+        )
+        if entitlement is not None and entitlement.cancelled_at is None:
+            entitlement.cancelled_at = at
+            entitlement.cancelled_by = actor
+            entitlement.save(
+                update_fields=["cancelled_at", "cancelled_by"]
+            )
+            _audit(
+                event_type="MakeupEntitlementCancelled",
+                aggregate_type="MakeupEntitlement",
+                aggregate_id=entitlement.id,
+                actor=actor,
+                correlation_id=effective_correlation_id,
+                payload={
+                    "attendance_id": str(attendance.id),
+                    "compensation_case_id": str(grant.case_id),
+                    "cancelled_at": at.isoformat(),
+                    "reason": reason,
+                },
+            )
+
+        grant.reversed_at = at
+        grant.reversed_by = actor
+        grant.reversal_reason = reason
+        grant.save(
+            update_fields=[
+                "reversed_at",
+                "reversed_by",
+                "reversal_reason",
+            ]
+        )
+        _audit(
+            event_type="AbsenceCompensationActionReversed",
+            aggregate_type="AbsenceCompensationActionGrant",
+            aggregate_id=grant.id,
+            actor=actor,
+            correlation_id=effective_correlation_id,
+            payload={
+                "case_id": str(grant.case_id),
+                "action_type": grant.action_type,
+                "reason": reason,
+                "reversed_at": at.isoformat(),
+            },
+        )
+
+    for case in cases:
+        case.status = AbsenceCompensationCase.Status.REVERSED
+        case.reversed_at = at
+        case.reversed_by = actor
+        case.reversal_reason = reason
+        case.save(
+            update_fields=[
+                "status",
+                "reversed_at",
+                "reversed_by",
+                "reversal_reason",
+            ]
+        )
+        _audit(
+            event_type="AbsenceCompensationCaseReversed",
+            aggregate_type="AbsenceCompensationCase",
+            aggregate_id=case.id,
+            actor=actor,
+            correlation_id=effective_correlation_id,
+            payload={
+                "attendance_id": str(attendance.id),
+                "reason": reason,
+                "reversed_at": at.isoformat(),
+            },
+        )
+
+    _reevaluate_open_compensation_cases_for_student(
+        student_id=attendance.student_id,
+        actor=actor,
+        evaluated_at=at,
+    )
+    return len(cases)
 
 
 @transaction.atomic
