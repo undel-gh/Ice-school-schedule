@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from accounts.models import Student
@@ -115,6 +116,32 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
                 name="absence_policy_version_ix",
             ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.is_active or self.effective_from is None:
+            return
+        overlaps = AbsenceCompensationPolicy.objects.filter(
+            absence_reason=self.absence_reason,
+            is_active=True,
+        ).exclude(pk=self.pk)
+        overlaps = overlaps.filter(
+            models.Q(effective_until__isnull=True)
+            | models.Q(effective_until__gte=self.effective_from)
+        )
+        if self.effective_until is not None:
+            overlaps = overlaps.filter(
+                effective_from__lte=self.effective_until
+            )
+        if overlaps.exists():
+            raise ValidationError(
+                {
+                    "effective_from": (
+                        "Another active compensation policy for this "
+                        "absence reason overlaps this effective interval."
+                    )
+                }
+            )
 
     def __str__(self) -> str:
         return f"{self.name} v{self.version}"
@@ -249,6 +276,32 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
                 name="absence_window_lookup_ix",
             )
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if (
+            not self.is_active
+            or self.policy_action_id is None
+            or self.source_from is None
+            or self.source_until is None
+        ):
+            return
+        overlaps = AbsenceCompensationPolicyWindow.objects.filter(
+            policy_action_id=self.policy_action_id,
+            is_active=True,
+            priority=self.priority,
+            source_from__lte=self.source_until,
+            source_until__gte=self.source_from,
+        ).exclude(pk=self.pk)
+        if overlaps.exists():
+            raise ValidationError(
+                {
+                    "source_from": (
+                        "Another active window with the same priority "
+                        "overlaps this source interval."
+                    )
+                }
+            )
 
     def __str__(self) -> str:
         return self.name
