@@ -143,6 +143,41 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
                 }
             )
 
+    def save(self, *args, **kwargs):
+        if self.pk and AbsenceCompensationCase.objects.filter(
+            policy_id=self.pk
+        ).exists():
+            previous = AbsenceCompensationPolicy.objects.get(pk=self.pk)
+            immutable_fields = (
+                "code",
+                "version",
+                "name",
+                "absence_reason",
+                "justification_requirement",
+                "max_eligible_absences",
+                "limit_scope",
+                "effective_from",
+                "effective_until",
+                "is_active",
+            )
+            if any(
+                getattr(previous, field) != getattr(self, field)
+                for field in immutable_fields
+            ):
+                raise ValidationError(
+                    "Referenced compensation policy versions are immutable."
+                )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.pk and AbsenceCompensationCase.objects.filter(
+            policy_id=self.pk
+        ).exists():
+            raise ValidationError(
+                "Referenced compensation policy versions cannot be deleted."
+            )
+        return super().delete(*args, **kwargs)
+
     def __str__(self) -> str:
         return f"{self.name} v{self.version}"
 
@@ -226,6 +261,39 @@ class AbsenceCompensationPolicyAction(UUIDModel):
             )
         ]
 
+    def save(self, *args, **kwargs):
+        if self.pk:
+            previous = AbsenceCompensationPolicyAction.objects.select_related(
+                "policy"
+            ).get(pk=self.pk)
+            if previous.policy.compensation_cases.exists():
+                immutable_fields = (
+                    "policy_id",
+                    "action_type",
+                    "target_period_rule",
+                    "requirement",
+                    "validity_days",
+                    "priority",
+                    "is_active",
+                )
+                if any(
+                    getattr(previous, field) != getattr(self, field)
+                    for field in immutable_fields
+                ):
+                    raise ValidationError(
+                        "Actions of referenced compensation policies are "
+                        "immutable."
+                    )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.pk and self.policy.compensation_cases.exists():
+            raise ValidationError(
+                "Actions of referenced compensation policies cannot be "
+                "deleted."
+            )
+        return super().delete(*args, **kwargs)
+
     def __str__(self) -> str:
         return f"{self.policy} / {self.action_type}"
 
@@ -302,6 +370,44 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
                     )
                 }
             )
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            previous = AbsenceCompensationPolicyWindow.objects.select_related(
+                "policy_action__policy"
+            ).get(pk=self.pk)
+            if previous.policy_action.policy.compensation_cases.exists():
+                immutable_fields = (
+                    "policy_action_id",
+                    "name",
+                    "source_from",
+                    "source_until",
+                    "target_from",
+                    "target_until",
+                    "requirement_override",
+                    "priority",
+                    "is_active",
+                )
+                if any(
+                    getattr(previous, field) != getattr(self, field)
+                    for field in immutable_fields
+                ):
+                    raise ValidationError(
+                        "Windows of referenced compensation policies are "
+                        "immutable."
+                    )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if (
+            self.pk
+            and self.policy_action.policy.compensation_cases.exists()
+        ):
+            raise ValidationError(
+                "Windows of referenced compensation policies cannot be "
+                "deleted."
+            )
+        return super().delete(*args, **kwargs)
 
     def __str__(self) -> str:
         return self.name
