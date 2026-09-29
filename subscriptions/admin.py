@@ -28,7 +28,11 @@ class AbsenceCompensationActionGrantAdmin(ReadOnlyAdmin):
     list_display = (
         "case",
         "action_type",
+        "fee_confirmed_at",
+        "target_subscription",
+        "activated_at",
         "makeup_entitlement",
+        "reversed_at",
         "created_at",
         "created_by",
     )
