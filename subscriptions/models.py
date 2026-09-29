@@ -910,6 +910,16 @@ class AbsenceCompensationActionGrant(UUIDModel):
             ),
             models.CheckConstraint(
                 condition=(
+                    ~models.Q(
+                        action_type="paid_makeup",
+                        activated_at__isnull=False,
+                    )
+                    | models.Q(fee_confirmed_at__isnull=False)
+                ),
+                name="absence_grant_paid_fee_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
                     models.Q(
                         reversed_at__isnull=True,
                         reversed_by__isnull=True,
