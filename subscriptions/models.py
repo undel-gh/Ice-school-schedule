@@ -262,10 +262,16 @@ class AbsenceCompensationPolicyAction(UUIDModel):
         ]
 
     def save(self, *args, **kwargs):
+        previous = None
         if self.pk:
-            previous = AbsenceCompensationPolicyAction.objects.select_related(
-                "policy"
-            ).get(pk=self.pk)
+            previous = (
+                AbsenceCompensationPolicyAction.objects.select_related(
+                    "policy"
+                )
+                .filter(pk=self.pk)
+                .first()
+            )
+        if previous is not None:
             if previous.policy.compensation_cases.exists():
                 immutable_fields = (
                     "policy_id",
@@ -372,10 +378,16 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
             )
 
     def save(self, *args, **kwargs):
+        previous = None
         if self.pk:
-            previous = AbsenceCompensationPolicyWindow.objects.select_related(
-                "policy_action__policy"
-            ).get(pk=self.pk)
+            previous = (
+                AbsenceCompensationPolicyWindow.objects.select_related(
+                    "policy_action__policy"
+                )
+                .filter(pk=self.pk)
+                .first()
+            )
+        if previous is not None:
             if previous.policy_action.policy.compensation_cases.exists():
                 immutable_fields = (
                     "policy_action_id",
