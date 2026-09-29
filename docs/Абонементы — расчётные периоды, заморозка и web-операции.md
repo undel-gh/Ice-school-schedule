@@ -463,6 +463,30 @@ PAID_MAKEUP без требования оплаты считается ошиб
 `confirm_paid_makeup_fee(...)`. В будущем Billing должен заменить это
 подтверждение, не меняя grant/entitlement semantics.
 
+После подтверждения оплаты никакой автоматический процесс не может молча
+отменить PAID_MAKEUP. Исправление Attendance, medical supersession/revocation
+и другие автоматические invalidation-paths должны остановиться с
+`ValidationError` и потребовать явный
+`reverse_absence_compensation_case(...)`.
+
+Для оплаченного grant ручной reversal обязан явно зафиксировать:
+`refund_required=True` или `False`. Решение сохраняется в grant и audit.
+При `True` дополнительно создаётся событие `PaidFreezeRefundRequired`.
+Selector `get_reversed_paid_makeups(...)` даёт отчёт «оплачено, но
+отменено», включая фильтр по необходимости возврата.
+
+Неоплаченная и неактивированная authorization не занимает слот лимита
+бессрочно. `process_subscription_lifecycle(...)` автоматически переводит её
+в REVERSED с причиной `authorization_expired` после deadline. Deadline —
+конец source Subscription, либо более ранний `target_until` для
+EXPLICIT_TARGET_WINDOW. Уже оплаченная pending authorization автоматически не
+истекает.
+
+Target Subscription, если он указан при authorization, валидируется сразу, а
+не только при activation. Source Subscription также защищён: пока существует
+active paid grant или любой active MakeupEntitlement, использующий его
+allowance, штатная отмена source Subscription блокируется.
+
 Если target Subscription выбран уже при authorization, activation не может
 молча заменить его другим. Пока unreversed PAID_MAKEUP ссылается на target
 Subscription, штатная отмена этого Subscription блокируется; сначала менеджер
