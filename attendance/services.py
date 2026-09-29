@@ -22,6 +22,7 @@ from subscriptions.models import (
     MakeupEntitlement,
 )
 from subscriptions.services import (
+    _cancel_open_absence_compensation_cases,
     assign_attendance_coverage,
     reverse_attendance_coverage,
 )
@@ -350,6 +351,12 @@ def set_attendance(
         attendance.updated_by = actor
         attendance.save(
             update_fields=["status", "updated_by", "updated_at"]
+        )
+        _cancel_open_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=now,
+            reason="attendance_corrected_to_present",
         )
 
         coverage = assign_attendance_coverage(
@@ -868,6 +875,19 @@ def reject_medical_absence(
     _assert_medical_reviewer(actor)
     reviewed_at = now or timezone.now()
 
+    justification_ref = AbsenceJustification.objects.only(
+        "lesson_id",
+        "student_id",
+    ).get(pk=justification_id)
+    attendance = (
+        Attendance.objects.select_for_update()
+        .filter(
+            lesson_id=justification_ref.lesson_id,
+            student_id=justification_ref.student_id,
+        )
+        .first()
+    )
+    Student.objects.select_for_update().get(pk=justification_ref.student_id)
     justification = AbsenceJustification.objects.select_for_update().get(
         pk=justification_id
     )
@@ -995,4 +1015,12 @@ def revoke_medical_absence(
             "reason": AbsenceJustification.RevocationReason.ADMINISTRATIVE,
         },
     )
+    if attendance is not None:
+        _cancel_open_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=revoked_at,
+            reason="medical_justification_revoked",
+            source_justification_id=justification.id,
+        )
     return justification
