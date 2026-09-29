@@ -836,6 +836,22 @@ class AbsenceCompensationActionGrant(UUIDModel):
         on_delete=models.PROTECT,
         related_name="compensation_action_grant",
     )
+    target_subscription = models.ForeignKey(
+        Subscription,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="compensation_action_grants",
+    )
+    fee_confirmed_at = models.DateTimeField(null=True, blank=True)
+    fee_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    activated_at = models.DateTimeField(null=True, blank=True)
     reversed_at = models.DateTimeField(null=True, blank=True)
     reversed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -865,6 +881,31 @@ class AbsenceCompensationActionGrant(UUIDModel):
                     | models.Q(makeup_entitlement__isnull=False)
                 ),
                 name="absence_grant_free_makeup_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        fee_confirmed_at__isnull=True,
+                        fee_confirmed_by__isnull=True,
+                    )
+                    | models.Q(
+                        fee_confirmed_at__isnull=False,
+                    )
+                ),
+                name="absence_grant_fee_confirm_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        activated_at__isnull=True,
+                        makeup_entitlement__isnull=True,
+                    )
+                    | models.Q(
+                        activated_at__isnull=False,
+                        makeup_entitlement__isnull=False,
+                    )
+                ),
+                name="absence_grant_activation_ck",
             ),
             models.CheckConstraint(
                 condition=(
