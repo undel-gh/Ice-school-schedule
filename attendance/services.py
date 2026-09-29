@@ -876,19 +876,6 @@ def reject_medical_absence(
     _assert_medical_reviewer(actor)
     reviewed_at = now or timezone.now()
 
-    justification_ref = AbsenceJustification.objects.only(
-        "lesson_id",
-        "student_id",
-    ).get(pk=justification_id)
-    attendance = (
-        Attendance.objects.select_for_update()
-        .filter(
-            lesson_id=justification_ref.lesson_id,
-            student_id=justification_ref.student_id,
-        )
-        .first()
-    )
-    Student.objects.select_for_update().get(pk=justification_ref.student_id)
     justification = AbsenceJustification.objects.select_for_update().get(
         pk=justification_id
     )
