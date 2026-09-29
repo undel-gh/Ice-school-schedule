@@ -3233,6 +3233,12 @@ Manual payment confirmation is currently provided by
 `confirm_paid_makeup_fee(...)`. Future Billing integration may replace this
 manual confirmation without changing the grant/entitlement lifecycle.
 
+If a target Subscription is selected during authorization, activation cannot
+silently replace it with another Subscription. An unreversed PAID_MAKEUP grant
+also protects its target Subscription from ordinary cancellation; the grant
+must be explicitly reversed first. This keeps the prerequisite used for
+authorization auditable and stable.
+
 If Attendance is corrected from ABSENT to PRESENT, or a linked VERIFIED
 medical justification is revoked, a MATERIALIZED case is handled explicitly:
 
