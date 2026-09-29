@@ -2102,3 +2102,119 @@ def test_target_subscription_cannot_be_cancelled_while_paid_grant_active(
     )
 
     assert cancelled.cancelled_at is not None
+
+
+@pytest.mark.django_db
+def test_paid_makeup_authorization_rejects_existing_medical_makeup(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    source = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-existing-medical-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    justification = AbsenceJustification.objects.create(
+        student=context["student"],
+        lesson=attendance.lesson,
+        status=AbsenceJustification.Status.VERIFIED,
+        reviewed_at=attendance.marked_at,
+        reviewed_by=actor,
+        declared_by=actor,
+    )
+    MakeupEntitlement.objects.create(
+        student=context["student"],
+        source_lesson=attendance.lesson,
+        source_subscription_allowance=source.allowances.get(),
+        source_justification=justification,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+        created_by=actor,
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="already has an active compensation make-up",
+    ):
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert not AbsenceCompensationActionGrant.objects.filter(
+        case=case,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_paid_makeup_activation_cannot_replace_authorized_target_subscription(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-fixed-target-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    first_target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-fixed-target-a",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
+    second_target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-fixed-target-b",
+        valid_from=date(2026, 11, 1),
+        valid_until=date(2026, 11, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=first_target.id,
+        fee_confirmed=True,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="already fixed when the paid make-up was authorized",
+    ):
+        activate_paid_makeup_grant(
+            grant_id=grant.id,
+            actor=actor,
+            target_subscription_id=second_target.id,
+            now=attendance.marked_at + timedelta(hours=2),
+        )
+
+    grant.refresh_from_db()
+    assert grant.target_subscription_id == first_target.id
+    assert grant.activated_at is None
+    assert grant.makeup_entitlement_id is None
