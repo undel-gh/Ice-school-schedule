@@ -145,6 +145,183 @@ def _locked_source_allowance_for_absence(
     return None
 
 
+
+def _eligibility_period_for_case(
+    case: AbsenceCompensationCase,
+) -> tuple[date, date] | None:
+    if case.source_subscription_allowance_id is None:
+        return None
+    allowance = (
+        SubscriptionAllowance.objects.select_related("subscription")
+        .get(pk=case.source_subscription_allowance_id)
+    )
+    subscription = allowance.subscription
+    return subscription.valid_from, subscription.valid_until
+
+
+def _case_limit_peers(
+    *,
+    case: AbsenceCompensationCase,
+    period_from: date,
+    period_until: date,
+):
+    peers = AbsenceCompensationCase.objects.filter(
+        student_id=case.student_id,
+        status=AbsenceCompensationCase.Status.OPEN,
+        absence_reason=case.absence_reason,
+        policy_code_snapshot=case.policy_code_snapshot,
+        source_date__gte=period_from,
+        source_date__lte=period_until,
+    )
+    if (
+        case.limit_scope_snapshot
+        == AbsenceCompensationPolicy.LimitScope.CATEGORY_PERIOD
+    ):
+        peers = peers.filter(category=case.category)
+    elif (
+        case.limit_scope_snapshot
+        == AbsenceCompensationPolicy.LimitScope.LESSON_TYPE_PERIOD
+    ):
+        peers = peers.filter(
+            source_lesson__lesson_type_id=case.source_lesson.lesson_type_id
+        )
+    return peers.select_related("source_lesson").order_by(
+        "source_lesson__starts_at",
+        "source_lesson_id",
+        "id",
+    )
+
+
+def _evaluate_case_eligibility(
+    *,
+    case: AbsenceCompensationCase,
+    actor: User | None,
+    evaluated_at,
+) -> bool:
+    previous = (
+        case.eligibility_status,
+        case.eligible_absence_ordinal,
+        case.eligibility_period_from,
+        case.eligibility_period_until,
+    )
+
+    limit = case.max_eligible_absences_snapshot
+    if limit is None:
+        case.eligibility_status = (
+            AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+        )
+        case.eligible_absence_ordinal = None
+        case.eligibility_period_from = None
+        case.eligibility_period_until = None
+    else:
+        period = _eligibility_period_for_case(case)
+        if period is None:
+            case.eligibility_status = (
+                AbsenceCompensationCase.EligibilityStatus.UNDETERMINED
+            )
+            case.eligible_absence_ordinal = None
+            case.eligibility_period_from = None
+            case.eligibility_period_until = None
+        else:
+            period_from, period_until = period
+            peer_ids = list(
+                _case_limit_peers(
+                    case=case,
+                    period_from=period_from,
+                    period_until=period_until,
+                ).values_list("id", flat=True)
+            )
+            try:
+                ordinal = peer_ids.index(case.id) + 1
+            except ValueError as exc:
+                raise ValidationError(
+                    {
+                        "case": (
+                            "Open compensation case is missing from its "
+                            "eligibility scope."
+                        )
+                    }
+                ) from exc
+
+            case.eligible_absence_ordinal = ordinal
+            case.eligibility_period_from = period_from
+            case.eligibility_period_until = period_until
+            case.eligibility_status = (
+                AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+                if ordinal <= limit
+                else AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
+            )
+
+    case.eligibility_evaluated_at = evaluated_at
+    case.save(
+        update_fields=[
+            "eligibility_status",
+            "eligible_absence_ordinal",
+            "eligibility_period_from",
+            "eligibility_period_until",
+            "eligibility_evaluated_at",
+        ]
+    )
+
+    current = (
+        case.eligibility_status,
+        case.eligible_absence_ordinal,
+        case.eligibility_period_from,
+        case.eligibility_period_until,
+    )
+    changed = current != previous
+    if changed:
+        _audit(
+            event_type="AbsenceCompensationEvaluated",
+            aggregate_type="AbsenceCompensationCase",
+            aggregate_id=case.id,
+            actor=actor,
+            payload={
+                "eligibility_status": case.eligibility_status,
+                "eligible_absence_ordinal": case.eligible_absence_ordinal,
+                "max_eligible_absences": limit,
+                "limit_scope": case.limit_scope_snapshot,
+                "period_from": (
+                    case.eligibility_period_from.isoformat()
+                    if case.eligibility_period_from is not None
+                    else None
+                ),
+                "period_until": (
+                    case.eligibility_period_until.isoformat()
+                    if case.eligibility_period_until is not None
+                    else None
+                ),
+            },
+        )
+    return changed
+
+
+def _reevaluate_open_compensation_cases_for_student(
+    *,
+    student_id: UUID,
+    actor: User | None,
+    evaluated_at,
+) -> None:
+    cases = list(
+        AbsenceCompensationCase.objects.select_for_update()
+        .filter(
+            student_id=student_id,
+            status=AbsenceCompensationCase.Status.OPEN,
+        )
+        .select_related(
+            "source_lesson__lesson_type",
+            "source_subscription_allowance__subscription",
+        )
+        .order_by("source_lesson__starts_at", "source_lesson_id", "id")
+    )
+    for case in cases:
+        _evaluate_case_eligibility(
+            case=case,
+            actor=actor,
+            evaluated_at=evaluated_at,
+        )
+
+
 @transaction.atomic
 def create_absence_compensation_case(
     *,
@@ -173,6 +350,8 @@ def create_absence_compensation_case(
         raise ValidationError(
             {"attendance": "Compensation requires Attendance=ABSENT."}
         )
+
+    Student.objects.select_for_update().get(pk=attendance.student_id)
 
     existing = (
         AbsenceCompensationCase.objects.select_for_update()
@@ -287,6 +466,13 @@ def create_absence_compensation_case(
         actions_snapshot=_resolved_action_snapshot(resolved),
         created_by=actor,
     )
+    evaluated_at = timezone.now()
+    _reevaluate_open_compensation_cases_for_student(
+        student_id=attendance.student_id,
+        actor=actor,
+        evaluated_at=evaluated_at,
+    )
+    case.refresh_from_db()
     _audit(
         event_type="AbsenceCompensationCaseCreated",
         aggregate_type="AbsenceCompensationCase",
@@ -310,6 +496,8 @@ def create_absence_compensation_case(
             "policy_code": policy.code,
             "policy_version": policy.version,
             "action_count": len(case.actions_snapshot),
+            "eligibility_status": case.eligibility_status,
+            "eligible_absence_ordinal": case.eligible_absence_ordinal,
         },
     )
     return case
@@ -327,10 +515,15 @@ def cancel_absence_compensation_case(
         "subscriptions.change_absencecompensationcase",
         "Absence compensation case change permission is required.",
     )
-    case = AbsenceCompensationCase.objects.select_for_update().get(pk=case_id)
+    case = (
+        AbsenceCompensationCase.objects.select_for_update()
+        .select_related("student")
+        .get(pk=case_id)
+    )
     if case.status == AbsenceCompensationCase.Status.CANCELLED:
         return case
 
+    Student.objects.select_for_update().get(pk=case.student_id)
     at = at or timezone.now()
     case.status = AbsenceCompensationCase.Status.CANCELLED
     case.cancelled_at = at
@@ -351,6 +544,11 @@ def cancel_absence_compensation_case(
             "attendance_id": str(case.attendance_id),
             "cancelled_at": at.isoformat(),
         },
+    )
+    _reevaluate_open_compensation_cases_for_student(
+        student_id=case.student_id,
+        actor=actor,
+        evaluated_at=at,
     )
     return case
 
