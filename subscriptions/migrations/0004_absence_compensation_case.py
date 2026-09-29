@@ -41,7 +41,7 @@ class Migration(migrations.Migration):
                 (
                     "category",
                     models.CharField(
-                        choices=[("ice", "Ice"), ("hall", "Hall")],
+                        choices=[("ice", "ICE"), ("hall", "HALL")],
                         max_length=16,
                     ),
                 ),
