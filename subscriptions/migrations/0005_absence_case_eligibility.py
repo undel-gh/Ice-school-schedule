@@ -73,15 +73,14 @@ class Migration(migrations.Migration):
             constraint=models.CheckConstraint(
                 condition=(
                     models.Q(
-                        ("eligibility_period_from__isnull", True),
-                        ("eligibility_period_until__isnull", True),
+                        eligibility_period_from__isnull=True,
+                        eligibility_period_until__isnull=True,
                     )
                     | models.Q(
-                        ("eligibility_period_from__isnull", False),
-                        ("eligibility_period_until__isnull", False),
-                        (
-                            "eligibility_period_until__gte",
-                            models.F("eligibility_period_from"),
+                        eligibility_period_from__isnull=False,
+                        eligibility_period_until__isnull=False,
+                        eligibility_period_until__gte=models.F(
+                            "eligibility_period_from"
                         ),
                     )
                 ),
