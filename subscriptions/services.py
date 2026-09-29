@@ -39,6 +39,7 @@ from .models import (
 from .selectors import (
     get_applicable_absence_policy,
     resolve_compensation_actions,
+    usable_makeups_for_subscription,
 )
 
 User = get_user_model()
@@ -1068,14 +1069,13 @@ def authorize_paid_makeup_from_case(
         target_rule
         == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
         and target_subscription is None
-        and not target_subscription_required
     ):
         raise ValidationError(
             {
                 "target_subscription": (
                     "NEXT_STUDENT_PERIOD requires an explicit target "
-                    "subscription until the subscription-period resolver "
-                    "is implemented."
+                    "subscription before authorization until the "
+                    "subscription-period resolver is implemented."
                 )
             }
         )
@@ -1421,6 +1421,7 @@ def _reverse_materialized_absence_compensation_cases(
     correlation_id: UUID | None = None,
     refund_required: bool | None = None,
     allow_paid_automatic: bool = False,
+    skip_if_paid_confirmed: bool = False,
 ) -> int:
     attendance = Attendance.objects.select_for_update().get(pk=attendance_id)
     Student.objects.select_for_update().get(pk=attendance.student_id)
@@ -1453,6 +1454,8 @@ def _reverse_materialized_absence_compensation_cases(
             and grant.fee_confirmed_at is not None
         )
     ]
+    if paid_confirmed and skip_if_paid_confirmed:
+        return 0
     if paid_confirmed and not allow_paid_automatic and refund_required is None:
         raise ValidationError(
             {
@@ -1460,7 +1463,11 @@ def _reverse_materialized_absence_compensation_cases(
                     "Paid make-up has a confirmed fee. Use the explicit "
                     "compensation reversal workflow and record whether a "
                     "refund is required."
-                )
+                ),
+                "manager_action_required": (
+                    "A manager must decide whether the confirmed paid "
+                    "make-up requires a refund before this source change."
+                ),
             }
         )
     if paid_confirmed and refund_required is None:
@@ -2340,46 +2347,84 @@ def cancel_subscription(
     if subscription.cancelled_at is not None:
         return subscription
 
-    if AbsenceCompensationActionGrant.objects.filter(
+    cancelled_at = at or timezone.now()
+    as_of = school_date(cancelled_at)
+
+    pending_target_paid = AbsenceCompensationActionGrant.objects.filter(
         target_subscription_id=subscription.id,
         action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
         reversed_at__isnull=True,
-    ).exists():
+        makeup_entitlement__isnull=True,
+    ).exists()
+    if pending_target_paid:
         raise ValidationError(
             {
                 "subscription": (
-                    "Subscription is required by an active PAID_MAKEUP grant. "
+                    "Subscription is required by a pending PAID_MAKEUP grant. "
                     "Reverse that compensation grant before cancelling the "
                     "subscription."
                 )
             }
         )
 
-    if AbsenceCompensationActionGrant.objects.filter(
+    pending_source_paid = AbsenceCompensationActionGrant.objects.filter(
         case__source_subscription_allowance__subscription_id=subscription.id,
         action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
         reversed_at__isnull=True,
-    ).exists():
+        makeup_entitlement__isnull=True,
+    ).exists()
+    if pending_source_paid:
         raise ValidationError(
             {
                 "subscription": (
-                    "Subscription funds an active PAID_MAKEUP grant. "
+                    "Subscription funds a pending PAID_MAKEUP grant. "
                     "Reverse that compensation grant before cancelling the "
                     "subscription."
                 )
             }
         )
 
-    if MakeupEntitlement.objects.filter(
-        source_subscription_allowance__subscription_id=subscription.id,
-        cancelled_at__isnull=True,
-    ).exists():
+    usable_source_makeups = usable_makeups_for_subscription(
+        subscription_id=subscription.id,
+        as_of=as_of,
+    )
+    if usable_source_makeups:
         raise ValidationError(
             {
                 "subscription": (
-                    "Subscription funds an active make-up entitlement. "
-                    "Reverse or cancel that make-up right "
+                    "Subscription funds an unused, unexpired make-up "
+                    "entitlement. Reverse or cancel that make-up right "
                     "before cancelling the subscription."
+                )
+            }
+        )
+
+    active_target_makeup = (
+        AbsenceCompensationActionGrant.objects.filter(
+            target_subscription_id=subscription.id,
+            action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+            reversed_at__isnull=True,
+            makeup_entitlement__cancelled_at__isnull=True,
+            makeup_entitlement__valid_until__gte=as_of,
+        )
+        .annotate(
+            is_used=Exists(
+                AttendanceCoverage.objects.filter(
+                    makeup_entitlement_id=OuterRef("makeup_entitlement_id"),
+                    reversed_at__isnull=True,
+                )
+            )
+        )
+        .filter(is_used=False)
+        .exists()
+    )
+    if active_target_makeup:
+        raise ValidationError(
+            {
+                "subscription": (
+                    "Subscription is required by an unused, unexpired "
+                    "PAID_MAKEUP entitlement. Reverse that compensation "
+                    "grant before cancelling the subscription."
                 )
             }
         )
@@ -2391,7 +2436,6 @@ def cancel_subscription(
         .values_list("id", flat=True)
     )
 
-    cancelled_at = at or timezone.now()
     subscription.cancelled_at = cancelled_at
     subscription.cancelled_by = actor
     subscription.save(
@@ -3381,15 +3425,35 @@ def _paid_makeup_authorization_deadline(
     source_subscription = (
         grant.case.source_subscription_allowance.subscription
     )
-    deadline = source_subscription.valid_until
+    target_rule = grant.action_snapshot.get("target_period_rule")
+
     if (
-        grant.action_snapshot.get("target_period_rule")
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+    ):
+        if grant.target_subscription is None:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "NEXT_STUDENT_PERIOD authorization has no target "
+                        "subscription."
+                    )
+                }
+            )
+        return grant.target_subscription.valid_until
+
+    if (
+        target_rule
         == AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
     ):
         target_until = grant.action_snapshot.get("target_until")
-        if target_until:
-            deadline = min(deadline, date.fromisoformat(target_until))
-    return deadline
+        if not target_until:
+            raise ValidationError(
+                {"grant": "Explicit target window is missing."}
+            )
+        return date.fromisoformat(target_until)
+
+    return source_subscription.valid_until
 
 
 @transaction.atomic
@@ -3403,6 +3467,7 @@ def _process_one_paid_makeup_authorization_expiry(
         AbsenceCompensationActionGrant.objects.select_related(
             "case",
             "case__source_subscription_allowance__subscription",
+            "target_subscription",
         )
         .get(pk=grant_id)
     )
@@ -3424,6 +3489,7 @@ def _process_one_paid_makeup_authorization_expiry(
         at=reversed_at,
         reason="authorization_expired",
         allow_paid_automatic=True,
+        skip_if_paid_confirmed=True,
     )
     if count:
         _audit(
