@@ -10,6 +10,9 @@ from scheduling.models import Lesson
 
 from .balances import ledger_balance
 from .models import (
+    AbsenceCompensationPolicy,
+    AbsenceCompensationPolicyAction,
+    AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
     Subscription,
     MakeupEntitlement,
@@ -35,6 +38,109 @@ class AllowanceState:
 class EligibleAllowance:
     allowance: SubscriptionAllowance
     balance: int
+
+
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCompensationAction:
+    policy: AbsenceCompensationPolicy
+    action: AbsenceCompensationPolicyAction
+    window: AbsenceCompensationPolicyWindow | None
+    requirement: str
+    target_from: date | None
+    target_until: date | None
+
+
+def get_applicable_absence_policy(
+    *,
+    absence_reason: str,
+    source_date: date,
+    policy_code: str | None = None,
+) -> AbsenceCompensationPolicy | None:
+    """
+    Resolve exactly one active policy version for an absence on source_date.
+
+    Multiple matching rows are treated as configuration error rather than
+    silently selecting one by creation order.
+    """
+    policies = AbsenceCompensationPolicy.objects.filter(
+        absence_reason=absence_reason,
+        is_active=True,
+        effective_from__lte=source_date,
+    ).filter(
+        Q(effective_until__isnull=True)
+        | Q(effective_until__gte=source_date)
+    )
+    if policy_code is not None:
+        policies = policies.filter(code=policy_code)
+
+    matches = tuple(
+        policies.order_by("code", "-version", "id")
+    )
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ValueError(
+            "Multiple active absence compensation policies match "
+            f"{absence_reason!r} on {source_date.isoformat()}."
+        )
+    return matches[0]
+
+
+def resolve_compensation_actions(
+    *,
+    policy: AbsenceCompensationPolicy,
+    source_date: date,
+) -> tuple[ResolvedCompensationAction, ...]:
+    """
+    Resolve active actions plus the highest-priority matching seasonal window.
+
+    A seasonal window overrides target dates and, when provided, the
+    additional requirement for that action.
+    """
+    actions = (
+        AbsenceCompensationPolicyAction.objects.filter(
+            policy=policy,
+            is_active=True,
+        )
+        .order_by("priority", "action_type", "id")
+    )
+
+    resolved = []
+    for action in actions:
+        windows = tuple(
+            AbsenceCompensationPolicyWindow.objects.filter(
+                policy_action=action,
+                is_active=True,
+                source_from__lte=source_date,
+                source_until__gte=source_date,
+            ).order_by("priority", "source_from", "id")
+        )
+        if len(windows) > 1 and windows[0].priority == windows[1].priority:
+            raise ValueError(
+                "Multiple absence compensation windows with the same "
+                f"priority match action {action.id} on "
+                f"{source_date.isoformat()}."
+            )
+
+        window = windows[0] if windows else None
+        requirement = (
+            window.requirement_override
+            if window is not None and window.requirement_override
+            else action.requirement
+        )
+        resolved.append(
+            ResolvedCompensationAction(
+                policy=policy,
+                action=action,
+                window=window,
+                requirement=requirement,
+                target_from=window.target_from if window else None,
+                target_until=window.target_until if window else None,
+            )
+        )
+    return tuple(resolved)
 
 
 def allowance_balance(allowance_id: UUID) -> int:
