@@ -36,13 +36,31 @@ CLI остаётся техническим интерфейсом для сис
 быть зафиксирована snapshot-данными так, чтобы изменение тарифа в будущем не
 пересчитывало историю.
 
-## 2.2. Заморозка
+## 2.2. Заморозка и компенсация пропуска
 
-В рамках этого проекта «заморозка» означает не остановку календаря
-Subscription, а **перенос не более N неиспользованных занятий на следующий
-расчётный период**.
+Термин «заморозка» используется школой для одного из вариантов компенсации
+**конкретно пропущенного занятия**, а не для произвольного переноса всего
+неиспользованного остатка Subscription.
 
-Исходный расчётный период не продлевается и не переписывается.
+На текущем этапе правила услуги ещё формируются. Поэтому доменная модель не
+должна жёстко связывать «заморозку» с единственным вариантом:
+
+```text
+unused balance → next period
+```
+
+Вместо этого система должна уметь представить компенсацию конкретного
+`Attendance=ABSENT` / пропущенного Lesson с различными условиями:
+
+- бесплатная отработка в текущем расчётном периоде;
+- бесплатная отработка в другом разрешённом периоде;
+- платная отработка/перенос в последующий период;
+- перерасчёт стоимости;
+- сочетание перерасчёта и бесплатной отработки, если политика школы это
+  допускает;
+- отсутствие права на компенсацию.
+
+Исходный Subscription, Attendance и ledger не переписываются задним числом.
 
 ## 2.3. Сохранение места в группе
 
@@ -166,68 +184,273 @@ SubscriptionPeriod
 
 ---
 
-# 5. Заморозка / перенос остатка
+# 5. Компенсация пропусков и заморозка
 
-## 5.1. Основное правило
+## 5.1. Текущая рабочая политика школы
 
-Школа может разрешить перенос не более `N` неиспользованных занятий из
-завершившегося расчётного периода в **следующий** расчётный период ученика.
+Следующие правила считаются **предварительными** и должны храниться как
+изменяемая/versioned policy, а не как неизменяемые константы приложения.
 
-Нельзя продлевать старый Subscription или переписывать его ledger.
+### Болезнь со справкой
 
-Перенос должен иметь явную связь:
+При подтверждённом медицинском пропуске школа может предоставить:
 
 ```text
-source SubscriptionAllowance
-        ↓
-carry-over grant
-        ↓
-target SubscriptionAllowance / target period
+перерасчёт
+и/или
+бесплатную отработку
 ```
 
-## 5.2. Ledger semantics
+Точный набор вариантов и сочетаний ещё уточняется.
 
-Исходный allowance остаётся исторически неизменным.
+### Пропуск без уважительной причины
 
-Перенос создаёт отдельное аудируемое право или целевой grant со ссылкой на
-source allowance. Запрещено:
+Для такого пропуска сейчас предполагаются два варианта:
 
-- менять задним числом `valid_until`;
-- удалять `CONSUME`;
+```text
+бесплатная отработка в текущем расчётном периоде
+или
+платная заморозка/отработка в последующем периоде
+```
+
+Платная заморозка по текущему правилу оплачивается одновременно с
+Subscription следующего периода.
+
+### Лимит
+
+При пропуске более четырёх занятий без уважительной причины:
+
+```text
+1..4-й пропуск → может дать право на отработку
+5-й и последующие → права на отработку не дают
+```
+
+Лимит должен быть policy-параметром, а не числом, зашитым в service layer.
+
+### Сезонные исключения
+
+Текущий известный пример:
+
+```text
+пропуски мая
+    → можно отработать в июне
+    → покупка июньского Subscription не обязательна
+
+пропуски июня
+    → можно отработать в августе
+    → требуется оплаченный Subscription августа
+```
+
+Эти правила нельзя кодировать как специальные проверки `month == 5` или
+`month == 6`. Они должны представляться как versioned policy/exception с
+явным source period, target period и требованиями к оплате/Subscription.
+
+## 5.2. Отсутствие как источник компенсации
+
+Компенсация должна иметь трассируемый источник:
+
+```text
+Student
+  + source Lesson
+  + Attendance=ABSENT
+  + причина/основание пропуска
+  + source SubscriptionAllowance (если применимо)
+        ↓
+compensation case
+        ↓
+0..N разрешённых действий/прав
+```
+
+Это важнее, чем перенос абстрактного остатка allowance: система должна уметь
+объяснить, **какое именно пропущенное занятие** породило право на отработку или
+перерасчёт.
+
+Для существующего medical flow источником причины остаётся
+`AbsenceJustification`.
+
+## 5.3. Архитектурное направление
+
+Предпочтительное направление — ввести обобщённый concept, рабочее имя:
+
+```text
+AbsenceCompensationCase
+```
+
+Он фиксирует:
+
+```text
+student
+source_lesson
+attendance
+absence_reason
+source_subscription_allowance (optional)
+policy_version / policy_snapshot
+status
+created_at
+resolved_at
+```
+
+Из одного case политика может разрешить один или несколько результатов:
+
+```text
+MAKEUP entitlement
+PAID_FREEZE / deferred makeup entitlement
+BILLING recalculation reference
+NO_COMPENSATION
+```
+
+Это позволяет не смешивать финансовый перерасчёт с entitlement accounting и
+одновременно поддержать формулировку «перерасчёт и/или бесплатная отработка».
+
+Текущий `MakeupEntitlement` может быть либо расширен, либо позднее
+мигрирован в более общий механизм. Конкретное решение принимается перед
+реализацией миграций; на этом этапе важно сохранить существующий medical flow.
+
+## 5.4. Policy должна описывать условия, а не сценарий в коде
+
+Минимально политика компенсации должна уметь выразить:
+
+```text
+reason / justification requirement
+maximum eligible missed lessons
+compensation kind
+target-period rule
+fee requirement
+target Subscription requirement
+validity window
+seasonal exception
+effective_from / effective_until
+priority
+```
+
+Полезные значения target-period rule:
+
+```text
+CURRENT_PERIOD
+NEXT_STUDENT_PERIOD
+EXPLICIT_TARGET_PERIOD
+```
+
+Полезные значения requirements:
+
+```text
+NO_FEE
+FEE_REQUIRED
+TARGET_SUBSCRIPTION_REQUIRED
+FEE_AND_TARGET_SUBSCRIPTION_REQUIRED
+```
+
+Это не означает необходимость строить универсальный rule engine. Можно
+реализовать ограниченный набор типизированных policy-полей и стратегий, но
+правила школы не должны требовать миграции БД и изменения Python-кода при
+каждом изменении лимита или сезонного окна.
+
+## 5.5. Лимит количества пропусков
+
+Лимит должен считаться в определённом policy scope, например:
+
+```text
+student + расчётный период + absence_reason
+```
+
+Для текущего правила:
+
+```text
+UNEXCUSED
+max_eligible_absences = 4
+```
+
+Пятый и последующие пропуски остаются исторически видимыми, но получают
+результат `NO_COMPENSATION`.
+
+Если школа позднее изменит лимит, уже обработанные периоды не должны
+пересчитываться автоматически: case хранит policy version/snapshot.
+
+## 5.6. Бесплатная отработка в текущем периоде
+
+Для неуважительного пропуска система может создать entitlement, допустимый
+только до конца текущего расчётного периода.
+
+Если такое право использовано, тот же пропуск не должен затем автоматически
+породить ещё одну платную отработку следующего периода, если policy явно не
+разрешает несколько результатов.
+
+Идемпотентность и защита от двойной компенсации обязательны.
+
+## 5.7. Платная заморозка
+
+Платная заморозка — entitlement на отработку конкретного допустимого пропуска
+за пределами исходного расчётного периода.
+
+Текущая policy предполагает:
+
+```text
+freeze fee paid
+AND
+next-period Subscription acquired
+        ↓
+entitlement becomes usable in target period
+```
+
+Пока полноценного Billing нет, состояние оплаты может подтверждаться
+менеджером через service-backed web action. В будущем Billing должен заменить
+ручное подтверждение, не меняя entitlement semantics.
+
+## 5.8. Сезонные переходы между периодами
+
+Policy должна поддерживать не только «следующий период», но и явный target.
+
+Пример текущего правила:
+
+```text
+MAY period → JUNE period
+require_target_subscription = false
+
+JUNE period → AUGUST period
+require_target_subscription = true
+```
+
+Июль в данном примере просто не является target period. Это свойство policy,
+а не особый статус месяца в коде.
+
+Для моделей периода, не совпадающих с календарными месяцами, применяется та
+же идея: source/target задаются через расчётные периоды или strategy resolver,
+а не через номера месяцев.
+
+## 5.9. Ledger semantics
+
+Компенсация не должна:
+
+- менять задним числом `valid_until` исходного Subscription;
+- удалять `CONSUME`/Attendance history;
 - увеличивать исходный `visit_limit_snapshot`;
 - создавать необъяснимый `ADJUSTMENT`.
 
-## 5.3. Ограничение N
+Makeup/deferred entitlement хранит ссылку на источник и используется
+`AttendanceCoverage` явно.
 
-Лимит `N` является тарифной политикой.
+Перерасчёт стоимости относится к будущему Billing и должен ссылаться на тот же
+compensation case/correlation ID, не изменяя entitlement ledger.
 
-Для смешанных ICE/HALL планов текущая архитектура хранит независимые allowances,
-поэтому наиболее естественная реализация — отдельный carry-over limit по каждой
-категории. До реализации нужно окончательно подтвердить бизнес-правило:
+## 5.10. Смешанные ICE/HALL планы
 
-```text
-вариант A: N отдельно для ICE и HALL
-вариант B: общий N на весь Subscription
-```
-
-До этого решения схема БД не должна фиксировать один из вариантов
-необратимым способом.
-
-## 5.4. Срок использования переноса
-
-Перенесённые занятия действуют только в следующем расчётном периоде, если
-отдельной политикой не установлено иное.
-
-Предпочтительный порядок расходования:
+Компенсация наследует category **конкретного пропущенного Lesson**:
 
 ```text
-expiring carry-over
-→ ordinary allowance
+ICE absence  → ICE compensation
+HALL absence → HALL compensation
 ```
 
-чтобы перенос не сгорал при наличии обычного остатка.
+Поэтому лимит «не более N пропусков» может в будущем иметь один из scopes:
 
-Точный приоритет должен быть отражён в `FindCoverage` и regression tests.
+```text
+на весь Subscription
+по каждой category отдельно
+по конкретному типу занятия
+```
+
+Текущие вводные этого не определяют. Схема должна позволять выбрать scope
+policy без перепроектирования entitlement model.
 
 ---
 
@@ -372,14 +595,24 @@ UI вызывает тот же application service, что и management comman
 
 ```text
 SubscriptionActivated
-SubscriptionCarryOverGranted
-SubscriptionCarryOverUsed
-SubscriptionCarryOverCancelled
+
+AbsenceCompensationCaseCreated
+AbsenceCompensationEvaluated
+AbsenceCompensationDenied
+MakeupEntitlementGranted
+MakeupEntitlementUsed
+PaidFreezeAuthorized
+PaidFreezeCancelled
+BillingRecalculationRequested
 
 GroupPlaceHoldCreated
 GroupPlaceHoldCancelled
 GroupPlaceHoldExpired
 ```
+
+Конкретные event names могут быть уточнены при реализации, но audit должен
+позволять пройти от пропущенного Lesson до выданного права, его использования
+и, при наличии, финансового перерасчёта.
 
 События, относящиеся к одной бизнес-операции, используют общий
 `correlation_id`, как уже сделано для template occurrence skip.
@@ -391,19 +624,21 @@ GroupPlaceHoldExpired
 Следующие механизмы различны:
 
 ```text
-medical makeup
+medical absence compensation
+unexcused absence compensation
 school reschedule makeup
 administrative makeup
-subscription carry-over / freeze
+paid freeze / deferred makeup
+billing recalculation
 group place hold
 ```
 
-Они могут использовать общие технические паттерны, но имеют разные основания,
-сроки действия и audit semantics.
+Они могут использовать общий compensation case и entitlement primitives, но
+имеют разные основания, требования к оплате, target periods и audit semantics.
 
-В частности, заморозка не должна маскироваться под медицинский
-`MakeupEntitlement`, а сохранение места в группе не должно создавать
-посещения или subscription balance.
+Платная заморозка не должна выглядеть как произвольное увеличение остатка
+Subscription, а сохранение места в группе не должно создавать посещения или
+subscription balance.
 
 ---
 
@@ -415,12 +650,14 @@ group place hold
 2. добавить manager web UI для generation conflicts и skip;
 3. заменить `validity_months=1` на period policy и добавить period snapshots;
 4. реализовать три модели расчётного периода;
-5. реализовать carry-over/freeze;
-6. реализовать `GroupPlaceHold`;
-7. добавить manager web UI для subscriptions/periods/freeze/place hold;
-8. обновить selectors/reports;
-9. добавить migrations, domain events и regression/concurrency tests;
-10. оставить CLI как secondary/sysadmin interface поверх тех же services.
+5. реализовать versioned absence-compensation policy и compensation cases;
+6. адаптировать medical makeup к общему механизму без потери текущей истории;
+7. реализовать бесплатную/платную отработку и seasonal target-period rules;
+8. реализовать `GroupPlaceHold`;
+9. добавить manager web UI для subscriptions/periods/compensation/place hold;
+10. обновить selectors/reports;
+11. добавить migrations, domain events и regression/concurrency tests;
+12. оставить CLI как secondary/sysadmin interface поверх тех же services.
 
 Каждый этап должен сохранять правило:
 
