@@ -91,6 +91,60 @@ def _resolved_action_snapshot(resolved) -> list[dict]:
     ]
 
 
+
+
+def _locked_source_allowance_for_absence(
+    *,
+    attendance: Attendance,
+    category: str,
+    source_date: date,
+) -> SubscriptionAllowance | None:
+    """
+    Resolve the historical allowance associated with the missed lesson.
+
+    Unlike coverage assignment, compensation provenance does not require a
+    positive current balance. A fully consumed allowance can still be the
+    correct source for explaining the absence.
+    """
+    candidate_ids = list(
+        SubscriptionAllowance.objects.filter(
+            subscription__student_id=attendance.student_id,
+            category=category,
+            subscription__valid_from__lte=source_date,
+            subscription__valid_until__gte=source_date,
+        )
+        .order_by(
+            "subscription__valid_until",
+            "subscription__valid_from",
+            "subscription__created_at",
+            "id",
+        )
+        .values_list("id", flat=True)
+    )
+    for allowance_id in candidate_ids:
+        allowance = (
+            SubscriptionAllowance.objects.select_for_update()
+            .select_related("subscription")
+            .get(pk=allowance_id)
+        )
+        subscription = allowance.subscription
+        if subscription.student_id != attendance.student_id:
+            continue
+        if allowance.category != category:
+            continue
+        if not (
+            subscription.valid_from <= source_date <= subscription.valid_until
+        ):
+            continue
+        if (
+            subscription.cancelled_at is not None
+            and subscription.cancelled_at <= attendance.lesson.starts_at
+        ):
+            continue
+        return allowance
+    return None
+
+
 @transaction.atomic
 def create_absence_compensation_case(
     *,
@@ -201,14 +255,11 @@ def create_absence_compensation_case(
             )
 
     category = lesson.lesson_type.subscription_category
-    source_allowance = None
-    locked_source = locked_eligible_source_allowance(
-        student_id=attendance.student_id,
+    source_allowance = _locked_source_allowance_for_absence(
+        attendance=attendance,
         category=category,
         source_date=source_date,
     )
-    if locked_source is not None:
-        source_allowance, _subscription, _balance = locked_source
 
     resolved = resolve_compensation_actions(
         policy=policy,
