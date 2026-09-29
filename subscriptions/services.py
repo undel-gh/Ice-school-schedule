@@ -364,21 +364,28 @@ def create_absence_compensation_case(
         AbsenceCompensationCase.objects.select_for_update()
         .filter(
             attendance=attendance,
-            status=AbsenceCompensationCase.Status.OPEN,
+            status__in=[
+                AbsenceCompensationCase.Status.OPEN,
+                AbsenceCompensationCase.Status.MATERIALIZED,
+            ],
         )
         .first()
     )
     if existing is not None:
         if existing.absence_reason != absence_reason:
-            raise ValidationError(
-                {
-                    "attendance": (
-                        "An open compensation case already exists with a "
-                        "different absence reason. Cancel it before creating "
-                        "a replacement case."
-                    )
-                }
-            )
+            if existing.status == AbsenceCompensationCase.Status.MATERIALIZED:
+                message = (
+                    "A MATERIALIZED compensation case already exists with "
+                    "a different absence reason. Reverse its materialized "
+                    "actions before creating a replacement case."
+                )
+            else:
+                message = (
+                    "An open compensation case already exists with a "
+                    "different absence reason. Cancel it before creating "
+                    "a replacement case."
+                )
+            raise ValidationError({"attendance": message})
         return existing
 
     lesson = attendance.lesson
