@@ -311,6 +311,33 @@ def get_available_makeups(
 
 
 
+def usable_makeups_for_subscription(
+    *,
+    subscription_id: UUID,
+    as_of: date,
+) -> tuple[MakeupEntitlement, ...]:
+    """
+    Return make-ups funded by a Subscription that can still be consumed.
+
+    Used make-ups (active coverage) and expired/cancelled make-ups are
+    historical records and must not block Subscription cancellation.
+    """
+    active_usage = AttendanceCoverage.objects.filter(
+        makeup_entitlement_id=OuterRef("pk"),
+        reversed_at__isnull=True,
+    )
+    return tuple(
+        MakeupEntitlement.objects.filter(
+            source_subscription_allowance__subscription_id=subscription_id,
+            cancelled_at__isnull=True,
+            valid_until__gte=as_of,
+        )
+        .annotate(is_used=Exists(active_usage))
+        .filter(is_used=False)
+        .order_by("valid_until", "created_at", "id")
+    )
+
+
 def get_reversed_paid_makeups(
     *,
     refund_required: bool | None = None,
