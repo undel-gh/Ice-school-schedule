@@ -1148,3 +1148,36 @@ def test_materialized_case_keeps_limit_slot(actor, context):
     assert second.eligibility_status == (
         AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
     )
+
+
+@pytest.mark.django_db
+def test_materialized_case_requires_explicit_reversal_before_cancel(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="materialized-cancel-guard",
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    with pytest.raises(ValidationError, match="cannot be cancelled directly"):
+        cancel_absence_compensation_case(
+            case_id=case.id,
+            actor=actor,
+            at=attendance.marked_at + timedelta(hours=2),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert case.cancelled_at is None
