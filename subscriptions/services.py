@@ -10,7 +10,7 @@ from django.db.models import Exists, OuterRef, Q, Sum
 from django.utils import timezone
 
 from accounts.models import Student
-from attendance.models import Attendance
+from attendance.models import AbsenceJustification, Attendance
 from audit.models import AuditEvent
 from audit.services import event_exists, record_event
 from core.permissions import require_permission
@@ -23,6 +23,8 @@ from .balances import (
     locked_eligible_source_allowance,
 )
 from .models import (
+    AbsenceCompensationCase,
+    AbsenceCompensationPolicy,
     AttendanceCoverage,
     MakeupEntitlement,
     OneTimeEntitlement,
@@ -31,6 +33,10 @@ from .models import (
     SubscriptionLedgerEntry,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
+)
+from .selectors import (
+    get_applicable_absence_policy,
+    resolve_compensation_actions,
 )
 
 User = get_user_model()
@@ -55,6 +61,247 @@ def _audit(
     if correlation_id is not None:
         values["correlation_id"] = correlation_id
     record_event(**values)
+
+
+
+
+def _resolved_action_snapshot(resolved) -> list[dict]:
+    return [
+        {
+            "action_id": str(item.action.id),
+            "action_type": item.action.action_type,
+            "target_period_rule": item.action.target_period_rule,
+            "requirement": item.requirement,
+            "validity_days": item.action.validity_days,
+            "priority": item.action.priority,
+            "window_id": str(item.window.id) if item.window else None,
+            "window_name": item.window.name if item.window else None,
+            "target_from": (
+                item.target_from.isoformat()
+                if item.target_from is not None
+                else None
+            ),
+            "target_until": (
+                item.target_until.isoformat()
+                if item.target_until is not None
+                else None
+            ),
+        }
+        for item in resolved
+    ]
+
+
+@transaction.atomic
+def create_absence_compensation_case(
+    *,
+    attendance_id: UUID,
+    absence_reason: str,
+    actor: User,
+    policy_code: str | None = None,
+    source_justification_id: UUID | None = None,
+) -> AbsenceCompensationCase:
+    require_permission(
+        actor,
+        "subscriptions.add_absencecompensationcase",
+        "Absence compensation case permission is required.",
+    )
+    if absence_reason not in AbsenceCompensationPolicy.AbsenceReason.values:
+        raise ValidationError(
+            {"absence_reason": "Unsupported absence reason."}
+        )
+
+    attendance = (
+        Attendance.objects.select_for_update()
+        .select_related("lesson__lesson_type", "student")
+        .get(pk=attendance_id)
+    )
+    if attendance.status != Attendance.Status.ABSENT:
+        raise ValidationError(
+            {"attendance": "Compensation requires Attendance=ABSENT."}
+        )
+
+    existing = (
+        AbsenceCompensationCase.objects.select_for_update()
+        .filter(
+            attendance=attendance,
+            status=AbsenceCompensationCase.Status.OPEN,
+        )
+        .first()
+    )
+    if existing is not None:
+        if existing.absence_reason != absence_reason:
+            raise ValidationError(
+                {
+                    "attendance": (
+                        "An open compensation case already exists with a "
+                        "different absence reason. Cancel it before creating "
+                        "a replacement case."
+                    )
+                }
+            )
+        return existing
+
+    lesson = attendance.lesson
+    source_date = school_date(lesson.starts_at)
+    policy = get_applicable_absence_policy(
+        absence_reason=absence_reason,
+        source_date=source_date,
+        policy_code=policy_code,
+    )
+    if policy is None:
+        raise ValidationError(
+            {"policy": "No active compensation policy matches this absence."}
+        )
+
+    source_justification = None
+    if source_justification_id is not None:
+        source_justification = (
+            AbsenceJustification.objects.select_for_update()
+            .get(pk=source_justification_id)
+        )
+        if (
+            source_justification.student_id != attendance.student_id
+            or source_justification.lesson_id != attendance.lesson_id
+        ):
+            raise ValidationError(
+                {
+                    "source_justification": (
+                        "Justification does not belong to this absence."
+                    )
+                }
+            )
+
+    if (
+        policy.justification_requirement
+        == AbsenceCompensationPolicy.JustificationRequirement.VERIFIED_MEDICAL
+    ):
+        if source_justification is None:
+            source_justification = (
+                AbsenceJustification.objects.select_for_update()
+                .filter(
+                    student_id=attendance.student_id,
+                    lesson_id=attendance.lesson_id,
+                    type=AbsenceJustification.Type.MEDICAL,
+                    status=AbsenceJustification.Status.VERIFIED,
+                )
+                .order_by("-reviewed_at", "id")
+                .first()
+            )
+        if (
+            source_justification is None
+            or source_justification.status
+            != AbsenceJustification.Status.VERIFIED
+        ):
+            raise ValidationError(
+                {
+                    "source_justification": (
+                        "A verified medical justification is required."
+                    )
+                }
+            )
+
+    category = lesson.lesson_type.subscription_category
+    source_allowance = None
+    locked_source = locked_eligible_source_allowance(
+        student_id=attendance.student_id,
+        category=category,
+        source_date=source_date,
+    )
+    if locked_source is not None:
+        source_allowance, _subscription, _balance = locked_source
+
+    resolved = resolve_compensation_actions(
+        policy=policy,
+        source_date=source_date,
+    )
+
+    case = AbsenceCompensationCase.objects.create(
+        attendance=attendance,
+        student_id=attendance.student_id,
+        source_lesson_id=attendance.lesson_id,
+        source_subscription_allowance=source_allowance,
+        source_justification=source_justification,
+        policy=policy,
+        absence_reason=absence_reason,
+        source_date=source_date,
+        category=category,
+        policy_code_snapshot=policy.code,
+        policy_version_snapshot=policy.version,
+        policy_name_snapshot=policy.name,
+        justification_requirement_snapshot=(
+            policy.justification_requirement
+        ),
+        max_eligible_absences_snapshot=policy.max_eligible_absences,
+        limit_scope_snapshot=policy.limit_scope,
+        actions_snapshot=_resolved_action_snapshot(resolved),
+        created_by=actor,
+    )
+    _audit(
+        event_type="AbsenceCompensationCaseCreated",
+        aggregate_type="AbsenceCompensationCase",
+        aggregate_id=case.id,
+        actor=actor,
+        payload={
+            "attendance_id": str(attendance.id),
+            "student_id": str(attendance.student_id),
+            "source_lesson_id": str(attendance.lesson_id),
+            "source_subscription_allowance_id": (
+                str(source_allowance.id)
+                if source_allowance is not None
+                else None
+            ),
+            "source_justification_id": (
+                str(source_justification.id)
+                if source_justification is not None
+                else None
+            ),
+            "absence_reason": absence_reason,
+            "policy_code": policy.code,
+            "policy_version": policy.version,
+            "action_count": len(case.actions_snapshot),
+        },
+    )
+    return case
+
+
+@transaction.atomic
+def cancel_absence_compensation_case(
+    *,
+    case_id: UUID,
+    actor: User,
+    at=None,
+) -> AbsenceCompensationCase:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationcase",
+        "Absence compensation case change permission is required.",
+    )
+    case = AbsenceCompensationCase.objects.select_for_update().get(pk=case_id)
+    if case.status == AbsenceCompensationCase.Status.CANCELLED:
+        return case
+
+    at = at or timezone.now()
+    case.status = AbsenceCompensationCase.Status.CANCELLED
+    case.cancelled_at = at
+    case.cancelled_by = actor
+    case.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+        ]
+    )
+    _audit(
+        event_type="AbsenceCompensationCaseCancelled",
+        aggregate_type="AbsenceCompensationCase",
+        aggregate_id=case.id,
+        actor=actor,
+        payload={
+            "attendance_id": str(case.attendance_id),
+            "cancelled_at": at.isoformat(),
+        },
+    )
+    return case
 
 
 @transaction.atomic
