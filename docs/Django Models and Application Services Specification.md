@@ -3198,8 +3198,35 @@ medical justification is revoked, a MATERIALIZED case is handled explicitly:
 
 A medical absence cannot receive both an active legacy
 `MEDICAL_VERIFIED` makeup and a new `ABSENCE_COMPENSATION` makeup for the
-same student/source lesson. Until the medical flow is migrated onto cases,
-materialization rejects that duplicate.
+same student/source lesson.
+
+The invariant is enforced in both directions:
+
+- compensation materialization rejects an already-active medical makeup;
+- medical verification supersedes an unused MATERIALIZED compensation case
+  with reason `superseded_by_medical`;
+- if that compensation makeup is already used by active AttendanceCoverage,
+  medical verification is rejected until the coverage is reversed/rebound;
+- an OPEN pre-medical compensation case for the same Attendance is cancelled
+  when the medical justification is verified.
+
+A partial database UniqueConstraint additionally guarantees at most one active
+makeup for `(student, source_lesson)` when reason is either
+`MEDICAL_VERIFIED` or `ABSENCE_COMPENSATION`.
+
+Administrators can explicitly reverse an erroneously materialized case through:
+
+```python
+reverse_absence_compensation_case(
+    case_id=...,
+    actor=...,
+    reason="...",
+    now=...,
+)
+```
+
+The service is idempotent for an already REVERSED case. It refuses to reverse
+a compensation makeup that is already used by active AttendanceCoverage.
 
 Intentionally not yet implemented:
 
