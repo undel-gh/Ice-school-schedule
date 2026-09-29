@@ -1181,3 +1181,36 @@ def test_materialized_case_requires_explicit_reversal_before_cancel(actor, conte
     case.refresh_from_db()
     assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
     assert case.cancelled_at is None
+
+
+@pytest.mark.django_db
+def test_create_case_returns_existing_materialized_case(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="materialized-create-idempotent",
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    repeated = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=2),
+    )
+
+    assert repeated.id == case.id
+    repeated.refresh_from_db()
+    assert repeated.status == AbsenceCompensationCase.Status.MATERIALIZED
