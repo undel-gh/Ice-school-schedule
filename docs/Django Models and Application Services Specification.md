@@ -3091,6 +3091,65 @@ its source compensation case.
 The existing medical `AbsenceJustification` / `MakeupEntitlement` flow
 must continue to work during migration toward the generalized mechanism.
 
+
+## AbsenceCompensationCase eligibility
+
+The case stores an evaluated eligibility result:
+
+\`\`\`text
+ELIGIBLE
+LIMIT_EXCEEDED
+UNDETERMINED
+\`\`\`
+
+For a policy with \`max_eligible_absences = N\`, the evaluator derives the
+source billing period from the historical \`source_subscription_allowance\`
+and counts OPEN compensation cases in deterministic Lesson order.
+
+The counting set always matches:
+
+\`\`\`text
+student
++ absence_reason
++ policy_code_snapshot
++ source billing period
+\`\`\`
+
+and is additionally narrowed according to \`limit_scope_snapshot\`:
+
+\`\`\`text
+STUDENT_PERIOD
+CATEGORY_PERIOD
+LESSON_TYPE_PERIOD
+\`\`\`
+
+The ordinal and source period are snapshotted on the case:
+
+\`\`\`text
+eligible_absence_ordinal
+eligibility_period_from
+eligibility_period_until
+eligibility_evaluated_at
+\`\`\`
+
+Rule:
+
+\`\`\`text
+ordinal <= max_eligible_absences → ELIGIBLE
+ordinal >  max_eligible_absences → LIMIT_EXCEEDED
+\`\`\`
+
+An unlimited policy (\`max_eligible_absences = NULL\`) is immediately
+\`ELIGIBLE\`.
+
+A limited policy without a resolvable source billing period is
+\`UNDETERMINED\`; the implementation must not silently substitute a calendar
+month for a future subscription-period model.
+
+Creation/cancellation serializes by Student and reevaluates that student's
+OPEN cases, so cancellation of an earlier case can release a limit slot for a
+later absence. Eligibility changes emit \`AbsenceCompensationEvaluated\`.
+
 ---
 
 # 38. Planned GroupPlaceHold model
