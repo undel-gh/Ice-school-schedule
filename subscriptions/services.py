@@ -1243,12 +1243,12 @@ def activate_paid_makeup_grant(
                     )
                 }
             )
-        if target_subscription.valid_from <= source_subscription.valid_from:
+        if target_subscription.valid_from <= source_subscription.valid_until:
             raise ValidationError(
                 {
                     "target_subscription": (
-                        "Target subscription must start after the source "
-                        "subscription period starts."
+                        "Target subscription for NEXT_STUDENT_PERIOD must "
+                        "start after the source subscription ends."
                     )
                 }
             )
