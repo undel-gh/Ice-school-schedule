@@ -2688,3 +2688,113 @@ def test_medical_verification_rejects_confirmed_paid_makeup_until_refund_decisio
         reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
         cancelled_at__isnull=True,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_expired_compensation_makeup_does_not_block_source_subscription_cancellation(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    source = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="expired-makeup-source-cancel",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    entitlement = grant.makeup_entitlement
+    assert entitlement.valid_until == date(2026, 9, 30)
+
+    process_subscription_lifecycle(
+        as_of=date(2026, 10, 1),
+        actor=actor,
+    )
+    entitlement.refresh_from_db()
+    assert entitlement.cancelled_at is None
+    assert AuditEvent.objects.filter(
+        event_type="MakeupEntitlementExpired",
+        aggregate_id=entitlement.id,
+    ).exists()
+
+    cancelled = cancel_subscription(
+        subscription_id=source.id,
+        actor=actor,
+        at=datetime(2026, 12, 1, 12, 0, tzinfo=dt_timezone.utc),
+    )
+    assert cancelled.cancelled_at is not None
+
+
+@pytest.mark.django_db
+def test_used_compensation_makeup_does_not_block_source_subscription_cancellation(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    source = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="used-makeup-source-cancel",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    entitlement = grant.makeup_entitlement
+
+    target_starts = datetime(2026, 9, 25, 15, 0, tzinfo=dt_timezone.utc)
+    target_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=target_starts,
+        ends_at=target_starts + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=target_starts - timedelta(hours=2),
+        decision_deadline=target_starts - timedelta(hours=1),
+        status=Lesson.Status.COMPLETED,
+    )
+    target_attendance = Attendance.objects.create(
+        lesson=target_lesson,
+        student=context["student"],
+        status=Attendance.Status.PRESENT,
+        marked_at=target_starts + timedelta(hours=1),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    AttendanceCoverage.objects.create(
+        attendance=target_attendance,
+        subscription_allowance=source.allowances.get(),
+        makeup_entitlement=entitlement,
+        created_by=actor,
+    )
+
+    cancelled = cancel_subscription(
+        subscription_id=source.id,
+        actor=actor,
+        at=datetime(2026, 9, 26, 12, 0, tzinfo=dt_timezone.utc),
+    )
+    assert cancelled.cancelled_at is not None
