@@ -167,7 +167,10 @@ def _case_limit_peers(
 ):
     peers = AbsenceCompensationCase.objects.filter(
         student_id=case.student_id,
-        status=AbsenceCompensationCase.Status.OPEN,
+        status__in=[
+            AbsenceCompensationCase.Status.OPEN,
+            AbsenceCompensationCase.Status.MATERIALIZED,
+        ],
         absence_reason=case.absence_reason,
         policy_code_snapshot=case.policy_code_snapshot,
         source_subscription_allowance__subscription_id=source_subscription_id,
@@ -575,6 +578,11 @@ def materialize_free_makeup_from_case(
         "subscriptions.add_makeupentitlement",
         "Make-up entitlement permission is required.",
     )
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationcase",
+        "Compensation case change permission is required.",
+    )
 
     case_ref = AbsenceCompensationCase.objects.only(
         "student_id",
@@ -586,11 +594,7 @@ def materialize_free_makeup_from_case(
         .select_related("makeup_entitlement")
         .filter(
             case_id=case_id,
-            action_type=(
-                AbsenceCompensationPolicy.ActionType.FREE_MAKEUP
-                if hasattr(AbsenceCompensationPolicy, "ActionType")
-                else "free_makeup"
-            ),
+            action_type="free_makeup",
         )
         .first()
     )
@@ -653,10 +657,18 @@ def materialize_free_makeup_from_case(
                 )
             }
         )
-    subscription = allowance.subscription
+    locked_allowance, balance = locked_allowance_balance(allowance.id)
+    allowance = locked_allowance
+    subscription = Subscription.objects.select_for_update().get(
+        pk=allowance.subscription_id
+    )
     if subscription.cancelled_at is not None:
         raise ValidationError(
             {"case": "Source subscription is cancelled."}
+        )
+    if balance <= 0:
+        raise ValidationError(
+            {"case": "Source allowance has no remaining visits."}
         )
 
     target_rule = action.get("target_period_rule")
