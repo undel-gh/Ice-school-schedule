@@ -6,9 +6,16 @@ from django.core.exceptions import ValidationError
 
 from accounts.models import CoachProfile, Student
 from attendance.models import AbsenceJustification, Attendance
+from attendance.services import revoke_medical_absence, set_attendance
 from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
-from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from scheduling.models import (
+    Lesson,
+    LessonRosterEntry,
+    LessonType,
+    TrainingGroup,
+    Venue,
+)
 from subscriptions.models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
@@ -660,6 +667,184 @@ def test_category_period_limit_counts_ice_and_hall_separately(actor, context):
     hall_case.refresh_from_db()
     assert ice_case.eligible_absence_ordinal == 1
     assert hall_case.eligible_absence_ordinal == 1
+    assert (
+        ice_case.eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
+    assert (
+        hall_case.eligibility_status
+        == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+    )
+
+
+@pytest.mark.django_db
+def test_attendance_correction_to_present_cancels_open_case(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=attendance.lesson,
+        student=context["student"],
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=actor,
+    )
+
+    set_attendance(
+        lesson_id=attendance.lesson_id,
+        student_id=context["student"].id,
+        status=Attendance.Status.PRESENT,
+        actor=actor,
+        now=attendance.lesson.starts_at + timedelta(hours=2),
+    )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.CANCELLED
+    assert AuditEvent.objects.filter(
+        event_type="AbsenceCompensationCaseCancelled",
+        aggregate_id=case.id,
+        payload__reason="attendance_corrected_to_present",
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_medical_justification_revocation_cancels_open_case(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy(
+        reason=AbsenceCompensationPolicy.AbsenceReason.MEDICAL,
+        code="medical-revocation-policy",
+        justification=(
+            AbsenceCompensationPolicy.JustificationRequirement.VERIFIED_MEDICAL
+        ),
+    )
+    justification = AbsenceJustification.objects.create(
+        student=context["student"],
+        lesson=attendance.lesson,
+        status=AbsenceJustification.Status.VERIFIED,
+        reviewed_at=attendance.marked_at,
+        reviewed_by=actor,
+        declared_by=actor,
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.MEDICAL,
+        actor=actor,
+        source_justification_id=justification.id,
+        now=attendance.marked_at,
+    )
+
+    revoke_medical_absence(
+        justification_id=justification.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.CANCELLED
+    assert AuditEvent.objects.filter(
+        event_type="AbsenceCompensationCaseCancelled",
+        aggregate_id=case.id,
+        payload__reason="medical_justification_revoked",
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_student_period_limit_uses_source_subscription_identity(actor, context):
+    policy = make_policy()
+    policy.max_eligible_absences = 1
+    policy.limit_scope = (
+        AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD
+    )
+    policy.save(
+        update_fields=["max_eligible_absences", "limit_scope"]
+    )
+
+    ice_plan = SubscriptionPlan.objects.create(
+        code="identity-ice",
+        name="Identity ICE",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=ice_plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=4,
+    )
+    issue_subscription(
+        student_id=context["student"].id,
+        plan_id=ice_plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+
+    hall_plan = SubscriptionPlan.objects.create(
+        code="identity-hall",
+        name="Identity HALL",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=hall_plan,
+        category=SubscriptionCategory.HALL,
+        visit_limit=4,
+    )
+    issue_subscription(
+        student_id=context["student"].id,
+        plan_id=hall_plan.id,
+        valid_from=date(2026, 9, 15),
+        valid_until=date(2026, 10, 12),
+        actor=actor,
+    )
+
+    ice_absence = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        lesson_type=context["ice"],
+    )
+    hall_absence = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(
+            2026,
+            9,
+            25,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+        lesson_type=context["hall"],
+    )
+
+    ice_case = create_absence_compensation_case(
+        attendance_id=ice_absence.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=ice_absence.marked_at,
+    )
+    hall_case = create_absence_compensation_case(
+        attendance_id=hall_absence.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=hall_absence.marked_at,
+    )
+
+    ice_case.refresh_from_db()
+    hall_case.refresh_from_db()
+    assert ice_case.eligible_absence_ordinal == 1
+    assert hall_case.eligible_absence_ordinal == 1
+    assert (
+        ice_case.source_subscription_allowance.subscription_id
+        != hall_case.source_subscription_allowance.subscription_id
+    )
     assert (
         ice_case.eligibility_status
         == AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
