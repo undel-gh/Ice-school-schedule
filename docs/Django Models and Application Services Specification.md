@@ -3162,6 +3162,38 @@ later absence. Eligibility changes emit `AbsenceCompensationEvaluated`.
 Eligibility is intentionally dynamic **only before a compensation action is
 materialized**.
 
+The first materialization path is implemented for `FREE_MAKEUP`:
+
+```text
+OPEN + ELIGIBLE AbsenceCompensationCase
+    → AbsenceCompensationActionGrant(FREE_MAKEUP)
+    → MakeupEntitlement(reason=ABSENCE_COMPENSATION)
+    → case.status = MATERIALIZED
+```
+
+`AbsenceCompensationActionGrant` stores the exact action snapshot used for the
+grant and links it to the resulting entitlement. The pair
+`(case, action_type)` is unique, so repeated materialization is idempotent.
+
+A MATERIALIZED case keeps consuming one policy-limit slot but is no longer
+reevaluated. OPEN cases are reevaluated in the remaining quota. This prevents
+a later backdated absence from revoking an already granted right while also
+preventing the grant from freeing an extra limit slot.
+
+Currently implemented:
+
+```text
+FREE_MAKEUP → MakeupEntitlement
+```
+
+Intentionally not yet implemented:
+
+```text
+PAID_MAKEUP
+BILLING_RECALCULATION
+NEXT_STUDENT_PERIOD resolution
+```
+
 The first future service that grants a makeup entitlement, paid freeze or
 billing recalculation from a case must, in the same transaction:
 
