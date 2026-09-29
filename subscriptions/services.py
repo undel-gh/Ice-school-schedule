@@ -968,6 +968,55 @@ def _reverse_materialized_absence_compensation_cases(
 
 
 @transaction.atomic
+def reverse_absence_compensation_case(
+    *,
+    case_id: UUID,
+    actor: User,
+    reason: str,
+    now=None,
+) -> AbsenceCompensationCase:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationcase",
+        "Absence compensation case change permission is required.",
+    )
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError(
+            {"reason": "A reversal reason is required."}
+        )
+
+    case_ref = AbsenceCompensationCase.objects.only(
+        "student_id",
+        "attendance_id",
+    ).get(pk=case_id)
+    Student.objects.select_for_update().get(pk=case_ref.student_id)
+    case = AbsenceCompensationCase.objects.select_for_update().get(pk=case_id)
+
+    if case.status == AbsenceCompensationCase.Status.REVERSED:
+        return case
+    if case.status != AbsenceCompensationCase.Status.MATERIALIZED:
+        raise ValidationError(
+            {
+                "case": (
+                    "Only a MATERIALIZED compensation case can be "
+                    "reversed."
+                )
+            }
+        )
+
+    reversed_at = now or timezone.now()
+    _reverse_materialized_absence_compensation_cases(
+        attendance_id=case_ref.attendance_id,
+        actor=actor,
+        at=reversed_at,
+        reason=reason,
+    )
+    case.refresh_from_db()
+    return case
+
+
+@transaction.atomic
 def cancel_absence_compensation_case(
     *,
     case_id: UUID,
