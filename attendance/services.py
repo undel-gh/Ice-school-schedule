@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from accounts.models import Student
 from audit.services import record_event
 from core.permissions import (
     require_lesson_coach_or_permission,
