@@ -3,6 +3,7 @@ from django.contrib import admin
 from core.admin import ReadOnlyAdmin
 
 from .models import (
+    AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
     AbsenceCompensationPolicyWindow,
@@ -18,6 +19,26 @@ from .models import (
 
 
 
+
+
+
+@admin.register(AbsenceCompensationCase)
+class AbsenceCompensationCaseAdmin(ReadOnlyAdmin):
+    list_display = (
+        "student",
+        "source_lesson",
+        "absence_reason",
+        "policy_code_snapshot",
+        "policy_version_snapshot",
+        "status",
+        "created_at",
+    )
+    list_filter = ("absence_reason", "status", "category")
+    search_fields = (
+        "student__display_name",
+        "policy_code_snapshot",
+        "policy_name_snapshot",
+    )
 
 class AbsenceCompensationPolicyActionInline(admin.TabularInline):
     model = AbsenceCompensationPolicyAction
