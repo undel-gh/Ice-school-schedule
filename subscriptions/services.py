@@ -800,6 +800,15 @@ def cancel_absence_compensation_case(
     case = AbsenceCompensationCase.objects.select_for_update().get(pk=case_id)
     if case.status == AbsenceCompensationCase.Status.CANCELLED:
         return case
+    if case.status == AbsenceCompensationCase.Status.MATERIALIZED:
+        raise ValidationError(
+            {
+                "case": (
+                    "A MATERIALIZED compensation case cannot be cancelled "
+                    "directly. Reverse its materialized actions first."
+                )
+            }
+        )
 
     at = at or timezone.now()
     case.status = AbsenceCompensationCase.Status.CANCELLED
