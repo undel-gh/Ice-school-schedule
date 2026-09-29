@@ -500,6 +500,57 @@ def create_absence_compensation_case(
     return case
 
 
+def _cancel_open_absence_compensation_cases(
+    *,
+    attendance_id: UUID,
+    actor: User | None,
+    at,
+    reason: str,
+    source_justification_id: UUID | None = None,
+) -> int:
+    attendance = Attendance.objects.select_for_update().get(pk=attendance_id)
+    Student.objects.select_for_update().get(pk=attendance.student_id)
+    cases = AbsenceCompensationCase.objects.select_for_update().filter(
+        attendance_id=attendance.id,
+        status=AbsenceCompensationCase.Status.OPEN,
+    )
+    if source_justification_id is not None:
+        cases = cases.filter(source_justification_id=source_justification_id)
+
+    cancelled = 0
+    for case in list(cases.order_by("id")):
+        case.status = AbsenceCompensationCase.Status.CANCELLED
+        case.cancelled_at = at
+        case.cancelled_by = actor
+        case.save(
+            update_fields=[
+                "status",
+                "cancelled_at",
+                "cancelled_by",
+            ]
+        )
+        _audit(
+            event_type="AbsenceCompensationCaseCancelled",
+            aggregate_type="AbsenceCompensationCase",
+            aggregate_id=case.id,
+            actor=actor,
+            payload={
+                "attendance_id": str(case.attendance_id),
+                "cancelled_at": at.isoformat(),
+                "reason": reason,
+            },
+        )
+        cancelled += 1
+
+    if cancelled:
+        _reevaluate_open_compensation_cases_for_student(
+            student_id=attendance.student_id,
+            actor=actor,
+            evaluated_at=at,
+        )
+    return cancelled
+
+
 @transaction.atomic
 def cancel_absence_compensation_case(
     *,
