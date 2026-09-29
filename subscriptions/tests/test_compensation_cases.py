@@ -21,6 +21,8 @@ from subscriptions.models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
+    AttendanceCoverage,
+    MakeupEntitlement,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
@@ -1214,3 +1216,187 @@ def test_create_case_returns_existing_materialized_case(actor, context):
     assert repeated.id == case.id
     repeated.refresh_from_db()
     assert repeated.status == AbsenceCompensationCase.Status.MATERIALIZED
+
+
+@pytest.mark.django_db
+def test_present_correction_reverses_unused_materialized_compensation(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="reverse-on-present",
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    LessonRosterEntry.objects.create(
+        lesson=attendance.lesson,
+        student=context["student"],
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=actor,
+    )
+
+    set_attendance(
+        lesson_id=attendance.lesson_id,
+        student_id=context["student"].id,
+        status=Attendance.Status.PRESENT,
+        actor=actor,
+        now=attendance.lesson.starts_at + timedelta(hours=2),
+    )
+
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    entitlement = MakeupEntitlement.objects.get(pk=grant.makeup_entitlement_id)
+    attendance.refresh_from_db()
+    assert attendance.status == Attendance.Status.PRESENT
+    assert case.status == AbsenceCompensationCase.Status.REVERSED
+    assert case.reversal_reason == "attendance_corrected_to_present"
+    assert grant.reversed_at is not None
+    assert grant.reversal_reason == "attendance_corrected_to_present"
+    assert entitlement.cancelled_at is not None
+
+
+@pytest.mark.django_db
+def test_present_correction_rejects_used_materialized_compensation(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    make_policy()
+    subscription = issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="used-materialized-compensation",
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    entitlement = grant.makeup_entitlement
+
+    target_starts = datetime(2026, 9, 22, 15, 0, tzinfo=dt_timezone.utc)
+    target_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=target_starts,
+        ends_at=target_starts + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=target_starts - timedelta(hours=2),
+        decision_deadline=target_starts - timedelta(hours=1),
+        status=Lesson.Status.COMPLETED,
+    )
+    target_attendance = Attendance.objects.create(
+        lesson=target_lesson,
+        student=context["student"],
+        status=Attendance.Status.PRESENT,
+        marked_at=target_starts + timedelta(hours=1),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    AttendanceCoverage.objects.create(
+        attendance=target_attendance,
+        subscription_allowance=subscription.allowances.get(),
+        makeup_entitlement=entitlement,
+        created_by=actor,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=attendance.lesson,
+        student=context["student"],
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=actor,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="compensation make-up is already used",
+    ):
+        set_attendance(
+            lesson_id=attendance.lesson_id,
+            student_id=context["student"].id,
+            status=Attendance.Status.PRESENT,
+            actor=actor,
+            now=attendance.lesson.starts_at + timedelta(hours=2),
+        )
+
+    attendance.refresh_from_db()
+    case.refresh_from_db()
+    entitlement.refresh_from_db()
+    assert attendance.status == Attendance.Status.ABSENT
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert entitlement.cancelled_at is None
+
+
+@pytest.mark.django_db
+def test_medical_absence_cannot_receive_second_compensation_makeup(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    subscription = issue_ice_subscription_for_period(
+        actor=actor,
+        context=context,
+        code="medical-double-compensation",
+    )
+    make_policy(
+        reason=AbsenceCompensationPolicy.AbsenceReason.MEDICAL,
+        code="medical-double-policy",
+        justification=(
+            AbsenceCompensationPolicy.JustificationRequirement.VERIFIED_MEDICAL
+        ),
+    )
+    justification = AbsenceJustification.objects.create(
+        student=context["student"],
+        lesson=attendance.lesson,
+        status=AbsenceJustification.Status.VERIFIED,
+        reviewed_at=attendance.marked_at,
+        reviewed_by=actor,
+        declared_by=actor,
+    )
+    MakeupEntitlement.objects.create(
+        student=context["student"],
+        source_lesson=attendance.lesson,
+        source_subscription_allowance=subscription.allowances.get(),
+        source_justification=justification,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.MEDICAL_VERIFIED,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+        created_by=actor,
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.MEDICAL,
+        actor=actor,
+        source_justification_id=justification.id,
+        now=attendance.marked_at,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="already has an active compensation make-up",
+    ):
+        materialize_free_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert MakeupEntitlement.objects.filter(
+        student=context["student"],
+        source_lesson=attendance.lesson,
+        cancelled_at__isnull=True,
+    ).count() == 1
