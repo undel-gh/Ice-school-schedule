@@ -1677,7 +1677,13 @@ def issue_ice_subscription_range(
 def test_authorize_paid_makeup_freezes_case_without_entitlement(actor, context):
     attendance = make_absence(context=context, actor=actor)
     policy = make_policy()
-    add_paid_action(policy)
+    add_paid_action(
+        policy,
+        target_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.FEE_REQUIRED,
+    )
     issue_ice_subscription_range(
         actor=actor,
         context=context,
@@ -1729,6 +1735,13 @@ def test_paid_makeup_requires_fee_and_target_subscription_before_activation(
         valid_from=date(2026, 9, 1),
         valid_until=date(2026, 9, 30),
     )
+    target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-requirements-target",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
     case = create_absence_compensation_case(
         attendance_id=attendance.id,
         absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
@@ -1738,6 +1751,7 @@ def test_paid_makeup_requires_fee_and_target_subscription_before_activation(
     grant = authorize_paid_makeup_from_case(
         case_id=case.id,
         actor=actor,
+        target_subscription_id=target.id,
         now=attendance.marked_at + timedelta(hours=1),
     )
 
@@ -1760,20 +1774,6 @@ def test_paid_makeup_requires_fee_and_target_subscription_before_activation(
     )
     assert second_confirmation.fee_confirmed_at == first_confirmation.fee_confirmed_at
 
-    with pytest.raises(ValidationError, match="Target subscription is required"):
-        activate_paid_makeup_grant(
-            grant_id=grant.id,
-            actor=actor,
-            now=attendance.marked_at + timedelta(hours=3),
-        )
-
-    target = issue_ice_subscription_range(
-        actor=actor,
-        context=context,
-        code="paid-requirements-target",
-        valid_from=date(2026, 10, 1),
-        valid_until=date(2026, 10, 31),
-    )
     activated = activate_paid_makeup_grant(
         grant_id=grant.id,
         actor=actor,
@@ -1921,7 +1921,13 @@ def test_paid_makeup_explicit_window_intersects_required_target_subscription(
 def test_pending_paid_makeup_can_be_reversed_before_activation(actor, context):
     attendance = make_absence(context=context, actor=actor)
     policy = make_policy()
-    add_paid_action(policy)
+    add_paid_action(
+        policy,
+        target_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.FEE_REQUIRED,
+    )
     issue_ice_subscription_range(
         actor=actor,
         context=context,
@@ -2458,6 +2464,13 @@ def test_unpaid_paid_authorization_expires_and_releases_limit(actor, context):
         valid_from=date(2026, 9, 1),
         valid_until=date(2026, 9, 30),
     )
+    target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-expiry-target",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
     first = create_absence_compensation_case(
         attendance_id=attendance.id,
         absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
@@ -2467,6 +2480,7 @@ def test_unpaid_paid_authorization_expires_and_releases_limit(actor, context):
     grant = authorize_paid_makeup_from_case(
         case_id=first.id,
         actor=actor,
+        target_subscription_id=target.id,
         now=attendance.marked_at + timedelta(hours=1),
     )
 
@@ -2485,8 +2499,18 @@ def test_unpaid_paid_authorization_expires_and_releases_limit(actor, context):
         AbsenceCompensationCase.EligibilityStatus.LIMIT_EXCEEDED
     )
 
-    result = process_subscription_lifecycle(
+    at_target_start = process_subscription_lifecycle(
         as_of=date(2026, 10, 1),
+        actor=actor,
+    )
+    first.refresh_from_db()
+    grant.refresh_from_db()
+    assert at_target_start["paid_authorization_expired"] == 0
+    assert first.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert grant.reversed_at is None
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 11, 1),
         actor=actor,
     )
 
@@ -2511,7 +2535,13 @@ def test_unpaid_paid_authorization_expires_and_releases_limit(actor, context):
 def test_paid_authorization_with_confirmed_fee_does_not_auto_expire(actor, context):
     attendance = make_absence(context=context, actor=actor)
     policy = make_policy()
-    add_paid_action(policy)
+    add_paid_action(
+        policy,
+        target_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.FEE_REQUIRED,
+    )
     issue_ice_subscription_range(
         actor=actor,
         context=context,
