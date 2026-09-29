@@ -37,6 +37,7 @@ from subscriptions.services import (
     adjust_allowance,
     authorize_paid_makeup_from_case,
     cancel_absence_compensation_case,
+    cancel_subscription,
     confirm_paid_makeup_fee,
     create_absence_compensation_case,
     issue_subscription,
@@ -2041,3 +2042,63 @@ def test_paid_makeup_next_period_rejects_overlapping_target_subscription(
     grant.refresh_from_db()
     assert grant.activated_at is None
     assert grant.makeup_entitlement_id is None
+
+
+@pytest.mark.django_db
+def test_target_subscription_cannot_be_cancelled_while_paid_grant_active(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-cancel-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    target = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-cancel-target",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="required by an active PAID_MAKEUP grant",
+    ):
+        cancel_subscription(
+            subscription_id=target.id,
+            actor=actor,
+            at=attendance.marked_at + timedelta(hours=2),
+        )
+
+    reverse_absence_compensation_case(
+        case_id=case.id,
+        actor=actor,
+        reason="paid_freeze_cancelled",
+        now=attendance.marked_at + timedelta(hours=3),
+    )
+    cancelled = cancel_subscription(
+        subscription_id=target.id,
+        actor=actor,
+        at=attendance.marked_at + timedelta(hours=4),
+    )
+
+    assert cancelled.cancelled_at is not None
