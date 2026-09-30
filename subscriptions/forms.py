@@ -79,3 +79,21 @@ class ManagerPlaceHoldCancelForm(forms.Form):
             attrs={"placeholder": "Например: услуга оформлена ошибочно"}
         ),
     )
+
+
+
+class ManagerAllowanceAdjustmentForm(forms.Form):
+    delta = forms.IntegerField(
+        label="Изменение остатка",
+        help_text="Положительное значение добавляет посещения, отрицательное списывает.",
+    )
+    reason = forms.CharField(
+        label="Причина",
+        max_length=255,
+    )
+
+
+class ManagerSubscriptionCancelForm(forms.Form):
+    confirm = forms.BooleanField(
+        label="Подтверждаю отмену абонемента",
+    )
