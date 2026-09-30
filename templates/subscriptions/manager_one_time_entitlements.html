@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Разовые права{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Разовые права</h1></header>
+<p><a class="btn btn-primary" href="{% url 'subscriptions:manager_one_time_create' %}">Выдать право</a></p>
+<div class="card-list">
+{% for item in entitlements %}
+  <article class="lesson-card">
+    <div class="lesson-card__top"><div><h2>{{ item.student.display_name }}</h2><p class="lesson-card__meta">{{ item.lesson.starts_at|date:"d.m.Y H:i" }} · {{ item.lesson.lesson_type.name }}</p></div>{% if item.cancelled_at %}<span class="badge badge--cancelled">отменено</span>{% else %}<span class="badge badge--covered">активно</span>{% endif %}</div>
+    <p>{{ item.get_entitlement_type_display }} · {{ item.category|upper }}</p>
+    {% if not item.cancelled_at %}<form method="post" action="{% url 'subscriptions:manager_one_time_cancel' item.id %}" onsubmit="return confirm('Отменить разовое право?');">{% csrf_token %}<button class="btn-absent" type="submit">Отменить</button></form>{% endif %}
+    <p><a href="{% url 'audit_manager:events' %}?aggregate_type=OneTimeEntitlement&aggregate_id={{ item.id }}">Audit trail</a></p>
+  </article>
+{% empty %}<div class="empty-state">Разовых прав нет.</div>{% endfor %}
+</div>
+{% endblock %}
