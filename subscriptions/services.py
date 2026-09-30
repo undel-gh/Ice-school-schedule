@@ -863,8 +863,10 @@ def _lock_paid_makeup_target_subscription(
     case: AbsenceCompensationCase,
     subscription_id: UUID,
 ) -> Subscription:
-    subscription = Subscription.objects.select_for_update().get(
-        pk=subscription_id
+    subscription = (
+        Subscription.objects.select_for_update(of=("self",))
+        .select_related("billing_period")
+        .get(pk=subscription_id)
     )
     if subscription.student_id != case.student_id:
         raise ValidationError(
@@ -918,6 +920,45 @@ def _validate_paid_makeup_target(
                     )
                 }
             )
+        if (
+            target_subscription.valid_from is None
+            or target_subscription.valid_until is None
+        ):
+            try:
+                target_period = target_subscription.billing_period
+            except SubscriptionPeriod.DoesNotExist as exc:
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Pending target subscription has no billing "
+                            "period metadata."
+                        )
+                    }
+                ) from exc
+            if (
+                target_period.mode_snapshot
+                != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+                or target_period.state != SubscriptionPeriod.State.PENDING
+            ):
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription has no active dates and is "
+                            "not a pending rolling subscription."
+                        )
+                    }
+                )
+            if target_period.reference_date <= source_subscription.valid_until:
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Pending rolling target subscription reference "
+                            "date must be after the source subscription ends."
+                        )
+                    }
+                )
+            return None, None
+
         if target_subscription.valid_from <= source_subscription.valid_until:
             raise ValidationError(
                 {
@@ -938,6 +979,19 @@ def _validate_paid_makeup_target(
         valid_from = date.fromisoformat(target_from)
         valid_until = date.fromisoformat(target_until)
         if target_subscription is not None:
+            if (
+                target_subscription.valid_from is None
+                or target_subscription.valid_until is None
+            ):
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Pending target subscription must be activated "
+                            "before it can be validated against an explicit "
+                            "target window."
+                        )
+                    }
+                )
             valid_from = max(valid_from, target_subscription.valid_from)
             valid_until = min(valid_until, target_subscription.valid_until)
             if valid_until < valid_from:
@@ -1348,6 +1402,16 @@ def activate_paid_makeup_grant(
         target_subscription=target_subscription,
     )
     if valid_from is None or valid_until is None:
+        if target_subscription is not None:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target rolling subscription is still pending "
+                        "activation. Activate its billing period before "
+                        "activating the paid make-up."
+                    )
+                }
+            )
         raise ValidationError(
             {"target_subscription": "Target subscription is required."}
         )
@@ -4007,6 +4071,8 @@ def _paid_makeup_authorization_deadline(
     ):
         if grant.target_subscription is None:
             return None, "missing_target_subscription"
+        if grant.target_subscription.valid_until is None:
+            return None, "target_subscription_pending_activation"
         return grant.target_subscription.valid_until, None
 
     if (
