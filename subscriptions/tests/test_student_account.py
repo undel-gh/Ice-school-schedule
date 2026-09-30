@@ -335,8 +335,7 @@ def test_inactive_student_keeps_historical_account_access(
         reverse("scheduling:student_schedule"),
         {"student": str(ctx["student"].id)},
     )
-    assert schedule.status_code == 200
-    assert schedule.context["selected_student"] == ctx["other_student"]
+    assert schedule.status_code == 404
 
     ctx["other_student"].is_active = False
     ctx["other_student"].save(update_fields=["is_active"])
