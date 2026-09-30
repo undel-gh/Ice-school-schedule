@@ -749,3 +749,70 @@ def test_manager_subscription_report_orders_pending_first_explicitly(
         student_id=student.id,
     )
     assert [row.subscription.id for row in rows] == [pending.id, active.id]
+
+
+@pytest.mark.django_db
+def test_reversing_activation_coverage_returns_unused_rolling_period_to_pending(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-revert",
+        name="Rolling revert",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-revert-plan", scheme=scheme, ice=2)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+    assert coverage is not None
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert period.activation_lesson_id == lesson.id
+
+    reverse_attendance_coverage(
+        coverage_id=coverage.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 17, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    period.refresh_from_db()
+    assert subscription.valid_from is None
+    assert subscription.valid_until is None
+    assert period.state == SubscriptionPeriod.State.PENDING
+    assert period.starts_on is None
+    assert period.ends_on is None
+    assert period.activation_lesson_id is None
+    assert period.activated_at is None
+    event = AuditEvent.objects.get(
+        event_type="SubscriptionPeriodActivationReverted",
+        aggregate_id=period.id,
+    )
+    assert event.payload["reverted_coverage_id"] == str(coverage.id)
+    assert event.payload["previous_starts_on"] == "2026-10-10"
+    assert event.payload["previous_ends_on"] == "2026-11-06"
