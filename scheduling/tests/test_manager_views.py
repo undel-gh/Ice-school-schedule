@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from accounts.models import CoachProfile
 from audit.models import AuditEvent
+from core.time import make_school_aware
 from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
 
 User = get_user_model()
@@ -90,7 +91,9 @@ def test_manager_resolves_generation_conflict_with_skip(client, manager_schedule
         valid_until=occurrence_date,
         is_active=True,
     )
-    starts_at = timezone.make_aware(datetime.combine(occurrence_date, time(18, 0)))
+    starts_at = make_school_aware(
+        datetime.combine(occurrence_date, time(18, 0))
+    )
     conflicting = Lesson.objects.create(
         group=ctx["group"],
         lesson_type=ctx["lesson_type"],
@@ -231,7 +234,7 @@ def test_generation_conflict_is_resolved_when_template_occurrence_materializes(
         valid_until=occurrence_date,
         is_active=True,
     )
-    starts_at = timezone.make_aware(
+    starts_at = make_school_aware(
         datetime.combine(occurrence_date, time(18, 0))
     )
     conflicting = Lesson.objects.create(
