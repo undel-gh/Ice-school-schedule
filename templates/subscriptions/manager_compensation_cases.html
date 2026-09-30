@@ -1,3 +1,4 @@
+{% load manager_labels %}
 {% extends "base.html" %}
 {% block title %}Компенсации{% endblock %}
 {% block content %}
@@ -15,9 +16,9 @@
   <article class="lesson-card">
     <div class="lesson-card__top">
       <div><h2><a href="{% url 'subscriptions:manager_compensation_case_detail' case.id %}">{{ case.student.display_name }}</a></h2><p class="lesson-card__meta">{{ case.source_lesson.starts_at|date:"d.m.Y H:i" }} · {{ case.source_lesson.lesson_type.name }}</p></div>
-      <span class="badge">{{ case.get_status_display }}</span>
+      <span class="badge">{{ case.status|manager_label:"compensation_status" }}</span>
     </div>
-    <p>{{ case.get_absence_reason_display }} · право на компенсацию: {{ case.get_eligibility_status_display }}</p>
+    <p>{{ case.absence_reason|manager_label:"absence_reason" }} · право на компенсацию: {{ case.eligibility_status|manager_label:"compensation_eligibility" }}</p>
     <p class="lesson-card__meta">{{ case.policy_name_snapshot }} v{{ case.policy_version_snapshot }}</p>
   </article>
 {% empty %}<div class="empty-state">Компенсационных случаев нет.</div>{% endfor %}
