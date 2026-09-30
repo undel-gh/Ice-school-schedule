@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Операции менеджера{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Операции менеджера</h1>
+  <p class="page-header__meta">Расписание, права, компенсации и аудит</p>
+</header>
+<div class="manager-operation-grid">
+  <a class="report-card manager-nav-card" href="{% url 'scheduling_manager:templates' %}"><h2>Шаблоны расписания</h2><p>Создание и versioning регулярного расписания.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'scheduling_manager:conflicts' %}"><h2>Конфликты генерации</h2><p>Просмотр и явный skip occurrence.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'scheduling_manager:lessons' %}"><h2>Занятия</h2><p>Publish, confirm, cancel и reschedule.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_compensation_cases' %}"><h2>Компенсации</h2><p>FREE/PAID makeup, fee, activation и reversal.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'attendance_manager:medical' %}"><h2>Медицинские основания</h2><p>Verify, reject и revoke.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_one_time_entitlements' %}"><h2>Разовые права</h2><p>Single/trial/individual/mini-group entitlements.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_subscription_report' %}"><h2>Абонементы</h2><p>Расчётные периоды, остатки и сохранение места.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'audit_manager:events' %}"><h2>Audit trail</h2><p>История domain events и correlation ID.</p></a>
+</div>
+{% endblock %}
