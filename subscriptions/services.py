@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Exists, OuterRef, Q, Sum
 from django.utils import timezone
 
@@ -13,6 +13,7 @@ from accounts.models import Student
 from attendance.models import AbsenceJustification, Attendance
 from audit.models import AuditEvent
 from audit.services import event_exists, record_event
+from core.choices import SubscriptionCategory
 from core.permissions import require_permission
 from core.time import school_date
 from scheduling.models import Lesson, TrainingGroup
@@ -83,10 +84,7 @@ def _clean_catalog_text(value: str, *, field: str) -> str:
 def _validate_plan_allowances(
     allowances: dict[str, int | None],
 ) -> dict[str, int]:
-    allowed_categories = {
-        SubscriptionPlanAllowance._meta.get_field("category").choices[0][0],
-        SubscriptionPlanAllowance._meta.get_field("category").choices[1][0],
-    }
+    allowed_categories = set(SubscriptionCategory.values)
     unknown = set(allowances) - allowed_categories
     if unknown:
         raise ValidationError(
@@ -181,6 +179,38 @@ def update_subscription_period_scheme(
     scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
         pk=scheme_id
     )
+    referenced = (
+        SubscriptionPlan.objects.filter(period_scheme=scheme).exists()
+        or SubscriptionPeriod.objects.filter(scheme=scheme).exists()
+    )
+    if referenced and (
+        scheme.mode != mode
+        or scheme.fixed_anchor_date != fixed_anchor_date
+    ):
+        raise ValidationError(
+            {
+                "mode": (
+                    "Referenced period schemes cannot change mode or fixed "
+                    "anchor. Create a new scheme and switch future plans to it."
+                )
+            }
+        )
+    if (
+        scheme.is_active
+        and not is_active
+        and SubscriptionPlan.objects.filter(
+            period_scheme=scheme,
+            is_active=True,
+        ).exists()
+    ):
+        raise ValidationError(
+            {
+                "is_active": (
+                    "Deactivate or move active subscription plans before "
+                    "deactivating this period scheme."
+                )
+            }
+        )
     previous = {
         "code": scheme.code,
         "name": scheme.name,
@@ -414,6 +444,25 @@ def _policy_has_cases(policy_id: UUID) -> bool:
     return AbsenceCompensationCase.objects.filter(policy_id=policy_id).exists()
 
 
+def _lock_absence_policy_reasons(*reasons: str) -> None:
+    values = sorted({reason for reason in reasons if reason})
+    if not values:
+        return
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            for reason in values:
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    [f"absence-compensation-policy:{reason}"],
+                )
+    else:
+        list(
+            AbsenceCompensationPolicy.objects.select_for_update()
+            .filter(absence_reason__in=values)
+            .values_list("id", flat=True)
+        )
+
+
 @transaction.atomic
 def create_absence_compensation_policy(
     *,
@@ -434,6 +483,7 @@ def create_absence_compensation_policy(
         "Compensation policy creation permission is required.",
     )
     code = _clean_catalog_text(code, field="code")
+    _lock_absence_policy_reasons(absence_reason)
     if AbsenceCompensationPolicy.objects.filter(code=code).exists():
         raise ValidationError(
             {"code": "This policy code already exists. Create a new version instead."}
@@ -497,9 +547,20 @@ def update_absence_compensation_policy(
         "subscriptions.change_absencecompensationpolicy",
         "Compensation policy change permission is required.",
     )
+    policy_ref = AbsenceCompensationPolicy.objects.only(
+        "absence_reason"
+    ).get(pk=policy_id)
+    _lock_absence_policy_reasons(
+        policy_ref.absence_reason,
+        absence_reason,
+    )
     policy = AbsenceCompensationPolicy.objects.select_for_update().get(
         pk=policy_id
     )
+    if policy.absence_reason != policy_ref.absence_reason:
+        raise ValidationError(
+            {"policy": "Compensation policy changed concurrently. Retry."}
+        )
     if _policy_has_cases(policy.id):
         raise ValidationError(
             {"policy": "Referenced policy versions are immutable. Create a new version."}
@@ -562,8 +623,10 @@ def version_absence_compensation_policy(
         "Compensation policy creation permission is required.",
     )
     source_ref = AbsenceCompensationPolicy.objects.only(
-        "code"
+        "code",
+        "absence_reason",
     ).get(pk=policy_id)
+    _lock_absence_policy_reasons(source_ref.absence_reason)
     versions = list(
         AbsenceCompensationPolicy.objects.select_for_update()
         .filter(code=source_ref.code)
@@ -575,6 +638,10 @@ def version_absence_compensation_policy(
     )
     if source is None:
         raise AbsenceCompensationPolicy.DoesNotExist
+    if source.absence_reason != source_ref.absence_reason:
+        raise ValidationError(
+            {"policy": "Compensation policy changed concurrently. Retry."}
+        )
     today = school_date(now or timezone.now())
     if effective_from <= today:
         raise ValidationError(
@@ -675,6 +742,94 @@ def version_absence_compensation_policy(
         },
     )
     return replacement
+
+
+@transaction.atomic
+def end_absence_compensation_policy(
+    *,
+    policy_id: UUID,
+    inactive_from: date,
+    actor: User,
+    now=None,
+) -> AbsenceCompensationPolicy:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationpolicy",
+        "Compensation policy change permission is required.",
+    )
+    source_ref = AbsenceCompensationPolicy.objects.only(
+        "code",
+        "absence_reason",
+    ).get(pk=policy_id)
+    _lock_absence_policy_reasons(source_ref.absence_reason)
+    versions = list(
+        AbsenceCompensationPolicy.objects.select_for_update()
+        .filter(code=source_ref.code)
+        .order_by("version", "id")
+    )
+    policy = next(
+        (item for item in versions if item.id == policy_id),
+        None,
+    )
+    if policy is None:
+        raise AbsenceCompensationPolicy.DoesNotExist
+    if policy.absence_reason != source_ref.absence_reason:
+        raise ValidationError(
+            {"policy": "Compensation policy changed concurrently. Retry."}
+        )
+    if policy.version != max(item.version for item in versions):
+        raise ValidationError(
+            {"policy": "Only the latest policy version can be ended."}
+        )
+    today = school_date(now or timezone.now())
+    if inactive_from <= today:
+        raise ValidationError(
+            {"inactive_from": "Policy termination must start after today."}
+        )
+    if inactive_from <= policy.effective_from:
+        raise ValidationError(
+            {
+                "inactive_from": (
+                    "Policy termination must start after its effective-from date."
+                )
+            }
+        )
+    new_until = inactive_from - timedelta(days=1)
+    if (
+        policy.effective_until is not None
+        and policy.effective_until <= new_until
+    ):
+        raise ValidationError(
+            {
+                "inactive_from": (
+                    "This policy version already ends on or before that date."
+                )
+            }
+        )
+
+    previous_until = policy.effective_until
+    AbsenceCompensationPolicy.objects.filter(pk=policy.id).update(
+        effective_until=new_until
+    )
+    policy.effective_until = new_until
+    _audit(
+        event_type="AbsenceCompensationPolicyEnded",
+        aggregate_type="AbsenceCompensationPolicy",
+        aggregate_id=policy.id,
+        actor=actor,
+        payload={
+            "code": policy.code,
+            "version": policy.version,
+            "inactive_from": inactive_from.isoformat(),
+            "effective_until": new_until.isoformat(),
+            "previous_effective_until": (
+                previous_until.isoformat()
+                if previous_until is not None
+                else None
+            ),
+        },
+    )
+    return policy
 
 
 def _require_unreferenced_policy(policy: AbsenceCompensationPolicy) -> None:
