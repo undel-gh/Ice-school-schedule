@@ -3,7 +3,7 @@
 {% block content %}
 <header class="page-header"><h1>Компенсации пропусков</h1></header>
 <div class="action-row manager-actions">
-  <a class="btn btn-primary" href="{% url 'subscriptions:manager_compensation_case_create' %}">Новый case</a>
+  <a class="btn btn-primary" href="{% url 'subscriptions:manager_compensation_case_create' %}">Новый случай</a>
   <a class="btn btn-secondary" href="{% url 'subscriptions:manager_operations' %}">Операции</a>
 </div>
 <form class="filter-form" method="get">
@@ -17,9 +17,9 @@
       <div><h2><a href="{% url 'subscriptions:manager_compensation_case_detail' case.id %}">{{ case.student.display_name }}</a></h2><p class="lesson-card__meta">{{ case.source_lesson.starts_at|date:"d.m.Y H:i" }} · {{ case.source_lesson.lesson_type.name }}</p></div>
       <span class="badge">{{ case.get_status_display }}</span>
     </div>
-    <p>{{ case.get_absence_reason_display }} · eligibility: {{ case.get_eligibility_status_display }}</p>
+    <p>{{ case.get_absence_reason_display }} · право на компенсацию: {{ case.get_eligibility_status_display }}</p>
     <p class="lesson-card__meta">{{ case.policy_name_snapshot }} v{{ case.policy_version_snapshot }}</p>
   </article>
-{% empty %}<div class="empty-state">Compensation cases нет.</div>{% endfor %}
+{% empty %}<div class="empty-state">Компенсационных случаев нет.</div>{% endfor %}
 </div>
 {% endblock %}
