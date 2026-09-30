@@ -392,6 +392,7 @@ def manager_lesson_detail(
 @login_required
 @require_POST
 def manager_publish_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResponse:
+    get_object_or_404(Lesson, pk=lesson_id)
     require_permission(
         request.user,
         "scheduling.change_lesson",
@@ -413,6 +414,7 @@ def manager_publish_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResp
 @login_required
 @require_POST
 def manager_confirm_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResponse:
+    get_object_or_404(Lesson, pk=lesson_id)
     try:
         confirm_lesson(
             lesson_id=lesson_id,
@@ -429,6 +431,7 @@ def manager_confirm_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResp
 @login_required
 @require_POST
 def manager_cancel_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResponse:
+    get_object_or_404(Lesson, pk=lesson_id)
     form = ManagerLessonCancelForm(request.POST)
     if form.is_valid():
         try:
@@ -450,6 +453,7 @@ def manager_cancel_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpRespo
 @login_required
 @require_POST
 def manager_reschedule_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResponse:
+    get_object_or_404(Lesson, pk=lesson_id)
     form = ManagerLessonRescheduleForm(request.POST)
     if form.is_valid():
         try:
