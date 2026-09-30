@@ -7,6 +7,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        school_time_zone:
+          - UTC
+          - Asia/Tokyo
     services:
       postgres:
         image: postgres:17
@@ -24,7 +30,8 @@ jobs:
     env:
       DJANGO_SECRET_KEY: ci-secret-key-not-for-production
       DJANGO_DEBUG: "1"
-      SCHOOL_TIME_ZONE: Europe/Riga
+      SCHOOL_TIME_ZONE: ${{ matrix.school_time_zone }}
+      DJANGO_TIME_ZONE: UTC
       POSTGRES_DB: ice_school
       POSTGRES_USER: ice_school
       POSTGRES_PASSWORD: ice_school
