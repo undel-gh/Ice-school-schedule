@@ -353,10 +353,10 @@ def test_manager_choice_labels_use_school_timezone(
 ):
     ctx = operations_context
     settings.TIME_ZONE = "UTC"
-    settings.SCHOOL_TIME_ZONE = "Europe/Riga"
+    settings.SCHOOL_TIME_ZONE = "Asia/Tokyo"
 
     expected_time = ctx["lesson"].starts_at.astimezone(
-        ZoneInfo("Europe/Riga")
+        ZoneInfo("Asia/Tokyo")
     ).strftime("%d.%m.%Y %H:%M")
     one_time_form = ManagerOneTimeEntitlementForm()
     lesson_label = one_time_form.fields["lesson"].label_from_instance(
