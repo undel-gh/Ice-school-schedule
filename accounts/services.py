@@ -5,12 +5,10 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from audit.services import record_event
 from core.permissions import require_permission
-from core.time import school_date
 
 from .models import CoachProfile, Student, StudentAccess
 
@@ -226,22 +224,22 @@ def update_coach_profile(
         "is_active": coach.is_active,
     }
     if coach.is_active and not is_active:
-        from scheduling.models import Lesson, ScheduleTemplate
+        from scheduling.models import Lesson
+        from scheduling.services import (
+            coach_has_unmaterialized_future_occurrence,
+        )
 
         now = timezone.now()
-        today = school_date(now)
-        has_active_template = (
-            ScheduleTemplate.objects.filter(coach=coach, is_active=True)
-            .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
-            .exists()
-        )
-        if has_active_template:
+        if coach_has_unmaterialized_future_occurrence(
+            coach_id=coach.id,
+            now=now,
+        ):
             raise ValidationError(
                 {
                     "is_active": (
-                        "The coach cannot be deactivated while assigned to an "
-                        "active current or future schedule template. Reassign or "
-                        "version the template first."
+                        "The coach cannot be deactivated while an active "
+                        "schedule template still has an unmaterialized future "
+                        "occurrence. Version or end that template first."
                     )
                 }
             )
