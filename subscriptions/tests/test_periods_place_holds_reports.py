@@ -890,3 +890,76 @@ def test_reversing_activation_coverage_keeps_period_after_other_coverage(
         event_type="SubscriptionPeriodActivationRevertSkipped",
         aggregate_id=period.id,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-makeup-dependency",
+        name="Rolling makeup dependency",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-makeup-dependency-plan", scheme=scheme, ice=3)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    activation_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+    )
+    attendance = Attendance.objects.create(
+        lesson=activation_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+    assert coverage is not None
+
+    source_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 12, 15, tzinfo=dt_timezone.utc),
+    )
+    allowance = subscription.allowances.get(category=SubscriptionCategory.ICE)
+    MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 11, 7),
+        valid_until=date(2026, 12, 31),
+        created_by=actor,
+    )
+
+    reverse_attendance_coverage(
+        coverage_id=coverage.id,
+        actor=actor,
+        now=datetime(2026, 10, 12, 17, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert subscription.valid_from == date(2026, 10, 10)
+    assert subscription.valid_until == date(2026, 11, 6)
+    event = AuditEvent.objects.get(
+        event_type="SubscriptionPeriodActivationRevertSkipped",
+        aggregate_id=period.id,
+    )
+    assert event.payload["reason"] == "dependent_rights_exist"
+    assert event.payload["dependencies"]["active_makeups"] is True
