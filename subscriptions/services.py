@@ -2879,24 +2879,126 @@ def assign_attendance_coverage(
     )
 
 
+def _maybe_revert_rolling_subscription_activation(
+    *,
+    coverage: AttendanceCoverage,
+    subscription_id: UUID,
+    actor: User | None,
+    correlation_id: UUID,
+) -> bool:
+    period = (
+        SubscriptionPeriod.objects.select_for_update()
+        .filter(subscription_id=subscription_id)
+        .first()
+    )
+    if period is None:
+        return False
+    if (
+        period.state != SubscriptionPeriod.State.ACTIVE
+        or period.mode_snapshot
+        != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        or period.activation_lesson_id != coverage.attendance.lesson_id
+    ):
+        return False
+
+    has_other_active_coverage = (
+        AttendanceCoverage.objects.filter(
+            subscription_allowance__subscription_id=subscription_id,
+            reversed_at__isnull=True,
+        )
+        .exclude(pk=coverage.id)
+        .exists()
+    )
+    if has_other_active_coverage:
+        _audit(
+            event_type="SubscriptionPeriodActivationRevertSkipped",
+            aggregate_type="SubscriptionPeriod",
+            aggregate_id=period.id,
+            actor=actor,
+            payload={
+                "subscription_id": str(subscription_id),
+                "activation_lesson_id": str(period.activation_lesson_id),
+                "reversed_coverage_id": str(coverage.id),
+                "reason": "active_coverages_remain",
+            },
+            correlation_id=correlation_id,
+        )
+        return False
+
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    previous_starts_on = period.starts_on
+    previous_ends_on = period.ends_on
+    activation_lesson_id = period.activation_lesson_id
+
+    subscription.valid_from = None
+    subscription.valid_until = None
+    subscription.save(update_fields=["valid_from", "valid_until"])
+
+    period.state = SubscriptionPeriod.State.PENDING
+    period.starts_on = None
+    period.ends_on = None
+    period.activation_lesson = None
+    period.activated_at = None
+    period.save(
+        update_fields=[
+            "state",
+            "starts_on",
+            "ends_on",
+            "activation_lesson",
+            "activated_at",
+        ]
+    )
+    _audit(
+        event_type="SubscriptionPeriodActivationReverted",
+        aggregate_type="SubscriptionPeriod",
+        aggregate_id=period.id,
+        actor=actor,
+        payload={
+            "subscription_id": str(subscription.id),
+            "activation_lesson_id": str(activation_lesson_id),
+            "reverted_coverage_id": str(coverage.id),
+            "previous_starts_on": (
+                previous_starts_on.isoformat()
+                if previous_starts_on is not None
+                else None
+            ),
+            "previous_ends_on": (
+                previous_ends_on.isoformat()
+                if previous_ends_on is not None
+                else None
+            ),
+            "reason": "attendance_coverage_reversed",
+        },
+        correlation_id=correlation_id,
+    )
+    return True
+
+
 @transaction.atomic
 def reverse_attendance_coverage(
     *,
     coverage_id: UUID,
     actor: User | None = None,
     correlation_id: UUID | None = None,
+    now=None,
 ) -> AttendanceCoverage:
     correlation_id = correlation_id or uuid4()
-    coverage = AttendanceCoverage.objects.select_for_update().get(
-        pk=coverage_id
+    coverage = (
+        AttendanceCoverage.objects.select_for_update()
+        .select_related("attendance")
+        .get(pk=coverage_id)
     )
     if coverage.reversed_at is not None:
         return coverage
 
+    subscription_id = None
     if coverage.subscription_allowance_id is not None:
         allowance, _ = locked_allowance_balance(
             coverage.subscription_allowance_id
         )
+        subscription_id = allowance.subscription_id
         SubscriptionLedgerEntry.objects.create(
             allowance=allowance,
             coverage=coverage,
@@ -2906,7 +3008,7 @@ def reverse_attendance_coverage(
             created_by=actor,
         )
 
-    coverage.reversed_at = timezone.now()
+    coverage.reversed_at = now or timezone.now()
     coverage.reversed_by = actor
     coverage.save(update_fields=["reversed_at", "reversed_by"])
 
@@ -2932,8 +3034,14 @@ def reverse_attendance_coverage(
             },
             correlation_id=correlation_id,
         )
+    if subscription_id is not None:
+        _maybe_revert_rolling_subscription_activation(
+            coverage=coverage,
+            subscription_id=subscription_id,
+            actor=actor,
+            correlation_id=correlation_id,
+        )
     return coverage
-
 
 @transaction.atomic
 def adjust_allowance(
@@ -4103,9 +4211,27 @@ def _paid_makeup_authorization_deadline(
     ):
         if grant.target_subscription is None:
             return None, "missing_target_subscription"
-        if grant.target_subscription.valid_until is None:
+        if grant.target_subscription.valid_until is not None:
+            return grant.target_subscription.valid_until, None
+        try:
+            target_period = grant.target_subscription.billing_period
+        except SubscriptionPeriod.DoesNotExist:
+            return None, "target_subscription_missing_period"
+        if (
+            target_period.state != SubscriptionPeriod.State.PENDING
+            or target_period.mode_snapshot
+            != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        ):
             return None, "target_subscription_pending_activation"
-        return grant.target_subscription.valid_until, None
+        target_window = resolve_subscription_period_window(
+            scheme=target_period.scheme,
+            reference_date=target_period.reference_date,
+            first_lesson_date=target_period.reference_date,
+        )
+        if target_window is None:
+            return None, "target_subscription_deadline_unresolved"
+        _target_from, target_until = target_window
+        return target_until, None
 
     if (
         target_rule
@@ -4134,6 +4260,7 @@ def _process_one_paid_makeup_authorization_expiry(
             "case",
             "case__source_subscription_allowance__subscription",
             "target_subscription",
+            "target_subscription__billing_period__scheme",
         )
         .get(pk=grant_id)
     )
