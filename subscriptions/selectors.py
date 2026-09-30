@@ -42,6 +42,13 @@ class ManagerAllowanceReport:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagerSubscriptionDetail:
+    row: "ManagerSubscriptionReportRow"
+    ledger_entries: tuple[SubscriptionLedgerEntry, ...]
+    makeups: tuple[MakeupEntitlement, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ManagerSubscriptionReportRow:
     subscription: Subscription
     subscription_state: str
@@ -562,3 +569,48 @@ def manager_subscription_report(
             )
         )
     return tuple(rows)
+
+
+
+def manager_subscription_detail(
+    *,
+    subscription_id: UUID,
+    as_of: date,
+) -> ManagerSubscriptionDetail:
+    subscription = Subscription.objects.select_related(
+        "student",
+        "plan",
+    ).get(pk=subscription_id)
+    rows = manager_subscription_report(
+        as_of=as_of,
+        student_id=subscription.student_id,
+    )
+    row = next(
+        item for item in rows
+        if item.subscription.id == subscription.id
+    )
+    ledger_entries = tuple(
+        SubscriptionLedgerEntry.objects.filter(
+            allowance__subscription=subscription,
+        )
+        .select_related(
+            "allowance",
+            "coverage",
+        )
+        .order_by("-created_at", "-id")
+    )
+    makeups = tuple(
+        MakeupEntitlement.objects.filter(
+            source_subscription_allowance__subscription=subscription,
+        )
+        .select_related(
+            "source_lesson",
+            "target_lesson",
+        )
+        .order_by("-created_at", "-id")
+    )
+    return ManagerSubscriptionDetail(
+        row=row,
+        ledger_entries=ledger_entries,
+        makeups=makeups,
+    )
