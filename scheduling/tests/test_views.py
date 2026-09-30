@@ -6,7 +6,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from core.time import make_school_aware
+from core.testing import school_dt
 from accounts.models import CoachProfile, Student, StudentAccess
 from attendance.models import Attendance
 from scheduling.models import (
@@ -77,16 +77,6 @@ def web_context(db):
         "student": student,
         "other_student": other_student,
     }
-
-
-def school_dt(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    minute: int = 0,
-) -> datetime:
-    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 def make_lesson(
