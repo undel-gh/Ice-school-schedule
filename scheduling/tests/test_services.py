@@ -547,7 +547,7 @@ def test_reschedule_beyond_subscription_creates_targeted_makeup(
     admin,
 ):
     coach, group, venue, lesson_type = school_context
-    starts_at = datetime(2026, 9, 29, 15, 0, tzinfo=dt_timezone.utc)
+    starts_at = school_dt(2026, 9, 29, 18, 0)
     source = Lesson.objects.create(
         group=group,
         lesson_type=lesson_type,
@@ -585,22 +585,8 @@ def test_reschedule_beyond_subscription_creates_targeted_makeup(
 
     replacement = reschedule_lesson_with_entitlements(
         lesson_id=source.id,
-        new_starts_at=datetime(
-            2026,
-            10,
-            2,
-            15,
-            0,
-            tzinfo=dt_timezone.utc,
-        ),
-        new_ends_at=datetime(
-            2026,
-            10,
-            2,
-            16,
-            0,
-            tzinfo=dt_timezone.utc,
-        ),
+        new_starts_at=school_dt(2026, 10, 2, 18, 0),
+        new_ends_at=school_dt(2026, 10, 2, 19, 0),
         actor=admin,
         reason=Lesson.CancellationReason.ADMINISTRATIVE,
         now=starts_at - timedelta(hours=3),
@@ -745,7 +731,7 @@ def test_publish_daily_schedule_only_publishes_requested_date(
     coach_user,
 ):
     coach, group, venue, lesson_type = school_context
-    first_start = datetime(2026, 9, 15, 15, 0, tzinfo=dt_timezone.utc)
+    first_start = school_dt(2026, 9, 15, 18, 0)
     second_start = first_start + timedelta(days=1)
     first = make_lesson(
         school_context=school_context,
@@ -844,14 +830,7 @@ def test_student_schedule_uses_roster_snapshot_and_excludes_draft(
     student,
     coach_user,
 ):
-    starts_at = datetime(
-        2026,
-        9,
-        15,
-        15,
-        0,
-        tzinfo=dt_timezone.utc,
-    )
+    starts_at = school_dt(2026, 9, 15, 18, 0)
     visible = make_lesson(
         school_context=school_context,
         status=Lesson.Status.RSVP_OPEN,
@@ -905,14 +884,7 @@ def test_student_schedule_includes_response_attendance_and_coverage(
     guardian,
     coach_user,
 ):
-    starts_at = datetime(
-        2026,
-        9,
-        15,
-        15,
-        0,
-        tzinfo=dt_timezone.utc,
-    )
+    starts_at = school_dt(2026, 9, 15, 18, 0)
     lesson = make_lesson(
         school_context=school_context,
         status=Lesson.Status.COMPLETED,
@@ -970,14 +942,7 @@ def test_coach_schedule_counts_only_active_roster(
     coach_user,
 ):
     coach, group, venue, lesson_type = school_context
-    starts_at = datetime(
-        2026,
-        9,
-        15,
-        15,
-        0,
-        tzinfo=dt_timezone.utc,
-    )
+    starts_at = school_dt(2026, 9, 15, 18, 0)
     lesson = make_lesson(
         school_context=school_context,
         status=Lesson.Status.RSVP_OPEN,
@@ -1029,14 +994,7 @@ def test_coach_schedule_excludes_draft(
     school_context,
 ):
     coach, group, venue, lesson_type = school_context
-    starts_at = datetime(
-        2026,
-        9,
-        15,
-        15,
-        0,
-        tzinfo=dt_timezone.utc,
-    )
+    starts_at = school_dt(2026, 9, 15, 18, 0)
     make_lesson(
         school_context=school_context,
         status=Lesson.Status.DRAFT,
