@@ -4,14 +4,18 @@ from uuid import UUID
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import ValidationError
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from attendance.models import Attendance
-from core.permissions import require_permission
+from core.permissions import (
+    require_manager_operations_access,
+    require_permission,
+)
+from core.presentation import validation_message
 
 from .manager_forms import (
     ManagerCompensationCaseCreateForm,
@@ -41,37 +45,9 @@ from .services import (
 )
 
 
-def _validation_message(exc: ValidationError) -> str:
-    if hasattr(exc, "message_dict"):
-        return " ".join(
-            message
-            for messages_ in exc.message_dict.values()
-            for message in messages_
-        )
-    return " ".join(exc.messages)
-
-
-def _require_operations_access(user) -> None:
-    manager_permissions = (
-        "subscriptions.view_subscription",
-        "subscriptions.view_absencecompensationcase",
-        "subscriptions.view_onetimeentitlement",
-        "scheduling.view_scheduletemplate",
-        "scheduling.view_lesson",
-        "attendance.view_absencejustification",
-        "audit.view_auditevent",
-    )
-    if user.is_superuser or any(
-        user.has_perm(permission)
-        for permission in manager_permissions
-    ):
-        return
-    raise PermissionDenied("Manager operations permission is required.")
-
-
 @login_required
 def manager_operations_dashboard(request: HttpRequest) -> HttpResponse:
-    _require_operations_access(request.user)
+    require_manager_operations_access(request.user)
     return render(request, "subscriptions/manager_operations_dashboard.html")
 
 
@@ -124,7 +100,7 @@ def manager_compensation_case_create(request: HttpRequest) -> HttpResponse:
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            form.add_error(None, _validation_message(exc))
+            form.add_error(None, validation_message(exc))
         else:
             messages.success(request, "Compensation case создан.")
             return redirect(
@@ -215,7 +191,7 @@ def manager_compensation_materialize_free(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Бесплатная отработка выдана.")
     return redirect(
@@ -247,7 +223,7 @@ def manager_compensation_authorize_paid(
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            messages.error(request, _validation_message(exc))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Платная отработка авторизована.")
     else:
@@ -273,7 +249,7 @@ def manager_compensation_confirm_fee(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Оплата подтверждена.")
     return redirect(
@@ -307,7 +283,7 @@ def manager_compensation_activate_paid(
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            messages.error(request, _validation_message(exc))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Платная отработка активирована.")
     else:
@@ -337,7 +313,7 @@ def manager_compensation_reverse(
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            messages.error(request, _validation_message(exc))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Compensation case отменён через reversal.")
     else:
@@ -363,7 +339,7 @@ def manager_compensation_cancel(
             at=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "OPEN compensation case отменён.")
     return redirect(
@@ -409,7 +385,7 @@ def manager_one_time_create(request: HttpRequest) -> HttpResponse:
                 actor=request.user,
             )
         except ValidationError as exc:
-            form.add_error(None, _validation_message(exc))
+            form.add_error(None, validation_message(exc))
         else:
             messages.success(request, "Разовое право выдано.")
             return redirect("subscriptions:manager_one_time_entitlements")
@@ -435,7 +411,7 @@ def manager_one_time_cancel(
             at=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Разовое право отменено.")
     return redirect("subscriptions:manager_one_time_entitlements")
@@ -466,7 +442,7 @@ def manager_administrative_makeup_create(
                 target_lesson_id=target.id if target else None,
             )
         except ValidationError as exc:
-            form.add_error(None, _validation_message(exc))
+            form.add_error(None, validation_message(exc))
         else:
             messages.success(request, "Административная отработка выдана.")
             return redirect("subscriptions:manager_compensation_cases")
