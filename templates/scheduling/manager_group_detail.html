@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ group.name }}{% endblock %}
+{% block content %}
+<header class="page-header"><h1>{{ group.name }}</h1><p class="page-header__meta">{{ group.code }}</p></header>
+<div class="action-row manager-actions">{% if perms.scheduling.change_traininggroup %}<a class="btn btn-secondary" href="{% url 'school_scheduling:group_edit' group.id %}">Редактировать</a>{% endif %}{% if perms.scheduling.add_groupmembership %}<a class="btn btn-primary" href="{% url 'school_scheduling:membership_create' %}?group={{ group.id }}">Добавить ученика</a>{% endif %}</div>
+{% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=TrainingGroup&aggregate_id={{ group.id }}">Журнал группы</a></p>{% endif %}
+<h2 class="section-title">Состав и история</h2>
+<div class="card-list">{% for membership in memberships %}
+<article class="lesson-card"><div class="lesson-card__top"><strong><a href="{% url 'accounts_manager:student_detail' membership.student.id %}">{{ membership.student.display_name }}</a></strong><span class="badge">{{ membership.starts_on|date:"d.m.Y" }}—{% if membership.ends_on %}{{ membership.ends_on|date:"d.m.Y" }}{% else %}∞{% endif %}</span></div>{% if perms.scheduling.change_groupmembership %}<a href="{% url 'school_scheduling:membership_edit' membership.id %}">Изменить период</a>{% endif %}</article>
+{% empty %}<div class="empty-state">Состав группы пуст.</div>{% endfor %}</div>
+{% endblock %}
