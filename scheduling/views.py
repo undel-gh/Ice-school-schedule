@@ -85,7 +85,16 @@ def home(request: HttpRequest) -> HttpResponse:
         coach = None
     if coach is not None and coach.is_active:
         return redirect("scheduling:coach_schedule")
-    if request.user.has_perm("subscriptions.view_subscription"):
+    manager_permissions = (
+        "subscriptions.view_subscription",
+        "subscriptions.view_absencecompensationcase",
+        "subscriptions.view_onetimeentitlement",
+        "scheduling.view_scheduletemplate",
+        "scheduling.view_lesson",
+        "attendance.view_absencejustification",
+        "audit.view_auditevent",
+    )
+    if any(request.user.has_perm(permission) for permission in manager_permissions):
         return redirect("subscriptions:manager_operations")
     if request.user.is_staff:
         return redirect("admin:index")
