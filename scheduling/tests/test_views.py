@@ -276,14 +276,7 @@ def test_coach_attendance_post_uses_service(client, web_context):
 def test_student_schedule_renders_mobile_touch_controls(client, web_context):
     lesson = make_lesson(
         context=web_context,
-        starts_at=datetime(
-            2099,
-            9,
-            25,
-            15,
-            0,
-            tzinfo=dt_timezone.utc,
-        ),
+        starts_at=school_dt(2099, 9, 25, 18, 0),
     )
     LessonRosterEntry.objects.create(
         lesson=lesson,
