@@ -14,7 +14,7 @@ from django.views.decorators.http import require_POST
 
 from audit.models import AuditEvent
 from core.permissions import require_permission
-from core.time import school_date
+from core.time import make_school_aware, school_date
 from ice_school.workflows import reschedule_lesson_with_entitlements
 
 from .forms import (
@@ -334,9 +334,14 @@ def manager_lessons(request: HttpRequest) -> HttpResponse:
     )
     if until_date < from_date or (until_date - from_date).days > MAX_MANAGER_RANGE_DAYS:
         raise Http404("Invalid date range.")
-    start = timezone.make_aware(datetime.combine(from_date, datetime.min.time()))
-    end = timezone.make_aware(
-        datetime.combine(until_date + timedelta(days=1), datetime.min.time())
+    start = make_school_aware(
+        datetime.combine(from_date, datetime.min.time())
+    )
+    end = make_school_aware(
+        datetime.combine(
+            until_date + timedelta(days=1),
+            datetime.min.time(),
+        )
     )
     lessons = (
         Lesson.objects.filter(starts_at__gte=start, starts_at__lt=end)
