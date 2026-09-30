@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -283,3 +284,77 @@ def test_generation_conflict_is_resolved_when_template_occurrence_materializes(
         "scheduling_manager:conflict_skip",
         kwargs={"event_id": event.id},
     ) not in body
+
+
+@pytest.mark.django_db
+def test_manager_reschedule_datetime_local_uses_school_timezone(
+    client,
+    manager_schedule_context,
+    settings,
+):
+    ctx = manager_schedule_context
+    settings.TIME_ZONE = "UTC"
+    settings.SCHOOL_TIME_ZONE = "Europe/Riga"
+
+    source_start = timezone.now() + timedelta(days=10)
+    lesson = Lesson.objects.create(
+        group=ctx["group"],
+        lesson_type=ctx["lesson_type"],
+        coach=ctx["coach"],
+        venue=ctx["venue"],
+        starts_at=source_start,
+        ends_at=source_start + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=source_start - timedelta(hours=2),
+        decision_deadline=source_start - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    school_target_date = (
+        timezone.now().astimezone(ZoneInfo("Europe/Riga"))
+        + timedelta(days=20)
+    ).date()
+    client.force_login(ctx["manager"])
+
+    response = client.post(
+        reverse(
+            "scheduling_manager:lesson_reschedule",
+            kwargs={"lesson_id": lesson.id},
+        ),
+        {
+            "new_starts_at": f"{school_target_date.isoformat()}T18:00",
+            "new_ends_at": f"{school_target_date.isoformat()}T19:00",
+            "reason": Lesson.CancellationReason.ADMINISTRATIVE,
+        },
+    )
+
+    assert response.status_code == 302
+    lesson.refresh_from_db()
+    replacement = lesson.replacement_lesson
+    local_start = replacement.starts_at.astimezone(
+        ZoneInfo("Europe/Riga")
+    )
+    local_end = replacement.ends_at.astimezone(
+        ZoneInfo("Europe/Riga")
+    )
+    assert (local_start.hour, local_start.minute) == (18, 0)
+    assert (local_end.hour, local_end.minute) == (19, 0)
+
+
+@pytest.mark.django_db
+def test_manager_post_checks_permission_before_lesson_lookup(client):
+    import uuid
+
+    outsider = User.objects.create_user(
+        username="manager-lesson-outsider",
+        password="test",
+    )
+    client.force_login(outsider)
+
+    response = client.post(
+        reverse(
+            "scheduling_manager:lesson_publish",
+            kwargs={"lesson_id": uuid.uuid4()},
+        )
+    )
+
+    assert response.status_code == 403
