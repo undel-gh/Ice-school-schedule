@@ -2206,7 +2206,7 @@ def issue_subscription_for_period(
     now=None,
 ) -> Subscription:
     plan = (
-        SubscriptionPlan.objects.select_for_update()
+        SubscriptionPlan.objects.select_for_update(of=("self",))
         .select_related("period_scheme")
         .get(pk=plan_id)
     )
