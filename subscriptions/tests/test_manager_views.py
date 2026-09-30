@@ -9,6 +9,8 @@ from django.urls import reverse
 from accounts.models import Student
 from core.choices import SubscriptionCategory
 from subscriptions.models import (
+    GroupPlaceHold,
+    Subscription,
     SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
@@ -110,3 +112,108 @@ def test_home_routes_manager_to_report(client):
     assert response.url == reverse(
         "subscriptions:manager_subscription_report"
     )
+
+
+@pytest.mark.django_db
+def test_manager_can_issue_period_subscription_from_web(client):
+    manager = User.objects.create_user(
+        username="issue-manager",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+    student = Student.objects.create(display_name="Web issue student")
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="web-issue-calendar",
+        name="Calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="web-issue-plan",
+        name="Web 8 ICE",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+
+    client.force_login(manager)
+    response = client.post(
+        reverse("subscriptions:manager_subscription_issue"),
+        {
+            "student": str(student.id),
+            "plan": str(plan.id),
+            "reference_date": "2026-10-15",
+        },
+    )
+
+    assert response.status_code == 302
+    subscription = Subscription.objects.get(student=student, plan=plan)
+    assert subscription.valid_from == date(2026, 10, 1)
+    assert subscription.valid_until == date(2026, 10, 31)
+    assert subscription.billing_period.starts_on == date(2026, 10, 1)
+    assert subscription.billing_period.ends_on == date(2026, 10, 31)
+
+
+@pytest.mark.django_db
+def test_manager_can_manage_group_place_hold_from_web(client):
+    manager = User.objects.create_user(
+        username="hold-manager",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+    student = Student.objects.create(display_name="Hold student")
+    from scheduling.models import TrainingGroup
+
+    group = TrainingGroup.objects.create(
+        code="hold-web-group",
+        name="Hold Web Group",
+    )
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="hold-web-calendar",
+        name="Calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+
+    client.force_login(manager)
+    created = client.post(
+        reverse("subscriptions:manager_place_hold_create"),
+        {
+            "student": str(student.id),
+            "group": str(group.id),
+            "period_scheme": str(scheme.id),
+            "reference_date": "2026-10-10",
+        },
+    )
+    assert created.status_code == 302
+
+    hold = GroupPlaceHold.objects.get(student=student, group=group)
+    assert hold.period_from == date(2026, 10, 1)
+    assert hold.period_until == date(2026, 10, 31)
+    assert hold.status == GroupPlaceHold.Status.PENDING_PAYMENT
+
+    confirmed = client.post(
+        reverse(
+            "subscriptions:manager_place_hold_confirm",
+            kwargs={"hold_id": hold.id},
+        )
+    )
+    assert confirmed.status_code == 302
+    hold.refresh_from_db()
+    assert hold.status == GroupPlaceHold.Status.ACTIVE
+    assert hold.fee_confirmed_at is not None
+
+    cancelled = client.post(
+        reverse(
+            "subscriptions:manager_place_hold_cancel",
+            kwargs={"hold_id": hold.id},
+        ),
+        {"reason": "family request"},
+    )
+    assert cancelled.status_code == 302
+    hold.refresh_from_db()
+    assert hold.status == GroupPlaceHold.Status.CANCELLED
+    assert hold.cancellation_reason == "family request"
