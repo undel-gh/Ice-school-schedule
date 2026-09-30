@@ -450,7 +450,12 @@ def create_absence_compensation_policy(
         is_active=is_active,
     )
     policy.full_clean()
-    policy.save()
+    try:
+        policy.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "This policy code already exists. Create a new version instead."}
+        ) from exc
     _audit(
         event_type="AbsenceCompensationPolicyCreated",
         aggregate_type="AbsenceCompensationPolicy",
@@ -572,12 +577,17 @@ def version_absence_compensation_policy(
             {"effective_until": "Effective until cannot precede effective from."}
         )
 
-    next_version = (
+    versions = list(
         AbsenceCompensationPolicy.objects.select_for_update()
         .filter(code=source.code)
-        .aggregate(value=Max("version"))["value"]
-        or source.version
-    ) + 1
+        .order_by("version", "id")
+    )
+    latest_version = max(item.version for item in versions)
+    if source.version != latest_version:
+        raise ValidationError(
+            {"policy": "Only the latest policy version can be versioned."}
+        )
+    next_version = latest_version + 1
 
     replacement = AbsenceCompensationPolicy(
         code=source.code,
@@ -600,7 +610,12 @@ def version_absence_compensation_policy(
         source.effective_until = source_new_until
 
     replacement.full_clean()
-    replacement.save()
+    try:
+        replacement.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"policy": "Concurrent policy version creation detected. Retry."}
+        ) from exc
 
     action_map = {}
     for action in source.actions.order_by("priority", "action_type", "id"):
