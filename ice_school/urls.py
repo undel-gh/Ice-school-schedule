@@ -3,6 +3,8 @@ from django.urls import include, path
 
 urlpatterns = [
     path("", include("scheduling.urls")),
+    path("manager/school/", include("accounts.manager_urls")),
+    path("manager/school/", include("scheduling.school_admin_urls")),
     path("manager/scheduling/", include("scheduling.manager_urls")),
     path("manager/attendance/", include("attendance.manager_urls")),
     path("manager/audit/", include("audit.urls")),

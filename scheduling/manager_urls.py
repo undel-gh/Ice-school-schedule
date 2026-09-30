@@ -15,6 +15,7 @@ urlpatterns = [
     path("lessons/<uuid:lesson_id>/", manager_views.manager_lesson_detail, name="lesson_detail"),
     path("lessons/<uuid:lesson_id>/publish/", manager_views.manager_publish_lesson, name="lesson_publish"),
     path("lessons/<uuid:lesson_id>/confirm/", manager_views.manager_confirm_lesson, name="lesson_confirm"),
+    path("lessons/<uuid:lesson_id>/coach/", manager_views.manager_reassign_lesson_coach, name="lesson_reassign_coach"),
     path("lessons/<uuid:lesson_id>/cancel/", manager_views.manager_cancel_lesson, name="lesson_cancel"),
     path("lessons/<uuid:lesson_id>/reschedule/", manager_views.manager_reschedule_lesson, name="lesson_reschedule"),
 ]

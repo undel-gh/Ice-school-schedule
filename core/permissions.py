@@ -4,6 +4,21 @@ from django.core.exceptions import PermissionDenied
 
 
 MANAGER_OPERATION_PERMISSIONS = (
+    "accounts.view_student",
+    "accounts.add_student",
+    "accounts.change_student",
+    "accounts.view_studentaccess",
+    "accounts.add_studentaccess",
+    "accounts.change_studentaccess",
+    "accounts.view_coachprofile",
+    "accounts.add_coachprofile",
+    "accounts.change_coachprofile",
+    "scheduling.view_traininggroup",
+    "scheduling.add_traininggroup",
+    "scheduling.change_traininggroup",
+    "scheduling.view_groupmembership",
+    "scheduling.add_groupmembership",
+    "scheduling.change_groupmembership",
     "subscriptions.view_subscription",
     "subscriptions.view_absencecompensationcase",
     "subscriptions.add_absencecompensationcase",

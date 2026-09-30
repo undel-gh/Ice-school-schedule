@@ -361,3 +361,50 @@ def test_manager_post_checks_permission_before_lesson_lookup(client):
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_manager_reassigns_lesson_coach(client, manager_schedule_context):
+    ctx = manager_schedule_context
+    replacement_user = User.objects.create_user(
+        username="manager-replacement-coach",
+        password="test",
+    )
+    replacement = CoachProfile.objects.create(
+        user=replacement_user,
+        display_name="Replacement Coach",
+    )
+    starts_at = timezone.now() + timedelta(days=10)
+    lesson = Lesson.objects.create(
+        group=ctx["group"],
+        lesson_type=ctx["lesson_type"],
+        coach=ctx["coach"],
+        venue=ctx["venue"],
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CONFIRMED,
+    )
+    client.force_login(ctx["manager"])
+
+    response = client.post(
+        reverse(
+            "scheduling_manager:lesson_reassign_coach",
+            kwargs={"lesson_id": lesson.id},
+        ),
+        {
+            "coach": str(replacement.id),
+            "reason": "Тренер заболел",
+        },
+    )
+
+    assert response.status_code == 302
+    lesson.refresh_from_db()
+    assert lesson.coach_id == replacement.id
+    assert lesson.status == Lesson.Status.CONFIRMED
+    assert AuditEvent.objects.filter(
+        event_type="LessonCoachReassigned",
+        aggregate_id=lesson.id,
+    ).exists()

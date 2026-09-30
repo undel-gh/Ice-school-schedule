@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ student.display_name }}{% endblock %}
+{% block content %}
+<header class="page-header"><h1>{{ student.display_name }}</h1><p class="page-header__meta">{% if student.is_active %}Активный ученик{% else %}Неактивный ученик{% endif %}</p></header>
+<div class="action-row manager-actions">
+{% if perms.accounts.change_student %}<a class="btn btn-secondary" href="{% url 'accounts_manager:student_edit' student.id %}">Редактировать</a>{% endif %}
+{% if perms.accounts.add_studentaccess %}<a class="btn btn-primary" href="{% url 'accounts_manager:student_access_create' student.id %}">Добавить доступ</a>{% endif %}
+{% if perms.scheduling.add_groupmembership %}<a class="btn btn-primary" href="{% url 'school_scheduling:membership_create' %}?student={{ student.id }}">Добавить в группу</a>{% endif %}
+</div>
+{% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=Student&aggregate_id={{ student.id }}">Журнал ученика</a></p>{% endif %}
+<h2 class="section-title">Доступы</h2>
+<div class="card-list">
+{% for access in accesses %}
+<article class="lesson-card"><div class="lesson-card__top"><div><strong>{{ access.user.username }}</strong><p class="lesson-card__meta">{% if access.role == "self" %}Сам ученик{% else %}Родитель / представитель{% endif %}</p></div>{% if access.is_active %}<span class="badge badge--covered">активен</span>{% else %}<span class="badge badge--cancelled">отключён</span>{% endif %}</div>
+{% if perms.accounts.change_studentaccess %}<a href="{% url 'accounts_manager:student_access_edit' access.id %}">Изменить доступ</a>{% endif %}
+</article>
+{% empty %}<div class="empty-state">Доступов нет.</div>{% endfor %}
+</div>
+<h2 class="section-title">Группы</h2>
+<div class="card-list">
+{% for membership in memberships %}
+<article class="lesson-card"><div class="lesson-card__top"><strong>{{ membership.group.name }}</strong><span class="badge">{{ membership.starts_on|date:"d.m.Y" }}—{% if membership.ends_on %}{{ membership.ends_on|date:"d.m.Y" }}{% else %}∞{% endif %}</span></div>
+{% if perms.scheduling.change_groupmembership %}<a href="{% url 'school_scheduling:membership_edit' membership.id %}">Изменить период</a>{% endif %}
+</article>
+{% empty %}<div class="empty-state">Участий в группах нет.</div>{% endfor %}
+</div>
+{% endblock %}

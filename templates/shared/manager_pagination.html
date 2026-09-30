@@ -1,0 +1,16 @@
+{% if page_obj %}
+<p class="page-header__meta">
+  Показано {{ page_obj.start_index }}–{{ page_obj.end_index }} из {{ page_obj.paginator.count }}
+</p>
+{% if page_obj.paginator.num_pages > 1 %}
+<nav class="action-row manager-actions" aria-label="Страницы">
+  {% if page_obj.has_previous %}
+    <a class="btn btn-secondary" href="?{% if query %}q={{ query|urlencode }}&{% endif %}{% if state %}state={{ state|urlencode }}&{% endif %}page={{ page_obj.previous_page_number }}">Назад</a>
+  {% endif %}
+  <span>Страница {{ page_obj.number }} из {{ page_obj.paginator.num_pages }}</span>
+  {% if page_obj.has_next %}
+    <a class="btn btn-secondary" href="?{% if query %}q={{ query|urlencode }}&{% endif %}{% if state %}state={{ state|urlencode }}&{% endif %}page={{ page_obj.next_page_number }}">Далее</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endif %}

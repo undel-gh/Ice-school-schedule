@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Группы{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Группы</h1></header>
+<div class="action-row manager-actions">{% if perms.scheduling.add_traininggroup %}<a class="btn btn-primary" href="{% url 'school_scheduling:group_create' %}">Новая группа</a>{% endif %}<a class="btn btn-secondary" href="{% url 'school_scheduling:memberships' %}">Состав групп</a></div>
+<form class="filter-form" method="get"><div class="field"><label for="q">Поиск</label><input id="q" name="q" value="{{ query }}" placeholder="Название или код"></div><button class="btn-secondary" type="submit">Найти</button></form>
+<div class="card-list">{% for group in groups %}
+<article class="lesson-card"><div class="lesson-card__top"><div><h2><a href="{% url 'school_scheduling:group_detail' group.id %}">{{ group.name }}</a></h2><p class="lesson-card__meta">{{ group.code }}</p></div>{% if group.is_active %}<span class="badge badge--covered">активна</span>{% else %}<span class="badge badge--cancelled">неактивна</span>{% endif %}</div><p>Минимум участников: {{ group.default_minimum_attendees }}</p></article>
+{% empty %}<div class="empty-state">Группы не найдены.</div>{% endfor %}</div>
+{% include "shared/manager_pagination.html" %}
+{% endblock %}

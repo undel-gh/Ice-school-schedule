@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Ученики{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Ученики</h1><p class="page-header__meta">Участники школы и доступы к их профилям</p></header>
+<div class="action-row manager-actions">
+  {% if perms.accounts.add_student %}<a class="btn btn-primary" href="{% url 'accounts_manager:student_create' %}">Новый ученик</a>{% endif %}
+</div>
+<form class="filter-form" method="get">
+  <div class="field"><label for="q">Поиск</label><input id="q" name="q" value="{{ query }}" placeholder="Имя ученика"></div>
+  <button class="btn-secondary" type="submit">Найти</button>
+</form>
+<div class="card-list">
+{% for student in students %}
+<article class="lesson-card">
+  <div class="lesson-card__top"><h2><a href="{% url 'accounts_manager:student_detail' student.id %}">{{ student.display_name }}</a></h2>
+  {% if student.is_active %}<span class="badge badge--covered">активен</span>{% else %}<span class="badge badge--cancelled">неактивен</span>{% endif %}</div>
+</article>
+{% empty %}<div class="empty-state">Ученики не найдены.</div>{% endfor %}
+</div>
+{% include "shared/manager_pagination.html" %}
+{% endblock %}

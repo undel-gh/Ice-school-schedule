@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}<header class="page-header"><h1>{{ title }}</h1>{% if membership %}<p class="page-header__meta">{{ membership.student.display_name }} · {{ membership.group.name }}</p>{% endif %}</header>
+<form class="report-card manager-form" method="post">{% csrf_token %}{{ form.non_field_errors }}{% for field in form %}<div class="field">{{ field.label_tag }}{{ field }}{% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}</div>{% endfor %}<button class="btn-primary" type="submit">Сохранить</button></form>
+{% if membership and perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=GroupMembership&aggregate_id={{ membership.id }}">Журнал участия</a></p>{% endif %}
+{% endblock %}

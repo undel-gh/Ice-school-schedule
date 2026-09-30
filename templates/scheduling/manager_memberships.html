@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Состав групп{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Состав групп</h1></header>
+{% if perms.scheduling.add_groupmembership %}<p><a class="btn btn-primary" href="{% url 'school_scheduling:membership_create' %}">Добавить участие</a></p>{% endif %}
+<form class="filter-form" method="get">
+<div class="field"><label for="q">Поиск</label><input id="q" name="q" value="{{ query }}" placeholder="Ученик или группа"></div>
+<div class="field"><label for="state">Период</label><select id="state" name="state"><option value="current" {% if state == "current" %}selected{% endif %}>Текущие</option><option value="future" {% if state == "future" %}selected{% endif %}>Будущие</option><option value="ended" {% if state == "ended" %}selected{% endif %}>Завершённые</option><option value="all" {% if state == "all" %}selected{% endif %}>Все</option></select></div>
+<button class="btn-secondary" type="submit">Показать</button></form>
+<div class="card-list">{% for membership in memberships %}
+<article class="lesson-card"><div class="lesson-card__top"><div><strong>{{ membership.student.display_name }}</strong><p class="lesson-card__meta">{{ membership.group.name }}</p></div><span class="badge">{{ membership.starts_on|date:"d.m.Y" }}—{% if membership.ends_on %}{{ membership.ends_on|date:"d.m.Y" }}{% else %}∞{% endif %}</span></div>{% if perms.scheduling.change_groupmembership %}<a href="{% url 'school_scheduling:membership_edit' membership.id %}">Изменить</a>{% endif %}</article>
+{% empty %}<div class="empty-state">Записей нет.</div>{% endfor %}</div>
+{% include "shared/manager_pagination.html" %}
+{% endblock %}

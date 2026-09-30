@@ -117,3 +117,24 @@ class ManagerLessonRescheduleForm(forms.Form):
         ),
         label="Причина",
     )
+
+
+class ManagerLessonCoachReassignForm(forms.Form):
+    coach = forms.ModelChoiceField(
+        queryset=CoachProfile.objects.none(),
+        label="Новый тренер",
+    )
+    reason = forms.CharField(
+        label="Причина замены",
+        max_length=500,
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
+
+    def __init__(self, *args, lesson: Lesson | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        queryset = CoachProfile.objects.filter(is_active=True).order_by(
+            "display_name", "id"
+        )
+        if lesson is not None:
+            queryset = queryset.exclude(pk=lesson.coach_id)
+        self.fields["coach"].queryset = queryset

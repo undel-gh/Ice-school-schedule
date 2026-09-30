@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 
@@ -18,7 +18,7 @@ from core.permissions import (
 )
 from core.time import make_school_aware, school_date as get_school_date
 
-from accounts.models import Student
+from accounts.models import CoachProfile, Student
 from audit.services import event_exists_with_payload, record_event
 from .models import (
     GroupMembership,
@@ -89,7 +89,16 @@ def create_group_membership(
             {"ends_on": "Membership end date cannot precede start date."}
         )
 
-    Student.objects.select_for_update().get(pk=student_id)
+    student = Student.objects.select_for_update().get(pk=student_id)
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    if not student.is_active:
+        raise ValidationError(
+            {"student": "Inactive students cannot be added to a group."}
+        )
+    if not group.is_active:
+        raise ValidationError(
+            {"group": "Students cannot be added to an inactive group."}
+        )
     existing = list(
         GroupMembership.objects.select_for_update().filter(
             student_id=student_id,
@@ -245,6 +254,17 @@ def create_schedule_template(
             }
         )
 
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    coach = CoachProfile.objects.select_for_update().get(pk=coach_id)
+    if not group.is_active:
+        raise ValidationError(
+            {"group": "Inactive groups cannot be used by an active schedule template."}
+        )
+    if not coach.is_active:
+        raise ValidationError(
+            {"coach": "Inactive coaches cannot be used by an active schedule template."}
+        )
+
     template = ScheduleTemplate.objects.create(
         group_id=group_id,
         lesson_type_id=lesson_type_id,
@@ -370,6 +390,21 @@ def version_schedule_template(
                     "minimum_attendees_override must be at least 1."
                 )
             }
+        )
+
+    target_group = TrainingGroup.objects.select_for_update().get(
+        pk=new_values["group_id"]
+    )
+    target_coach = CoachProfile.objects.select_for_update().get(
+        pk=new_values["coach_id"]
+    )
+    if not target_group.is_active:
+        raise ValidationError(
+            {"group": "Inactive groups cannot be used by an active schedule template."}
+        )
+    if not target_coach.is_active:
+        raise ValidationError(
+            {"coach": "Inactive coaches cannot be used by an active schedule template."}
         )
 
     cutoff = make_school_aware(
@@ -570,10 +605,13 @@ def skip_template_occurrence(
     )
     template = (
         ScheduleTemplate.objects.select_for_update()
-        .select_related("group")
+        .select_related("group", "coach")
         .get(pk=template_id)
     )
     TrainingGroup.objects.select_for_update().get(pk=template.group_id)
+    coach = CoachProfile.objects.select_for_update().get(
+        pk=template.coach_id
+    )
 
     if not template.is_active:
         raise ValidationError(
@@ -696,6 +734,46 @@ def _audit_lesson(
 
 
 
+def coach_has_unmaterialized_future_occurrence(
+    *,
+    coach_id: UUID,
+    now: datetime,
+) -> bool:
+    """Return whether an active template can still create a future lesson.
+
+    A finite template whose remaining occurrences are already materialized
+    does not block coach deactivation: those Lesson rows can be reassigned
+    independently while the old template expires naturally.
+    """
+    today = get_school_date(now)
+    templates = (
+        ScheduleTemplate.objects.filter(
+            coach_id=coach_id,
+            is_active=True,
+        )
+        .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
+        .order_by("valid_from", "id")
+    )
+    for template in templates:
+        if template.valid_until is None:
+            return True
+
+        first_date = max(today, template.valid_from)
+        days_until_weekday = (template.weekday - first_date.weekday()) % 7
+        occurrence_date = first_date + timedelta(days=days_until_weekday)
+        while occurrence_date <= template.valid_until:
+            starts_at = make_school_aware(
+                datetime.combine(occurrence_date, template.start_time)
+            )
+            if starts_at >= now and not Lesson.objects.filter(
+                source_template=template,
+                starts_at=starts_at,
+            ).exists():
+                return True
+            occurrence_date += timedelta(days=7)
+    return False
+
+
 @transaction.atomic
 def generate_lessons(
     *,
@@ -711,15 +789,21 @@ def generate_lessons(
 
     template = (
         ScheduleTemplate.objects.select_for_update()
-        .select_related("group")
+        .select_related("group", "coach")
         .get(pk=template_id)
     )
     TrainingGroup.objects.select_for_update().get(pk=template.group_id)
+    coach = CoachProfile.objects.select_for_update().get(
+        pk=template.coach_id
+    )
     if not template.is_active:
         raise ValidationError(
             {"template": "Inactive schedule templates cannot generate lessons."}
         )
-
+    if not template.group.is_active:
+        raise ValidationError(
+            {"group": "Inactive groups cannot generate lessons."}
+        )
     effective_from = max(from_date, template.valid_from)
     effective_until = until_date
     if template.valid_until is not None:
@@ -830,6 +914,17 @@ def generate_lessons(
                     )
             current += timedelta(days=1)
             continue
+
+        if not coach.is_active:
+            raise ValidationError(
+                {
+                    "coach": (
+                        "Inactive coaches cannot generate a new lesson. "
+                        "Reassign all materialized future lessons or version "
+                        "the template to an active coach."
+                    )
+                }
+            )
 
         lesson, created = Lesson.objects.get_or_create(
             source_template=template,
@@ -1003,10 +1098,23 @@ def publish_lesson(
     actor: User | None,
     now: datetime,
 ) -> Lesson:
-    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("group", "coach")
+        .get(pk=lesson_id)
+    )
     if lesson.status != Lesson.Status.DRAFT:
         raise ValidationError(
             {"lesson": "Only a DRAFT lesson can be published."}
+        )
+
+    if not lesson.group.is_active:
+        raise ValidationError(
+            {"group": "Lessons for an inactive group cannot be published."}
+        )
+    if not lesson.coach.is_active:
+        raise ValidationError(
+            {"coach": "Lessons assigned to an inactive coach cannot be published."}
         )
 
     lesson_date = get_school_date(lesson.starts_at)
@@ -1133,6 +1241,11 @@ def set_lesson_response(
         actor=actor,
         student_id=student_id,
     )
+    student = Student.objects.select_for_update().get(pk=student_id)
+    if not student.is_active:
+        raise ValidationError(
+            {"student": "Inactive students cannot submit RSVP responses."}
+        )
 
     try:
         LessonRosterEntry.objects.select_for_update().get(
@@ -1385,6 +1498,93 @@ def cancel_lesson(
 
 
 @transaction.atomic
+def reassign_lesson_coach(
+    *,
+    lesson_id: UUID,
+    coach_id: UUID,
+    actor: User,
+    reason: str,
+) -> Lesson:
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson coach reassignment permission is required.",
+    )
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError(
+            {"reason": "Coach reassignment reason is required."}
+        )
+    if len(reason) > 500:
+        raise ValidationError(
+            {"reason": "Coach reassignment reason must be at most 500 characters."}
+        )
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status not in {
+        Lesson.Status.DRAFT,
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can have "
+                    "their coach reassigned."
+                )
+            }
+        )
+    if lesson.coach_id == coach_id:
+        raise ValidationError(
+            {"coach": "The selected coach is already assigned to this lesson."}
+        )
+
+    coach = CoachProfile.objects.select_for_update().get(pk=coach_id)
+    if not coach.is_active:
+        raise ValidationError(
+            {"coach": "Only an active coach can be assigned to a lesson."}
+        )
+
+    conflicting_lesson = (
+        Lesson.objects.filter(
+            coach=coach,
+            starts_at__lt=lesson.ends_at,
+            ends_at__gt=lesson.starts_at,
+        )
+        .exclude(pk=lesson.id)
+        .exclude(status=Lesson.Status.CANCELLED)
+        .order_by("starts_at", "id")
+        .first()
+    )
+    if conflicting_lesson is not None:
+        raise ValidationError(
+            {
+                "coach": (
+                    "The selected coach has another non-cancelled lesson "
+                    "overlapping this time: "
+                    f"{conflicting_lesson.id}."
+                )
+            }
+        )
+
+    previous_coach_id = lesson.coach_id
+    lesson.coach = coach
+    lesson.save(update_fields=["coach", "updated_at"])
+
+    _audit_lesson(
+        event_type="LessonCoachReassigned",
+        lesson=lesson,
+        actor=actor,
+        payload={
+            "previous_coach_id": str(previous_coach_id),
+            "coach_id": str(coach.id),
+            "reason": reason,
+        },
+    )
+    return lesson
+
+
+@transaction.atomic
 def reschedule_lesson(
     *,
     lesson_id: UUID,
@@ -1573,3 +1773,154 @@ def complete_lesson(
         payload={"completed_at": now.isoformat()},
     )
     return lesson
+
+
+def _clean_group_text(value: str, *, field: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValidationError({field: "This field is required."})
+    return value
+
+
+@transaction.atomic
+def create_training_group(
+    *,
+    code: str,
+    name: str,
+    default_minimum_attendees: int,
+    is_active: bool,
+    actor: User,
+) -> TrainingGroup:
+    require_permission(
+        actor,
+        "scheduling.add_traininggroup",
+        "Training group creation permission is required.",
+    )
+    code = _clean_group_text(code, field="code")
+    name = _clean_group_text(name, field="name")
+    if default_minimum_attendees < 1:
+        raise ValidationError(
+            {"default_minimum_attendees": "Minimum attendees must be at least 1."}
+        )
+    if TrainingGroup.objects.filter(code=code).exists():
+        raise ValidationError({"code": "A group with this code already exists."})
+    try:
+        group = TrainingGroup.objects.create(
+            code=code,
+            name=name,
+            default_minimum_attendees=default_minimum_attendees,
+            is_active=is_active,
+        )
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A group with this code already exists."}
+        ) from exc
+    record_event(
+        event_type="TrainingGroupCreated",
+        aggregate_type="TrainingGroup",
+        aggregate_id=group.id,
+        actor=actor,
+        payload={
+            "code": group.code,
+            "name": group.name,
+            "default_minimum_attendees": group.default_minimum_attendees,
+            "is_active": group.is_active,
+        },
+    )
+    return group
+
+
+@transaction.atomic
+def update_training_group(
+    *,
+    group_id: UUID,
+    code: str,
+    name: str,
+    default_minimum_attendees: int,
+    is_active: bool,
+    actor: User,
+) -> TrainingGroup:
+    require_permission(
+        actor,
+        "scheduling.change_traininggroup",
+        "Training group change permission is required.",
+    )
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    code = _clean_group_text(code, field="code")
+    name = _clean_group_text(name, field="name")
+    if default_minimum_attendees < 1:
+        raise ValidationError(
+            {"default_minimum_attendees": "Minimum attendees must be at least 1."}
+        )
+    if TrainingGroup.objects.filter(code=code).exclude(pk=group.id).exists():
+        raise ValidationError({"code": "A group with this code already exists."})
+    previous = {
+        "code": group.code,
+        "name": group.name,
+        "default_minimum_attendees": group.default_minimum_attendees,
+        "is_active": group.is_active,
+    }
+    if group.is_active and not is_active:
+        now = timezone.now()
+        today = get_school_date(now)
+        has_active_template = (
+            ScheduleTemplate.objects.filter(group=group, is_active=True)
+            .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
+            .exists()
+        )
+        if has_active_template:
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "The group cannot be deactivated while it has an active "
+                        "current or future schedule template. End or version the "
+                        "template first."
+                    )
+                }
+            )
+        has_future_lesson = (
+            Lesson.objects.filter(group=group, starts_at__gte=now)
+            .exclude(status=Lesson.Status.CANCELLED)
+            .exists()
+        )
+        if has_future_lesson:
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "The group cannot be deactivated while it has future "
+                        "non-cancelled lessons. Cancel or reschedule them first."
+                    )
+                }
+            )
+    group.code = code
+    group.name = name
+    group.default_minimum_attendees = default_minimum_attendees
+    group.is_active = is_active
+    try:
+        group.save(
+            update_fields=[
+                "code",
+                "name",
+                "default_minimum_attendees",
+                "is_active",
+                "updated_at",
+            ]
+        )
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A group with this code already exists."}
+        ) from exc
+    record_event(
+        event_type="TrainingGroupChanged",
+        aggregate_type="TrainingGroup",
+        aggregate_id=group.id,
+        actor=actor,
+        payload={
+            "previous": previous,
+            "code": group.code,
+            "name": group.name,
+            "default_minimum_attendees": group.default_minimum_attendees,
+            "is_active": group.is_active,
+        },
+    )
+    return group

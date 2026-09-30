@@ -20,6 +20,7 @@ from ice_school.workflows import reschedule_lesson_with_entitlements
 
 from .forms import (
     ManagerLessonCancelForm,
+    ManagerLessonCoachReassignForm,
     ManagerLessonRescheduleForm,
     ManagerScheduleTemplateForm,
     ManagerScheduleTemplateVersionForm,
@@ -30,6 +31,7 @@ from .services import (
     confirm_lesson,
     create_schedule_template,
     publish_lesson,
+    reassign_lesson_coach,
     skip_template_occurrence,
     version_schedule_template,
 )
@@ -387,6 +389,9 @@ def manager_lesson_detail(
         {
             "lesson": lesson,
             "cancel_form": ManagerLessonCancelForm(),
+            "coach_reassign_form": ManagerLessonCoachReassignForm(
+                lesson=lesson
+            ),
             "reschedule_form": ManagerLessonRescheduleForm(
                 initial={
                     "new_starts_at": lesson.starts_at,
@@ -439,6 +444,43 @@ def manager_confirm_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResp
     else:
         messages.success(request, "Занятие подтверждено.")
     return redirect("scheduling_manager:lesson_detail", lesson_id=lesson_id)
+
+
+@login_required
+@require_POST
+def manager_reassign_lesson_coach(
+    request: HttpRequest,
+    *,
+    lesson_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "scheduling.change_lesson",
+        "Lesson change permission is required.",
+    )
+    lesson = get_object_or_404(
+        Lesson.objects.select_related("coach"),
+        pk=lesson_id,
+    )
+    form = ManagerLessonCoachReassignForm(
+        request.POST,
+        lesson=lesson,
+    )
+    if form.is_valid():
+        try:
+            reassign_lesson_coach(
+                lesson_id=lesson.id,
+                coach_id=form.cleaned_data["coach"].id,
+                actor=request.user,
+                reason=form.cleaned_data["reason"],
+            )
+        except ValidationError as exc:
+            messages.error(request, validation_message(exc))
+        else:
+            messages.success(request, "Тренер занятия заменён.")
+    else:
+        messages.error(request, "Проверьте нового тренера и причину замены.")
+    return redirect("scheduling_manager:lesson_detail", lesson_id=lesson.id)
 
 
 @login_required
