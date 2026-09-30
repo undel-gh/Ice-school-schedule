@@ -1,10 +1,45 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from django import forms
+from django.core.exceptions import ValidationError
+
+from core.time import make_school_aware, school_timezone
 
 from accounts.models import CoachProfile
 
 from .models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
+
+
+class SchoolDateTimeField(forms.DateTimeField):
+    """Parse browser datetime-local values in the school timezone."""
+
+    def prepare_value(self, value):
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.astimezone(school_timezone())
+            return make_school_aware(value)
+        return value
+
+    def to_python(self, value):
+        if value in self.empty_values:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.astimezone(school_timezone())
+            return make_school_aware(value)
+        if isinstance(value, str):
+            for input_format in self.input_formats:
+                try:
+                    parsed = datetime.strptime(value, input_format)
+                except (TypeError, ValueError):
+                    continue
+                return make_school_aware(parsed)
+        raise ValidationError(
+            self.error_messages["invalid"],
+            code="invalid",
+        )
 
 
 WEEKDAY_CHOICES = (
@@ -52,7 +87,7 @@ class ManagerLessonCancelForm(forms.Form):
 
 
 class ManagerLessonRescheduleForm(forms.Form):
-    new_starts_at = forms.DateTimeField(
+    new_starts_at = SchoolDateTimeField(
         label="Новое начало",
         widget=forms.DateTimeInput(
             format="%Y-%m-%dT%H:%M",
@@ -60,9 +95,12 @@ class ManagerLessonRescheduleForm(forms.Form):
         ),
         input_formats=["%Y-%m-%dT%H:%M"],
     )
-    new_ends_at = forms.DateTimeField(
+    new_ends_at = SchoolDateTimeField(
         label="Новое окончание",
-        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}),
+        widget=forms.DateTimeInput(
+            format="%Y-%m-%dT%H:%M",
+            attrs={"type": "datetime-local"},
+        ),
         input_formats=["%Y-%m-%dT%H:%M"],
     )
     reason = forms.ChoiceField(choices=Lesson.CancellationReason.choices, label="Причина")
