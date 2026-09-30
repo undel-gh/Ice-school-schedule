@@ -5,6 +5,7 @@ from uuid import UUID
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -36,10 +37,15 @@ def manager_groups(request: HttpRequest) -> HttpResponse:
     groups = TrainingGroup.objects.order_by("-is_active", "name", "id")
     if query:
         groups = groups.filter(Q(name__icontains=query) | Q(code__icontains=query))
+    page_obj = Paginator(groups, 50).get_page(request.GET.get("page"))
     return render(
         request,
         "scheduling/manager_groups.html",
-        {"groups": groups[:300], "query": query},
+        {
+            "groups": page_obj.object_list,
+            "page_obj": page_obj,
+            "query": query,
+        },
     )
 
 
@@ -170,11 +176,13 @@ def manager_memberships(request: HttpRequest) -> HttpResponse:
         memberships = memberships.filter(ends_on__lt=today)
     elif state != "all":
         state = "current"
+    page_obj = Paginator(memberships, 50).get_page(request.GET.get("page"))
     return render(
         request,
         "scheduling/manager_memberships.html",
         {
-            "memberships": memberships[:500],
+            "memberships": page_obj.object_list,
+            "page_obj": page_obj,
             "query": query,
             "state": state,
         },
