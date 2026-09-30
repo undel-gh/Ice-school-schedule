@@ -195,6 +195,7 @@ def manager_compensation_materialize_free(
     *,
     case_id: UUID,
 ) -> HttpResponse:
+    get_object_or_404(AbsenceCompensationCase, pk=case_id)
     try:
         materialize_free_makeup_from_case(
             case_id=case_id,
@@ -312,6 +313,7 @@ def manager_compensation_reverse(
     *,
     case_id: UUID,
 ) -> HttpResponse:
+    get_object_or_404(AbsenceCompensationCase, pk=case_id)
     form = ManagerCompensationReverseForm(request.POST)
     if form.is_valid():
         try:
@@ -341,6 +343,7 @@ def manager_compensation_cancel(
     *,
     case_id: UUID,
 ) -> HttpResponse:
+    get_object_or_404(AbsenceCompensationCase, pk=case_id)
     try:
         cancel_absence_compensation_case(
             case_id=case_id,
@@ -412,6 +415,7 @@ def manager_one_time_cancel(
     *,
     entitlement_id: UUID,
 ) -> HttpResponse:
+    get_object_or_404(OneTimeEntitlement, pk=entitlement_id)
     try:
         cancel_one_time_entitlement(
             entitlement_id=entitlement_id,
