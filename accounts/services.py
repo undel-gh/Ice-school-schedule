@@ -231,8 +231,7 @@ def update_coach_profile(
         now = timezone.now()
         today = school_date(now)
         has_active_template = (
-            ScheduleTemplate.objects.select_for_update()
-            .filter(coach=coach, is_active=True)
+            ScheduleTemplate.objects.filter(coach=coach, is_active=True)
             .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
             .exists()
         )
@@ -247,8 +246,7 @@ def update_coach_profile(
                 }
             )
         has_future_lesson = (
-            Lesson.objects.select_for_update()
-            .filter(coach=coach, starts_at__gte=now)
+            Lesson.objects.filter(coach=coach, starts_at__gte=now)
             .exclude(status=Lesson.Status.CANCELLED)
             .exists()
         )
