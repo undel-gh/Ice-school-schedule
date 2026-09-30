@@ -413,7 +413,7 @@ def test_referenced_policy_versions_instead_of_mutating(
             "is_active": "on",
         },
     )
-    assert edit.status_code == 200
+    assert edit.status_code == 302
     policy.refresh_from_db()
     assert policy.name == "Medical v1"
 
