@@ -14,7 +14,7 @@ from core.permissions import (
     require_manager_operations_access,
     require_permission,
 )
-from core.presentation import validation_message
+from core.presentation import localized_choices, validation_message
 
 from .manager_forms import (
     ManagerCompensationCaseCreateForm,
@@ -75,7 +75,10 @@ def manager_compensation_cases(request: HttpRequest) -> HttpResponse:
         "subscriptions/manager_compensation_cases.html",
         {
             "cases": cases[:300],
-            "statuses": AbsenceCompensationCase.Status.choices,
+            "statuses": localized_choices(
+                "compensation_status",
+                AbsenceCompensationCase.Status.choices,
+            ),
             "selected_status": status or "",
         },
     )
