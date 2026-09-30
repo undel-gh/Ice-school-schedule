@@ -30,8 +30,6 @@ from subscriptions.selectors import (
     manager_subscription_detail,
     manager_subscription_report,
 )
-MAX_MANAGER_REPORT_RANGE_DAYS = 366
-
 from subscriptions.services import (
     adjust_allowance,
     cancel_group_place_hold,
@@ -41,6 +39,8 @@ from subscriptions.services import (
     issue_subscription_for_period,
     resolve_subscription_period_window,
 )
+
+MAX_MANAGER_REPORT_RANGE_DAYS = 366
 
 
 def _parse_date(value: str | None, *, default: date) -> date:
