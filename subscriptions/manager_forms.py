@@ -1,23 +1,57 @@
 from __future__ import annotations
 
-from django import forms
+from datetime import datetime, timedelta
 
+from django import forms
+from django.utils import timezone
+
+from accounts.models import Student
 from attendance.models import Attendance
+from core.time import (
+    format_school_datetime,
+    make_school_aware,
+    school_date,
+)
+from scheduling.models import Lesson
 from subscriptions.models import (
+    AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     OneTimeEntitlement,
     Subscription,
     SubscriptionAllowance,
 )
-from accounts.models import Student
-from scheduling.models import Lesson
+
+MANAGER_CHOICE_WINDOW_DAYS = 60
+
+
+def _manager_lesson_window() -> tuple[datetime, datetime]:
+    today = school_date(timezone.now())
+    starts_on = today - timedelta(days=MANAGER_CHOICE_WINDOW_DAYS)
+    ends_after = today + timedelta(days=MANAGER_CHOICE_WINDOW_DAYS + 1)
+    return (
+        make_school_aware(datetime.combine(starts_on, datetime.min.time())),
+        make_school_aware(datetime.combine(ends_after, datetime.min.time())),
+    )
+
+
+def _manager_lesson_queryset():
+    starts_at, ends_before = _manager_lesson_window()
+    return (
+        Lesson.objects.exclude(status=Lesson.Status.CANCELLED)
+        .filter(
+            starts_at__gte=starts_at,
+            starts_at__lt=ends_before,
+        )
+        .select_related("group", "lesson_type")
+        .order_by("-starts_at", "id")
+    )
 
 
 class AttendanceChoiceField(forms.ModelChoiceField):
     def label_from_instance(self, obj):
         return (
             f"{obj.student.display_name} · "
-            f"{obj.lesson.starts_at:%d.%m.%Y %H:%M} · "
+            f"{format_school_datetime(obj.lesson.starts_at)} · "
             f"{obj.lesson.lesson_type.name}"
         )
 
@@ -25,7 +59,7 @@ class AttendanceChoiceField(forms.ModelChoiceField):
 class LessonChoiceField(forms.ModelChoiceField):
     def label_from_instance(self, obj):
         return (
-            f"{obj.starts_at:%d.%m.%Y %H:%M} · "
+            f"{format_school_datetime(obj.starts_at)} · "
             f"{obj.group.name} · {obj.lesson_type.name}"
         )
 
@@ -69,15 +103,26 @@ class ManagerCompensationCaseCreateForm(forms.Form):
         label="Причина",
     )
     policy_code = forms.CharField(
-        label="Код policy",
+        label="Код правила",
         required=False,
-        help_text="Оставьте пустым для автоматического выбора policy.",
+        help_text="Оставьте пустым для автоматического выбора правила.",
     )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        starts_at, ends_before = _manager_lesson_window()
         self.fields["attendance"].queryset = (
-            Attendance.objects.filter(status=Attendance.Status.ABSENT)
+            Attendance.objects.filter(
+                status=Attendance.Status.ABSENT,
+                lesson__starts_at__gte=starts_at,
+                lesson__starts_at__lt=ends_before,
+            )
+            .exclude(
+                compensation_cases__status__in=[
+                    AbsenceCompensationCase.Status.OPEN,
+                    AbsenceCompensationCase.Status.MATERIALIZED,
+                ]
+            )
             .select_related("student", "lesson__lesson_type")
             .order_by("-lesson__starts_at", "student__display_name")
         )
@@ -86,7 +131,7 @@ class ManagerCompensationCaseCreateForm(forms.Form):
 class ManagerPaidMakeupAuthorizeForm(forms.Form):
     target_subscription = SubscriptionChoiceField(
         queryset=Subscription.objects.none(),
-        label="Target Subscription",
+        label="Целевой абонемент",
         required=False,
     )
     fee_confirmed = forms.BooleanField(
@@ -109,7 +154,7 @@ class ManagerPaidMakeupAuthorizeForm(forms.Form):
 class ManagerPaidMakeupActivateForm(forms.Form):
     target_subscription = SubscriptionChoiceField(
         queryset=Subscription.objects.none(),
-        label="Target Subscription",
+        label="Целевой абонемент",
         required=False,
     )
 
@@ -126,7 +171,7 @@ class ManagerPaidMakeupActivateForm(forms.Form):
 
 
 class ManagerCompensationReverseForm(forms.Form):
-    reason = forms.CharField(label="Причина reversal", max_length=128)
+    reason = forms.CharField(label="Причина отмены", max_length=128)
     refund_required = forms.ChoiceField(
         label="Возврат оплаты",
         required=False,
@@ -165,21 +210,17 @@ class ManagerOneTimeEntitlementForm(forms.Form):
         self.fields["student"].queryset = Student.objects.filter(
             is_active=True
         ).order_by("display_name", "id")
-        self.fields["lesson"].queryset = (
-            Lesson.objects.exclude(status=Lesson.Status.CANCELLED)
-            .select_related("group", "lesson_type")
-            .order_by("-starts_at", "id")
-        )
+        self.fields["lesson"].queryset = _manager_lesson_queryset()
 
 
 class ManagerAdministrativeMakeupForm(forms.Form):
     source_subscription_allowance = AllowanceChoiceField(
         queryset=SubscriptionAllowance.objects.none(),
-        label="Source allowance",
+        label="Исходный лимит абонемента",
     )
     source_lesson = LessonChoiceField(
         queryset=Lesson.objects.none(),
-        label="Source Lesson",
+        label="Исходное занятие",
     )
     valid_from = forms.DateField(
         label="Действует с",
@@ -192,7 +233,7 @@ class ManagerAdministrativeMakeupForm(forms.Form):
     target_lesson = LessonChoiceField(
         queryset=Lesson.objects.none(),
         required=False,
-        label="Target Lesson",
+        label="Целевое занятие",
     )
     reason = forms.CharField(label="Причина", max_length=255)
 
@@ -208,8 +249,6 @@ class ManagerAdministrativeMakeupForm(forms.Form):
                 "id",
             )
         )
-        lessons = Lesson.objects.exclude(
-            status=Lesson.Status.CANCELLED
-        ).select_related("group", "lesson_type").order_by("-starts_at", "id")
+        lessons = _manager_lesson_queryset()
         self.fields["source_lesson"].queryset = lessons
         self.fields["target_lesson"].queryset = lessons
