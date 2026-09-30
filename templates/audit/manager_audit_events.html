@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}Audit trail{% endblock %}
+{% block title %}Журнал действий{% endblock %}
 {% block content %}
 <header class="page-header">
-  <h1>Audit trail</h1>
-  <p class="page-header__meta">Domain events, actor и correlation ID</p>
+  <h1>Журнал действий</h1>
+  <p class="page-header__meta">Доменные события, пользователь и идентификатор связанной операции</p>
 </header>
 <form class="filter-form audit-filter" method="get">
   <div class="field"><label for="event_type">Event type</label><input id="event_type" type="text" name="event_type" value="{{ event_type }}"></div>
