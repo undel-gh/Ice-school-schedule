@@ -97,7 +97,7 @@ def test_manager_subscription_report_renders_subscription_summary(client):
 
 
 @pytest.mark.django_db
-def test_home_routes_manager_to_report(client):
+def test_home_routes_manager_to_operations(client):
     manager = User.objects.create_user(
         username="manager-home",
         password="test",
@@ -109,9 +109,7 @@ def test_home_routes_manager_to_report(client):
     response = client.get(reverse("scheduling:home"))
 
     assert response.status_code == 302
-    assert response.url == reverse(
-        "subscriptions:manager_subscription_report"
-    )
+    assert response.url == reverse("subscriptions:manager_operations")
 
 
 @pytest.mark.django_db
