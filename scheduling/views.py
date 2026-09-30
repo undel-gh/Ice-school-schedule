@@ -85,6 +85,8 @@ def home(request: HttpRequest) -> HttpResponse:
         coach = None
     if coach is not None and coach.is_active:
         return redirect("scheduling:coach_schedule")
+    if request.user.has_perm("subscriptions.view_subscription"):
+        return redirect("subscriptions:manager_subscription_report")
     if request.user.is_staff:
         return redirect("admin:index")
     raise PermissionDenied("No active school role is assigned.")
@@ -292,7 +294,18 @@ def coach_set_attendance(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        manager_messages = getattr(exc, "message_dict", {}).get(
+            "manager_action_required",
+            (),
+        )
+        if manager_messages:
+            messages.warning(
+                request,
+                "Требуется решение менеджера: "
+                + " ".join(manager_messages),
+            )
+        else:
+            messages.error(request, " ".join(exc.messages))
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
 
 

@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Абонемент {{ detail.row.subscription.student.display_name }}{% endblock %}
+
+{% block content %}
+<header class="page-header">
+  <h1>{{ detail.row.subscription.student.display_name }}</h1>
+  <p class="page-header__meta">
+    {{ detail.row.subscription.plan_name_snapshot }}
+    · состояние: {{ detail.row.subscription_state }}
+  </p>
+</header>
+
+<p>
+  <a href="{% url 'subscriptions:manager_subscription_report' %}">← К отчёту</a>
+</p>
+
+<article class="report-card">
+  <h2>Расчётный период</h2>
+  {% if detail.row.period %}
+    <p class="report-card__meta">
+      {{ detail.row.period.get_mode_snapshot_display }}
+      · {{ detail.row.period.get_state_display }}
+      {% if detail.row.period.starts_on %}
+        · {{ detail.row.period.starts_on|date:"d.m.Y" }}—{{ detail.row.period.ends_on|date:"d.m.Y" }}
+      {% else %}
+        · ожидает первого занятия
+      {% endif %}
+    </p>
+  {% else %}
+    <p class="muted">Исторический абонемент без SubscriptionPeriod.</p>
+  {% endif %}
+
+  {% if detail.row.subscription.cancelled_at %}
+    <p class="badge badge--cancelled">
+      Отменён {{ detail.row.subscription.cancelled_at|date:"d.m.Y H:i" }}
+    </p>
+  {% elif perms.subscriptions.change_subscription %}
+    <form
+      method="post"
+      action="{% url 'subscriptions:manager_subscription_cancel' detail.row.subscription.id %}"
+    >
+      {% csrf_token %}
+      {{ cancel_form.confirm }}
+      {{ cancel_form.confirm.label_tag }}
+      <button class="btn-absent" type="submit">Отменить абонемент</button>
+    </form>
+  {% endif %}
+</article>
+
+{% for allowance in detail.row.allowances %}
+  <article class="report-card">
+    <h2>{{ allowance.category|upper }}</h2>
+    <div class="report-stats">
+      <div class="stat"><strong>{{ allowance.granted_visits }}</strong><span>выдано</span></div>
+      <div class="stat"><strong>{{ allowance.consumed_visits }}</strong><span>отходил</span></div>
+      <div class="stat"><strong>{{ allowance.remaining_visits }}</strong><span>остаток</span></div>
+      <div class="stat"><strong>{{ allowance.direct_visits }}</strong><span>обычные</span></div>
+      <div class="stat"><strong>{{ allowance.makeup_visits }}</strong><span>отработки</span></div>
+      <div class="stat"><strong>{{ allowance.makeup_available }}</strong><span>переносы</span></div>
+    </div>
+
+    {% if perms.subscriptions.change_subscriptionallowance %}
+      {% for model_allowance in detail.row.subscription.allowances.all %}
+        {% if model_allowance.category == allowance.category %}
+          <form
+            class="filter-form"
+            method="post"
+            action="{% url 'subscriptions:manager_allowance_adjust' model_allowance.id %}"
+          >
+            {% csrf_token %}
+            <div class="field">
+              <label for="delta-{{ model_allowance.id }}">Корректировка</label>
+              <input id="delta-{{ model_allowance.id }}" type="number" name="delta" required>
+            </div>
+            <div class="field">
+              <label for="reason-{{ model_allowance.id }}">Причина</label>
+              <input id="reason-{{ model_allowance.id }}" type="text" name="reason" required>
+            </div>
+            <button class="btn-secondary" type="submit">Применить</button>
+          </form>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+  </article>
+{% endfor %}
+
+<section class="section-title">Переносы / отработки</section>
+{% if detail.makeups %}
+  <div class="card-list">
+    {% for makeup in detail.makeups %}
+      <article class="lesson-card">
+        <div class="lesson-card__top">
+          <strong>{{ makeup.get_reason_display }}</strong>
+          {% if makeup.cancelled_at %}
+            <span class="badge badge--cancelled">отменено</span>
+          {% endif %}
+        </div>
+        <p class="lesson-card__meta">
+          {{ makeup.category|upper }} ·
+          {{ makeup.valid_from|date:"d.m.Y" }}—{{ makeup.valid_until|date:"d.m.Y" }}
+        </p>
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="empty-state">Переносов и отработок нет.</p>
+{% endif %}
+
+<section class="section-title">Ledger</section>
+{% if detail.ledger_entries %}
+  <div class="card-list">
+    {% for entry in detail.ledger_entries %}
+      <article class="lesson-card">
+        <div class="lesson-card__top">
+          <strong>{{ entry.allowance.category|upper }} · {{ entry.get_entry_type_display }}</strong>
+          <span>{{ entry.delta|stringformat:"+d" }}</span>
+        </div>
+        <p class="lesson-card__meta">
+          {{ entry.created_at|date:"d.m.Y H:i" }}
+          {% if entry.reason %}· {{ entry.reason }}{% endif %}
+        </p>
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="empty-state">Ledger пуст.</p>
+{% endif %}
+{% endblock %}

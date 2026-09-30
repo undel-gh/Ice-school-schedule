@@ -29,12 +29,15 @@ from subscriptions.models import (
     AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
     MakeupEntitlement,
+    SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
 from subscriptions.selectors import get_reversed_paid_makeups
 from subscriptions.services import (
     activate_paid_makeup_grant,
+    activate_rolling_subscription_period,
+    assign_attendance_coverage,
     adjust_allowance,
     authorize_paid_makeup_from_case,
     cancel_absence_compensation_case,
@@ -42,9 +45,11 @@ from subscriptions.services import (
     confirm_paid_makeup_fee,
     create_absence_compensation_case,
     issue_subscription,
+    issue_subscription_for_period,
     materialize_free_makeup_from_case,
     process_subscription_lifecycle,
     reverse_absence_compensation_case,
+    reverse_attendance_coverage,
 )
 
 User = get_user_model()
@@ -2911,3 +2916,282 @@ def test_lifecycle_skips_legacy_next_period_grant_without_target(actor, context)
         event_type="PaidFreezeAuthorizationDeadlineUnresolved",
         aggregate_id=grant.id,
     ).count() == 1
+
+
+@pytest.mark.django_db
+def test_paid_makeup_accepts_pending_rolling_target_subscription(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-pending-rolling-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="paid-pending-rolling-scheme",
+        name="Pending rolling target",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    target_plan = SubscriptionPlan.objects.create(
+        code="paid-pending-rolling-target",
+        name="Pending rolling target",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=target_plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=target_plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 9, 25, 12, tzinfo=dt_timezone.utc),
+    )
+    assert target.valid_from is None
+    assert target.billing_period.reference_date == date(2026, 10, 1)
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        fee_confirmed=True,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    assert grant.target_subscription_id == target.id
+
+    with pytest.raises(
+        ValidationError,
+        match="still pending activation",
+    ):
+        activate_paid_makeup_grant(
+            grant_id=grant.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=2),
+        )
+
+    first_target_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=datetime(2026, 10, 5, 15, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 13, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 14, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.COMPLETED,
+    )
+    activate_rolling_subscription_period(
+        subscription_id=target.id,
+        lesson_id=first_target_lesson.id,
+        actor=actor,
+        now=datetime(2026, 10, 5, 16, tzinfo=dt_timezone.utc),
+    )
+
+    activated = activate_paid_makeup_grant(
+        grant_id=grant.id,
+        actor=actor,
+        now=datetime(2026, 10, 5, 16, 30, tzinfo=dt_timezone.utc),
+    )
+    entitlement = activated.makeup_entitlement
+    assert entitlement is not None
+    assert entitlement.valid_from == date(2026, 10, 5)
+    assert entitlement.valid_until == date(2026, 11, 1)
+
+
+@pytest.mark.django_db
+def test_unpaid_paid_makeup_with_pending_rolling_target_expires_from_reference_window(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-pending-expiry-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="paid-pending-expiry-scheme",
+        name="Pending rolling expiry",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    target_plan = SubscriptionPlan.objects.create(
+        code="paid-pending-expiry-target",
+        name="Pending rolling expiry",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=target_plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=target_plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 9, 25, 12, tzinfo=dt_timezone.utc),
+    )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    assert grant.fee_confirmed_at is None
+    assert target.valid_until is None
+
+    on_deadline = process_subscription_lifecycle(
+        as_of=date(2026, 10, 28),
+        actor=actor,
+    )
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert on_deadline["paid_authorization_expired"] == 0
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert grant.reversed_at is None
+
+    after_deadline = process_subscription_lifecycle(
+        as_of=date(2026, 10, 29),
+        actor=actor,
+    )
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert after_deadline["paid_authorization_expired"] == 1
+    assert case.status == AbsenceCompensationCase.Status.REVERSED
+    assert case.reversal_reason == "authorization_expired"
+    assert grant.reversed_at is not None
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeAuthorizationExpired",
+        aggregate_id=grant.id,
+    ).exists()
+    assert not AuditEvent.objects.filter(
+        event_type="PaidFreezeAuthorizationDeadlineUnresolved",
+        aggregate_id=grant.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_rolling_activation_revert_is_blocked_by_active_compensation_case_and_grant(
+    actor,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-case-dependency",
+        name="Rolling case dependency",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="rolling-case-dependency-plan",
+        name="Rolling case dependency",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    subscription = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+
+    activation_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 10, 13, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 10, 14, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.COMPLETED,
+    )
+    activation_attendance = Attendance.objects.create(
+        lesson=activation_lesson,
+        student=context["student"],
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    activation_coverage = assign_attendance_coverage(
+        attendance_id=activation_attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+    assert activation_coverage is not None
+
+    absence = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=datetime(2026, 10, 12, 15, tzinfo=dt_timezone.utc),
+    )
+    policy = make_policy(code="rolling-case-dependency-policy")
+    add_paid_action(
+        policy,
+        target_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.FEE_REQUIRED,
+    )
+    case = create_absence_compensation_case(
+        attendance_id=absence.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=absence.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=absence.marked_at + timedelta(hours=1),
+    )
+    assert case.source_subscription_allowance.subscription_id == subscription.id
+    assert grant.reversed_at is None
+
+    reverse_attendance_coverage(
+        coverage_id=activation_coverage.id,
+        actor=actor,
+        now=absence.marked_at + timedelta(hours=2),
+    )
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == period.State.ACTIVE
+    assert subscription.valid_from == date(2026, 10, 10)
+    assert subscription.valid_until == date(2026, 11, 6)
+    event = AuditEvent.objects.get(
+        event_type="SubscriptionPeriodActivationRevertSkipped",
+        aggregate_id=period.id,
+    )
+    assert event.payload["reason"] == "dependent_rights_exist"
+    assert event.payload["dependencies"]["active_compensation_cases"] is True
+    assert event.payload["dependencies"]["active_compensation_grants"] is True

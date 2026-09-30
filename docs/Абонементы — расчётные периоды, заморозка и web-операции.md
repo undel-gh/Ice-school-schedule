@@ -1,6 +1,6 @@
 # Абонементы: расчётные периоды, заморозка, сохранение места и web-операции
 
-**Статус:** согласованные продуктовые требования и архитектурное направление перед реализацией  
+**Статус:** реализация начата; period foundation, GroupPlaceHold и первый Manager web/reporting slice находятся в `feat/billing-periods-place-hold-manager-web`  
 **Область:** subscriptions, scheduling, group membership, manager/trainer web UI  
 **Не является:** спецификацией биллинга или онлайн-оплаты
 
@@ -139,48 +139,167 @@ school period:
 
 ---
 
-# 4. Архитектурное направление для периода
+# 4. Реализованная модель расчётного периода
 
-Текущий `SubscriptionPlan.validity_months=1` недостаточен и должен быть
-заменён явной политикой периода.
-
-Предлагаемое направление:
+Введена общешкольная конфигурация:
 
 ```text
-SubscriptionPlan
-    period_policy:
+SubscriptionPeriodScheme
+    code
+    name
+    mode:
         CALENDAR_MONTH
-        FIRST_ATTENDANCE_28_DAYS
+        ROLLING_28_FROM_FIRST_LESSON
         FIXED_28_DAYS
+    fixed_anchor_date
+    is_active
 ```
 
-Для общих фиксированных периодов вводится отдельная сущность, рабочее имя:
+`SubscriptionPlan.period_scheme` связывает тариф с моделью периода.
+Поле пока nullable для совместимости с историческими тарифами; новые
+manager-driven выдачи требуют активный period scheme.
+
+Для каждой переведённой на новую модель выдачи создаётся:
 
 ```text
 SubscriptionPeriod
-    id
-    policy
+    subscription (1:1)
+    scheme
+    mode_snapshot
+    fixed_anchor_snapshot
+    state: PENDING | ACTIVE
     starts_on
     ends_on
-    label
+    activation_lesson
+    activated_at
 ```
 
-`Subscription.period` обязателен для `FIXED_28_DAYS` и может использоваться
-для календарных периодов как read/admin convenience.
+Правила:
 
-Для `FIRST_ATTENDANCE_28_DAYS` Subscription может быть создан до активации.
-Следовательно, текущий инвариант обязательных `valid_from/valid_until`
-потребует изменения. После активации даты становятся неизменяемым snapshot.
+- `CALENDAR_MONTH` сразу создаётся ACTIVE с границами календарного месяца;
+- `FIXED_28_DAYS` сразу создаётся ACTIVE по общей 28-дневной сетке от
+  `fixed_anchor_date`;
+- `ROLLING_28_FROM_FIRST_LESSON` создаётся PENDING без искусственных
+  `valid_from/valid_until`.
 
-Точная схема полей и constraints фиксируется перед миграцией, но следующие
-инварианты обязательны:
+Для rolling-модели `Subscription.valid_from/valid_until` допускают NULL до
+первого обычного покрытия. При первом `Attendance=PRESENT`, дошедшем до
+обычного SubscriptionAllowance после one-time и makeup приоритетов, в одной
+транзакции:
 
-- исторические даты периода не пересчитываются;
-- один Subscription использует ровно одну period policy;
-- `FIXED_28_DAYS` не допускает индивидуально отличающиеся даты внутри одного
-  общего периода;
-- `FIRST_ATTENDANCE_28_DAYS` активируется только один раз;
-- активация и первое списание выполняются в одной транзакции.
+```text
+PENDING SubscriptionPeriod
+    → starts_on = lesson_date
+    → ends_on = lesson_date + 27 days
+    → ACTIVE
+
+Subscription
+    → valid_from / valid_until = те же даты
+
+AttendanceCoverage
+    → CONSUME -1
+```
+
+Такое посещение становится одновременно точкой активации и первым расходом.
+RSVP, ABSENT и само наличие Lesson период не активируют.
+
+Для rolling-периода сохраняется `reference_date` выдачи. Она является нижней
+границей активации: занятие с `lesson_date < reference_date` не может
+активировать абонемент. Это защищает от позднего исправления старых ведомостей.
+
+Кроме того, pending rolling Subscription активируется только после того, как
+обычное покрытие уже не нашло действующий allowance той же категории. Поэтому
+заранее купленный следующий абонемент не начинает свои 28 дней, пока текущее
+занятие может быть покрыто уже действующим абонементом.
+
+Если coverage, который активировал rolling-период, позднее reverse из-за
+исправления Attendance или административной операции, активация может быть
+откачена. Откат выполняется только если после reversal у этого Subscription
+не осталось других active AttendanceCoverage **и** записей, чья семантика уже
+зависит от дат активированного периода. К таким зависимостям относятся:
+
+- active MakeupEntitlement, использующий allowance этого Subscription как источник;
+- OPEN/MATERIALIZED AbsenceCompensationCase с source allowance этого Subscription;
+- unreversed AbsenceCompensationActionGrant, связанный с таким case.
+
+Только при отсутствии всех этих зависимостей:
+
+```text
+SubscriptionPeriod ACTIVE
+    → PENDING
+    → starts_on / ends_on = NULL
+    → activation_lesson / activated_at = NULL
+
+Subscription
+    → valid_from / valid_until = NULL
+```
+
+Создаётся audit-событие `SubscriptionPeriodActivationReverted`. Если после
+активации уже существует другое active coverage этого Subscription, период
+не сдвигается и не сбрасывается; записывается
+`SubscriptionPeriodActivationRevertSkipped` с причиной
+`active_coverages_remain`. Если откат блокируют зависимые права/case/grant,
+используется причина `dependent_rights_exist`, а payload содержит флаги
+конкретных типов зависимостей. Это позволяет manager UI объяснить, почему
+исправление Attendance не вернуло rolling Subscription в PENDING.
+
+Для уменьшения риска взаимной блокировки activation и reversal используют
+совместимый порядок блокировок критических сущностей: SubscriptionPeriod
+блокируется до SubscriptionAllowance.
+
+Service API:
+
+```python
+resolve_subscription_period_window(...)
+issue_subscription_for_period(...)
+attach_subscription_period(...)
+activate_rolling_subscription_period(...)
+```
+
+Исторические даты и mode/anchor snapshots после создания периода не должны
+пересчитываться из-за последующих изменений тарифа или scheme.
+
+## 4.1. Реализованный GroupPlaceHold
+
+Платное сохранение места представлено отдельной сущностью:
+
+```text
+GroupPlaceHold
+    student
+    group
+    period_scheme
+    period_from / period_until
+    status:
+        PENDING_PAYMENT
+        ACTIVE
+        CANCELLED
+        EXPIRED
+    fee_confirmed_at / fee_confirmed_by
+    cancellation metadata
+```
+
+Hold обязан покрывать ровно один полный период выбранного scheme. Оплата
+подтверждается application service, после чего статус становится ACTIVE.
+`process_subscription_lifecycle(...)` переводит ACTIVE hold в EXPIRED после
+`period_until`.
+
+Основные services:
+
+```python
+create_group_place_hold(...)
+confirm_group_place_hold_fee(...)
+cancel_group_place_hold(...)
+```
+
+В текущем срезе GroupPlaceHold фиксирует оплату/обязательство сохранить место,
+но **ещё не изменяет автоматически** GroupMembership, roster, вместимость группы
+или правила зачисления. Интеграция hold с фактическим удержанием места — отдельный
+следующий этап.
+
+Для одного ученика и группы одновременно запрещены пересекающиеся
+non-CANCELLED hold. CANCELLED запись остаётся историей и не мешает создать
+новый hold на тот же период.
+
 
 ---
 
@@ -458,8 +577,17 @@ PAID_MAKEUP без требования оплаты считается ошиб
 выбрать target Subscription **до authorization**. Пока следующего абонемента
 нет, case остаётся OPEN и не занимает лимит как MATERIALIZED paid grant.
 Target Subscription должен принадлежать тому же ученику, содержать нужную
-ICE/HALL category, не быть отменён и начинаться после окончания source
-Subscription. Entitlement получает его `valid_from/valid_until`.
+ICE/HALL category и не быть отменён.
+
+Для pending rolling target допускается отсутствие `valid_from/valid_until`:
+authorization проверяет его сохранённую `billing_period.reference_date`,
+которая должна быть позже окончания source Subscription. Сам PAID_MAKEUP
+entitlement до активации target rolling period не создаётся. После первого
+обычного занятия target Subscription получает реальные даты, и paid grant
+можно активировать с этими `valid_from/valid_until`.
+
+Для уже активного target Subscription по-прежнему требуется начало после
+окончания source Subscription.
 
 Пока полноценного Billing нет, оплату подтверждает менеджер через
 `confirm_paid_makeup_fee(...)`. В будущем Billing должен заменить это
@@ -486,8 +614,17 @@ Selector `get_reversed_paid_makeups(...)` даёт отчёт «оплачено
 ```text
 CURRENT_PERIOD          → source Subscription.valid_until
 NEXT_STUDENT_PERIOD     → target Subscription.valid_until
+                          или, для PENDING rolling target,
+                          конец 28-дневного окна от billing_period.reference_date
 EXPLICIT_TARGET_WINDOW  → target_until
 ```
+
+Для pending rolling target deadline вычисляется детерминированно до его
+фактической активации: `reference_date` считается возможным первым днём
+28-дневного окна, поэтому deadline равен его 28-му дню
+(`reference_date + 27 days`). Это не позволяет неоплаченной authorization
+бессрочно занимать eligibility slot и блокировать отмену связанных
+Subscription, даже если ученик так и не пришёл на первое занятие.
 
 Поэтому заморозка «на следующий период» не истекает в первый день этого
 периода: неоплаченная authorization остаётся действующей до конца выбранного
@@ -784,3 +921,23 @@ subscription balance.
 Каждый этап должен сохранять правило:
 
 > web, CLI и automation вызывают один и тот же application-service layer.
+
+
+## 8.4. Производительность отчёта менеджера
+
+Manager subscription report является read-model и не должен выполнять запросы
+на каждый Subscription/Allowance отдельно.
+
+Текущая реализация пакетно загружает:
+
+- Subscription + billing period;
+- allowances с агрегированным ledger balance;
+- active AttendanceCoverage;
+- MakeupEntitlement с признаком использования;
+- GroupPlaceHold по ученикам.
+
+Число запросов остаётся ограниченным при росте количества строк отчёта.
+Диапазон отчёта через web ограничен 366 днями, как и пользовательский schedule.
+
+Pending Subscription с `valid_from = NULL` сортируются явно первыми через
+`NULLS FIRST`, чтобы порядок не зависел от PostgreSQL/SQLite.

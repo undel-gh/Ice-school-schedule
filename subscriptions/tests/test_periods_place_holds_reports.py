@@ -1,0 +1,965 @@
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone as dt_timezone
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
+
+from accounts.models import CoachProfile, Student
+from attendance.models import Attendance
+from audit.models import AuditEvent
+from core.choices import SubscriptionCategory
+from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from subscriptions.models import (
+    GroupPlaceHold,
+    MakeupEntitlement,
+    SubscriptionPeriod,
+    SubscriptionPeriodScheme,
+    SubscriptionPlan,
+    SubscriptionPlanAllowance,
+)
+from subscriptions.selectors import manager_subscription_report
+from subscriptions.services import (
+    activate_rolling_subscription_period,
+    assign_attendance_coverage,
+    attach_subscription_period,
+    cancel_group_place_hold,
+    confirm_group_place_hold_fee,
+    create_group_place_hold,
+    issue_subscription,
+    issue_subscription_for_period,
+    resolve_subscription_period_window,
+    reverse_attendance_coverage,
+)
+
+User = get_user_model()
+
+
+@pytest.fixture
+def actor(db):
+    return User.objects.create_user(
+        username="period-admin",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+
+
+@pytest.fixture
+def student(db):
+    return Student.objects.create(display_name="Period Student")
+
+
+@pytest.fixture
+def context(db, actor):
+    coach = CoachProfile.objects.create(
+        user=actor,
+        display_name="Period Coach",
+    )
+    group = TrainingGroup.objects.create(
+        code="period-group",
+        name="Period Group",
+    )
+    venue = Venue.objects.create(
+        code="period-rink",
+        name="Period Rink",
+    )
+    ice = LessonType.objects.create(
+        code="period-ice",
+        name="Period Ice",
+        subscription_category=SubscriptionCategory.ICE,
+    )
+    return {
+        "coach": coach,
+        "group": group,
+        "venue": venue,
+        "ice": ice,
+    }
+
+
+def make_plan(*, code: str, scheme=None, ice: int = 3):
+    plan = SubscriptionPlan.objects.create(
+        code=code,
+        name=code,
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=ice,
+    )
+    return plan
+
+
+def make_lesson(*, context, starts_at):
+    return Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.COMPLETED,
+    )
+
+
+@pytest.mark.django_db
+def test_calendar_month_period_resolution():
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="calendar",
+        name="Calendar month",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+
+    assert resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=date(2026, 9, 15),
+    ) == (date(2026, 9, 1), date(2026, 9, 30))
+
+
+@pytest.mark.django_db
+def test_fixed_28_period_resolution_uses_school_anchor():
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="fixed-28",
+        name="Fixed 28",
+        mode=SubscriptionPeriodScheme.Mode.FIXED_28_DAYS,
+        fixed_anchor_date=date(2026, 9, 3),
+    )
+
+    assert resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=date(2026, 9, 30),
+    ) == (date(2026, 9, 3), date(2026, 9, 30))
+    assert resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=date(2026, 10, 1),
+    ) == (date(2026, 10, 1), date(2026, 10, 28))
+
+
+@pytest.mark.django_db
+def test_rolling_28_period_stays_pending_until_first_lesson(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-28",
+        name="Rolling 28",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-plan", scheme=scheme)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 12, 31),
+        actor=actor,
+    )
+
+    period = attach_subscription_period(
+        subscription_id=subscription.id,
+        scheme_id=scheme.id,
+        reference_date=date(2026, 9, 1),
+        actor=actor,
+        now=datetime(2026, 9, 1, 12, tzinfo=dt_timezone.utc),
+    )
+
+    assert period.state == SubscriptionPeriod.State.PENDING
+    assert period.starts_on is None
+    assert period.ends_on is None
+
+    lesson = make_lesson(
+        context=context,
+        starts_at=datetime(
+            2026,
+            9,
+            12,
+            15,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    activated = activate_rolling_subscription_period(
+        subscription_id=subscription.id,
+        lesson_id=lesson.id,
+        actor=actor,
+        now=datetime(2026, 9, 12, 16, tzinfo=dt_timezone.utc),
+    )
+
+    assert activated.state == SubscriptionPeriod.State.ACTIVE
+    assert activated.starts_on == date(2026, 9, 12)
+    assert activated.ends_on == date(2026, 10, 9)
+    assert activated.activation_lesson_id == lesson.id
+
+
+@pytest.mark.django_db
+def test_group_place_hold_requires_full_scheme_period(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="hold-calendar",
+        name="Hold calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+
+    hold = create_group_place_hold(
+        student_id=student.id,
+        group_id=context["group"].id,
+        period_scheme_id=scheme.id,
+        period_from=date(2026, 10, 1),
+        period_until=date(2026, 10, 31),
+        actor=actor,
+    )
+    assert hold.status == GroupPlaceHold.Status.PENDING_PAYMENT
+
+    active = confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=actor,
+        now=datetime(2026, 9, 25, 12, tzinfo=dt_timezone.utc),
+    )
+    assert active.status == GroupPlaceHold.Status.ACTIVE
+    assert active.fee_confirmed_at is not None
+
+
+@pytest.mark.django_db
+def test_manager_subscription_report_separates_direct_and_makeup_visits(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="report-calendar",
+        name="Report calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = make_plan(code="report-plan", scheme=scheme, ice=3)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+        actor=actor,
+    )
+    attach_subscription_period(
+        subscription_id=subscription.id,
+        scheme_id=scheme.id,
+        reference_date=date(2026, 9, 1),
+        actor=actor,
+        now=datetime(2026, 9, 1, 10, tzinfo=dt_timezone.utc),
+    )
+    allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE,
+    )
+
+    direct_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(
+            2026,
+            9,
+            10,
+            15,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    direct_attendance = Attendance.objects.create(
+        lesson=direct_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+    assign_attendance_coverage(
+        attendance_id=direct_attendance.id,
+        actor=actor,
+    )
+
+    source_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(
+            2026,
+            9,
+            12,
+            15,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    target_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(
+            2026,
+            9,
+            20,
+            15,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    makeup = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 9, 15),
+        valid_until=date(2026, 9, 30),
+        created_by=actor,
+    )
+    makeup_attendance = Attendance.objects.create(
+        lesson=target_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=makeup_attendance.id,
+        actor=actor,
+    )
+    assert coverage.makeup_entitlement_id == makeup.id
+
+    rows = manager_subscription_report(
+        as_of=date(2026, 9, 21),
+        student_id=student.id,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.period is not None
+    assert row.period.starts_on == date(2026, 9, 1)
+    assert len(row.allowances) == 1
+    report = row.allowances[0]
+    assert report.granted_visits == 3
+    assert report.direct_visits == 1
+    assert report.makeup_visits == 1
+    assert report.consumed_visits == 2
+    assert report.remaining_visits == 1
+    assert report.makeup_total == 1
+    assert report.makeup_used == 1
+    assert report.makeup_available == 0
+
+
+@pytest.mark.django_db
+def test_rolling_subscription_activates_on_first_ordinary_coverage(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-auto",
+        name="Rolling auto",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-auto-plan", scheme=scheme, ice=2)
+
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 1),
+        actor=actor,
+        now=datetime(2026, 9, 1, 10, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    assert subscription.valid_from is None
+    assert subscription.valid_until is None
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.PENDING
+
+    first_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(
+            2026,
+            9,
+            12,
+            15,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = Attendance.objects.create(
+        lesson=first_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+
+    activation_time = datetime(
+        2026,
+        9,
+        12,
+        16,
+        tzinfo=dt_timezone.utc,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=activation_time,
+    )
+
+    subscription.refresh_from_db()
+    period.refresh_from_db()
+    assert coverage is not None
+    assert coverage.subscription_allowance.subscription_id == subscription.id
+    assert subscription.valid_from == date(2026, 9, 12)
+    assert subscription.valid_until == date(2026, 10, 9)
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert period.starts_on == date(2026, 9, 12)
+    assert period.ends_on == date(2026, 10, 9)
+    assert period.activation_lesson_id == first_lesson.id
+    assert period.activated_at == activation_time
+
+    row = manager_subscription_report(
+        as_of=date(2026, 9, 12),
+        student_id=student.id,
+    )[0]
+    assert row.subscription_state == "active"
+    assert row.allowances[0].consumed_visits == 1
+    assert row.allowances[0].remaining_visits == 1
+
+
+@pytest.mark.django_db
+def test_calendar_subscription_issue_uses_scheme_window(actor, student):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="calendar-issue",
+        name="Calendar issue",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = make_plan(code="calendar-issue-plan", scheme=scheme, ice=4)
+
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 19),
+        actor=actor,
+        now=datetime(2026, 9, 19, 10, tzinfo=dt_timezone.utc),
+    )
+
+    assert subscription.valid_from == date(2026, 9, 1)
+    assert subscription.valid_until == date(2026, 9, 30)
+    assert subscription.billing_period.state == SubscriptionPeriod.State.ACTIVE
+    assert subscription.billing_period.starts_on == date(2026, 9, 1)
+    assert subscription.billing_period.ends_on == date(2026, 9, 30)
+
+
+@pytest.mark.django_db
+def test_group_place_hold_expires_after_period(actor, student, context):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="hold-expiry-calendar",
+        name="Hold expiry",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    hold = create_group_place_hold(
+        student_id=student.id,
+        group_id=context["group"].id,
+        period_scheme_id=scheme.id,
+        period_from=date(2026, 10, 1),
+        period_until=date(2026, 10, 31),
+        actor=actor,
+    )
+    confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=actor,
+        now=datetime(2026, 9, 25, 12, tzinfo=dt_timezone.utc),
+    )
+
+    from subscriptions.services import process_subscription_lifecycle
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 11, 1),
+        actor=actor,
+    )
+
+    hold.refresh_from_db()
+    assert result["group_place_hold_expired"] == 1
+    assert hold.status == GroupPlaceHold.Status.EXPIRED
+
+
+@pytest.mark.django_db
+def test_existing_subscription_coverage_does_not_activate_future_rolling(
+    actor,
+    student,
+    context,
+):
+    calendar = SubscriptionPeriodScheme.objects.create(
+        code="rolling-priority-calendar",
+        name="Current calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    current_plan = make_plan(
+        code="rolling-priority-current",
+        scheme=calendar,
+        ice=4,
+    )
+    current = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=current_plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 10, tzinfo=dt_timezone.utc),
+    )
+
+    rolling = SubscriptionPeriodScheme.objects.create(
+        code="rolling-priority-next",
+        name="Next rolling",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    next_plan = make_plan(
+        code="rolling-priority-next-plan",
+        scheme=rolling,
+        ice=4,
+    )
+    future = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=next_plan.id,
+        reference_date=date(2026, 11, 1),
+        actor=actor,
+        now=datetime(2026, 10, 5, 10, tzinfo=dt_timezone.utc),
+    )
+
+    lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+
+    future.refresh_from_db()
+    future.billing_period.refresh_from_db()
+    assert coverage.subscription_allowance.subscription_id == current.id
+    assert future.valid_from is None
+    assert future.valid_until is None
+    assert future.billing_period.state == SubscriptionPeriod.State.PENDING
+    assert future.billing_period.reference_date == date(2026, 11, 1)
+
+
+@pytest.mark.django_db
+def test_backdated_attendance_does_not_activate_rolling_subscription(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-backdate",
+        name="Rolling backdate",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-backdate-plan", scheme=scheme, ice=4)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 10),
+        actor=actor,
+        now=datetime(2026, 10, 10, 10, tzinfo=dt_timezone.utc),
+    )
+
+    old_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 8, 20, 15, tzinfo=dt_timezone.utc),
+    )
+    attendance = Attendance.objects.create(
+        lesson=old_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 12, 12, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert coverage is None
+    assert subscription.valid_from is None
+    assert subscription.valid_until is None
+    assert period.state == SubscriptionPeriod.State.PENDING
+    assert period.reference_date == date(2026, 10, 10)
+
+    with pytest.raises(
+        ValidationError,
+        match="before its reference date",
+    ):
+        activate_rolling_subscription_period(
+            subscription_id=subscription.id,
+            lesson_id=old_lesson.id,
+            actor=actor,
+            now=datetime(2026, 10, 12, 12, tzinfo=dt_timezone.utc),
+        )
+
+
+@pytest.mark.django_db
+def test_cancelled_group_place_hold_can_be_recreated(actor, student, context):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="hold-recreate",
+        name="Hold recreate",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    first = create_group_place_hold(
+        student_id=student.id,
+        group_id=context["group"].id,
+        period_scheme_id=scheme.id,
+        period_from=date(2026, 11, 1),
+        period_until=date(2026, 11, 30),
+        actor=actor,
+    )
+    cancel_group_place_hold(
+        hold_id=first.id,
+        actor=actor,
+        reason="created by mistake",
+        now=datetime(2026, 10, 20, 12, tzinfo=dt_timezone.utc),
+    )
+
+    second = create_group_place_hold(
+        student_id=student.id,
+        group_id=context["group"].id,
+        period_scheme_id=scheme.id,
+        period_from=date(2026, 11, 1),
+        period_until=date(2026, 11, 30),
+        actor=actor,
+    )
+
+    assert second.id != first.id
+    assert second.status == GroupPlaceHold.Status.PENDING_PAYMENT
+    assert GroupPlaceHold.objects.filter(
+        student=student,
+        group=context["group"],
+        period_from=date(2026, 11, 1),
+    ).count() == 2
+
+
+@pytest.mark.django_db
+def test_overlapping_group_place_holds_are_rejected(actor, student, context):
+    calendar = SubscriptionPeriodScheme.objects.create(
+        code="hold-overlap-calendar",
+        name="Hold overlap calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    rolling = SubscriptionPeriodScheme.objects.create(
+        code="hold-overlap-rolling",
+        name="Hold overlap rolling",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    create_group_place_hold(
+        student_id=student.id,
+        group_id=context["group"].id,
+        period_scheme_id=calendar.id,
+        period_from=date(2026, 11, 1),
+        period_until=date(2026, 11, 30),
+        actor=actor,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="overlaps this period",
+    ):
+        create_group_place_hold(
+            student_id=student.id,
+            group_id=context["group"].id,
+            period_scheme_id=rolling.id,
+            period_from=date(2026, 11, 5),
+            period_until=date(2026, 12, 2),
+            actor=actor,
+        )
+
+
+@pytest.mark.django_db
+def test_manager_subscription_report_query_count_is_bounded(
+    actor,
+    context,
+    django_assert_num_queries,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="report-query-calendar",
+        name="Report query calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = make_plan(code="report-query-plan", scheme=scheme, ice=4)
+    for index in range(12):
+        report_student = Student.objects.create(
+            display_name=f"Query student {index:02d}",
+        )
+        issue_subscription_for_period(
+            student_id=report_student.id,
+            plan_id=plan.id,
+            reference_date=date(2026, 10, 1),
+            actor=actor,
+            now=datetime(2026, 10, 1, 10, tzinfo=dt_timezone.utc),
+        )
+
+    with django_assert_num_queries(5):
+        rows = manager_subscription_report(
+            as_of=date(2026, 10, 15),
+            from_date=date(2026, 10, 1),
+            until_date=date(2026, 10, 31),
+        )
+        assert len(rows) == 12
+
+
+@pytest.mark.django_db
+def test_manager_subscription_report_orders_pending_first_explicitly(
+    actor,
+    student,
+):
+    calendar = SubscriptionPeriodScheme.objects.create(
+        code="report-order-calendar",
+        name="Report order calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    active_plan = make_plan(code="report-order-active", scheme=calendar, ice=4)
+    active = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=active_plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 10, tzinfo=dt_timezone.utc),
+    )
+
+    rolling = SubscriptionPeriodScheme.objects.create(
+        code="report-order-rolling",
+        name="Report order rolling",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    pending_plan = make_plan(
+        code="report-order-pending",
+        scheme=rolling,
+        ice=4,
+    )
+    pending = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=pending_plan.id,
+        reference_date=date(2026, 11, 1),
+        actor=actor,
+        now=datetime(2026, 10, 10, 10, tzinfo=dt_timezone.utc),
+    )
+
+    rows = manager_subscription_report(
+        as_of=date(2026, 10, 15),
+        student_id=student.id,
+    )
+    assert [row.subscription.id for row in rows] == [pending.id, active.id]
+
+
+@pytest.mark.django_db
+def test_reversing_activation_coverage_returns_unused_rolling_period_to_pending(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-revert",
+        name="Rolling revert",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-revert-plan", scheme=scheme, ice=2)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+    assert coverage is not None
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert period.activation_lesson_id == lesson.id
+
+    reverse_attendance_coverage(
+        coverage_id=coverage.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 17, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    period.refresh_from_db()
+    assert subscription.valid_from is None
+    assert subscription.valid_until is None
+    assert period.state == SubscriptionPeriod.State.PENDING
+    assert period.starts_on is None
+    assert period.ends_on is None
+    assert period.activation_lesson_id is None
+    assert period.activated_at is None
+    event = AuditEvent.objects.get(
+        event_type="SubscriptionPeriodActivationReverted",
+        aggregate_id=period.id,
+    )
+    assert event.payload["reverted_coverage_id"] == str(coverage.id)
+    assert event.payload["previous_starts_on"] == "2026-10-10"
+    assert event.payload["previous_ends_on"] == "2026-11-06"
+
+
+@pytest.mark.django_db
+def test_reversing_activation_coverage_keeps_period_after_other_coverage(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-no-revert",
+        name="Rolling no revert",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-no-revert-plan", scheme=scheme, ice=3)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    first_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+    )
+    second_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 17, 15, tzinfo=dt_timezone.utc),
+    )
+    first_attendance = Attendance.objects.create(
+        lesson=first_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    second_attendance = Attendance.objects.create(
+        lesson=second_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 17, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    first_coverage = assign_attendance_coverage(
+        attendance_id=first_attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+    second_coverage = assign_attendance_coverage(
+        attendance_id=second_attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 17, 16, tzinfo=dt_timezone.utc),
+    )
+    assert first_coverage is not None
+    assert second_coverage is not None
+
+    reverse_attendance_coverage(
+        coverage_id=first_coverage.id,
+        actor=actor,
+        now=datetime(2026, 10, 17, 17, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert period.activation_lesson_id == first_lesson.id
+    assert subscription.valid_from == date(2026, 10, 10)
+    assert subscription.valid_until == date(2026, 11, 6)
+    assert AuditEvent.objects.filter(
+        event_type="SubscriptionPeriodActivationRevertSkipped",
+        aggregate_id=period.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-makeup-dependency",
+        name="Rolling makeup dependency",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-makeup-dependency-plan", scheme=scheme, ice=3)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    activation_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+    )
+    attendance = Attendance.objects.create(
+        lesson=activation_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+    assert coverage is not None
+
+    source_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 12, 15, tzinfo=dt_timezone.utc),
+    )
+    allowance = subscription.allowances.get(category=SubscriptionCategory.ICE)
+    MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 11, 7),
+        valid_until=date(2026, 12, 31),
+        created_by=actor,
+    )
+
+    reverse_attendance_coverage(
+        coverage_id=coverage.id,
+        actor=actor,
+        now=datetime(2026, 10, 12, 17, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert subscription.valid_from == date(2026, 10, 10)
+    assert subscription.valid_until == date(2026, 11, 6)
+    event = AuditEvent.objects.get(
+        event_type="SubscriptionPeriodActivationRevertSkipped",
+        aggregate_id=period.id,
+    )
+    assert event.payload["reason"] == "dependent_rights_exist"
+    assert event.payload["dependencies"]["active_makeups"] is True

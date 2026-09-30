@@ -267,6 +267,7 @@ def set_attendance(
                 attendance_id=attendance.id,
                 actor=actor,
                 correlation_id=correlation_id,
+                now=now,
             )
             event_type = "AttendanceMarkedPresent"
             coverage_state = "covered" if coverage is not None else "uncovered"
@@ -317,6 +318,7 @@ def set_attendance(
                 coverage_id=coverage.id,
                 actor=actor,
                 correlation_id=correlation_id,
+                now=now,
             )
 
         attendance.status = Attendance.Status.ABSENT
@@ -372,6 +374,7 @@ def set_attendance(
             attendance_id=attendance.id,
             actor=actor,
             correlation_id=correlation_id,
+            now=now,
         )
         _audit(
             event_type="AttendanceCorrectedToPresent",

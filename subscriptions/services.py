@@ -15,7 +15,7 @@ from audit.models import AuditEvent
 from audit.services import event_exists, record_event
 from core.permissions import require_permission
 from core.time import school_date
-from scheduling.models import Lesson
+from scheduling.models import Lesson, TrainingGroup
 
 from .balances import (
     ledger_balance,
@@ -28,11 +28,14 @@ from .models import (
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
     AttendanceCoverage,
+    GroupPlaceHold,
     MakeupEntitlement,
     OneTimeEntitlement,
     Subscription,
     SubscriptionAllowance,
     SubscriptionLedgerEntry,
+    SubscriptionPeriod,
+    SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
@@ -801,8 +804,12 @@ def materialize_free_makeup_from_case(
             "makeup_entitlement_id": str(entitlement.id),
             "eligibility_status": case.eligibility_status,
             "eligible_absence_ordinal": case.eligible_absence_ordinal,
-            "valid_from": valid_from.isoformat(),
-            "valid_until": valid_until.isoformat(),
+            "valid_from": (
+                valid_from.isoformat() if valid_from is not None else None
+            ),
+            "valid_until": (
+                valid_until.isoformat() if valid_until is not None else None
+            ),
         },
     )
     _audit(
@@ -816,8 +823,12 @@ def materialize_free_makeup_from_case(
             "source_lesson_id": str(case.source_lesson_id),
             "source_allowance_id": str(allowance.id),
             "category": case.category,
-            "valid_from": valid_from.isoformat(),
-            "valid_until": valid_until.isoformat(),
+            "valid_from": (
+                valid_from.isoformat() if valid_from is not None else None
+            ),
+            "valid_until": (
+                valid_until.isoformat() if valid_until is not None else None
+            ),
             "reason": entitlement.reason,
             "compensation_case_id": str(case.id),
             "compensation_grant_id": str(grant.id),
@@ -852,8 +863,10 @@ def _lock_paid_makeup_target_subscription(
     case: AbsenceCompensationCase,
     subscription_id: UUID,
 ) -> Subscription:
-    subscription = Subscription.objects.select_for_update().get(
-        pk=subscription_id
+    subscription = (
+        Subscription.objects.select_for_update(of=("self",))
+        .select_related("billing_period")
+        .get(pk=subscription_id)
     )
     if subscription.student_id != case.student_id:
         raise ValidationError(
@@ -907,6 +920,45 @@ def _validate_paid_makeup_target(
                     )
                 }
             )
+        if (
+            target_subscription.valid_from is None
+            or target_subscription.valid_until is None
+        ):
+            try:
+                target_period = target_subscription.billing_period
+            except SubscriptionPeriod.DoesNotExist as exc:
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Pending target subscription has no billing "
+                            "period metadata."
+                        )
+                    }
+                ) from exc
+            if (
+                target_period.mode_snapshot
+                != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+                or target_period.state != SubscriptionPeriod.State.PENDING
+            ):
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription has no active dates and is "
+                            "not a pending rolling subscription."
+                        )
+                    }
+                )
+            if target_period.reference_date <= source_subscription.valid_until:
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Pending rolling target subscription reference "
+                            "date must be after the source subscription ends."
+                        )
+                    }
+                )
+            return None, None
+
         if target_subscription.valid_from <= source_subscription.valid_until:
             raise ValidationError(
                 {
@@ -927,6 +979,19 @@ def _validate_paid_makeup_target(
         valid_from = date.fromisoformat(target_from)
         valid_until = date.fromisoformat(target_until)
         if target_subscription is not None:
+            if (
+                target_subscription.valid_from is None
+                or target_subscription.valid_until is None
+            ):
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Pending target subscription must be activated "
+                            "before it can be validated against an explicit "
+                            "target window."
+                        )
+                    }
+                )
             valid_from = max(valid_from, target_subscription.valid_from)
             valid_until = min(valid_until, target_subscription.valid_until)
             if valid_until < valid_from:
@@ -1337,6 +1402,16 @@ def activate_paid_makeup_grant(
         target_subscription=target_subscription,
     )
     if valid_from is None or valid_until is None:
+        if target_subscription is not None:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target rolling subscription is still pending "
+                        "activation. Activate its billing period before "
+                        "activating the paid make-up."
+                    )
+                }
+            )
         raise ValidationError(
             {"target_subscription": "Target subscription is required."}
         )
@@ -1734,13 +1809,420 @@ def cancel_absence_compensation_case(
     return case
 
 
+def resolve_subscription_period_window(
+    *,
+    scheme: SubscriptionPeriodScheme,
+    reference_date: date,
+    first_lesson_date: date | None = None,
+) -> tuple[date, date] | None:
+    if scheme.mode == SubscriptionPeriodScheme.Mode.CALENDAR_MONTH:
+        starts_on = reference_date.replace(day=1)
+        if starts_on.month == 12:
+            next_month = date(starts_on.year + 1, 1, 1)
+        else:
+            next_month = date(
+                starts_on.year,
+                starts_on.month + 1,
+                1,
+            )
+        return starts_on, next_month - timedelta(days=1)
+
+    if scheme.mode == SubscriptionPeriodScheme.Mode.FIXED_28_DAYS:
+        if scheme.fixed_anchor_date is None:
+            raise ValidationError(
+                {"scheme": "Fixed 28-day period scheme has no anchor date."}
+            )
+        period_index = (
+            (reference_date - scheme.fixed_anchor_date).days // 28
+        )
+        starts_on = scheme.fixed_anchor_date + timedelta(
+            days=period_index * 28
+        )
+        return starts_on, starts_on + timedelta(days=27)
+
+    if (
+        scheme.mode
+        == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+    ):
+        if first_lesson_date is None:
+            return None
+        return first_lesson_date, first_lesson_date + timedelta(days=27)
+
+    raise ValidationError({"scheme": "Unsupported subscription period mode."})
+
+
+@transaction.atomic
+def attach_subscription_period(
+    *,
+    subscription_id: UUID,
+    scheme_id: UUID,
+    reference_date: date,
+    actor: User,
+    now=None,
+) -> SubscriptionPeriod:
+    require_permission(
+        actor,
+        "subscriptions.change_subscription",
+        "Subscription change permission is required.",
+    )
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    existing = (
+        SubscriptionPeriod.objects.select_for_update()
+        .filter(subscription=subscription)
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+        pk=scheme_id
+    )
+    if not scheme.is_active:
+        raise ValidationError(
+            {"scheme": "Inactive period scheme cannot be assigned."}
+        )
+
+    resolved = resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=reference_date,
+    )
+    values = {
+        "subscription": subscription,
+        "scheme": scheme,
+        "mode_snapshot": scheme.mode,
+        "fixed_anchor_snapshot": scheme.fixed_anchor_date,
+        "reference_date": reference_date,
+    }
+    if resolved is None:
+        period = SubscriptionPeriod.objects.create(**values)
+    else:
+        starts_on, ends_on = resolved
+        period = SubscriptionPeriod.objects.create(
+            **values,
+            state=SubscriptionPeriod.State.ACTIVE,
+            starts_on=starts_on,
+            ends_on=ends_on,
+            activated_at=now or timezone.now(),
+        )
+
+    _audit(
+        event_type="SubscriptionPeriodAttached",
+        aggregate_type="SubscriptionPeriod",
+        aggregate_id=period.id,
+        actor=actor,
+        payload={
+            "subscription_id": str(subscription.id),
+            "scheme_id": str(scheme.id),
+            "mode": scheme.mode,
+            "state": period.state,
+            "starts_on": (
+                period.starts_on.isoformat()
+                if period.starts_on is not None
+                else None
+            ),
+            "ends_on": (
+                period.ends_on.isoformat()
+                if period.ends_on is not None
+                else None
+            ),
+        },
+    )
+    return period
+
+
+@transaction.atomic
+def activate_rolling_subscription_period(
+    *,
+    subscription_id: UUID,
+    lesson_id: UUID,
+    actor: User | None,
+    now=None,
+) -> SubscriptionPeriod:
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    period = (
+        SubscriptionPeriod.objects.select_for_update()
+        .select_related("scheme")
+        .get(subscription=subscription)
+    )
+    if period.state == SubscriptionPeriod.State.ACTIVE:
+        return period
+    if (
+        period.mode_snapshot
+        != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+    ):
+        raise ValidationError(
+            {"period": "Only rolling 28-day periods require activation."}
+        )
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    lesson_date = school_date(lesson.starts_at)
+    if lesson_date < period.reference_date:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Rolling subscription cannot be activated by a lesson "
+                    "before its reference date."
+                )
+            }
+        )
+    starts_on, ends_on = resolve_subscription_period_window(
+        scheme=period.scheme,
+        reference_date=lesson_date,
+        first_lesson_date=lesson_date,
+    )
+
+    subscription.valid_from = starts_on
+    subscription.valid_until = ends_on
+    subscription.save(update_fields=["valid_from", "valid_until"])
+
+    period.state = SubscriptionPeriod.State.ACTIVE
+    period.starts_on = starts_on
+    period.ends_on = ends_on
+    period.activation_lesson = lesson
+    period.activated_at = now or timezone.now()
+    period.save(
+        update_fields=[
+            "state",
+            "starts_on",
+            "ends_on",
+            "activation_lesson",
+            "activated_at",
+        ]
+    )
+    _audit(
+        event_type="SubscriptionPeriodActivated",
+        aggregate_type="SubscriptionPeriod",
+        aggregate_id=period.id,
+        actor=actor,
+        payload={
+            "subscription_id": str(subscription.id),
+            "lesson_id": str(lesson.id),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat(),
+        },
+    )
+    return period
+
+
+@transaction.atomic
+def create_group_place_hold(
+    *,
+    student_id: UUID,
+    group_id: UUID,
+    period_scheme_id: UUID,
+    period_from: date,
+    period_until: date,
+    actor: User,
+) -> GroupPlaceHold:
+    require_permission(
+        actor,
+        "subscriptions.add_groupplacehold",
+        "Group place hold permission is required.",
+    )
+    student = Student.objects.select_for_update().get(pk=student_id)
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+        pk=period_scheme_id
+    )
+    if not scheme.is_active:
+        raise ValidationError(
+            {"period_scheme": "Inactive period scheme cannot be used."}
+        )
+
+    expected = resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=period_from,
+        first_lesson_date=(
+            period_from
+            if (
+                scheme.mode
+                == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+            )
+            else None
+        ),
+    )
+    if expected != (period_from, period_until):
+        raise ValidationError(
+            {
+                "period": (
+                    "Place hold dates must match one full billing period "
+                    "for the selected scheme."
+                )
+            }
+        )
+
+    existing = (
+        GroupPlaceHold.objects.select_for_update()
+        .filter(
+            student=student,
+            group=group,
+            period_from=period_from,
+        )
+        .exclude(status=GroupPlaceHold.Status.CANCELLED)
+        .order_by("created_at", "id")
+        .first()
+    )
+    if existing is not None:
+        if (
+            existing.period_until != period_until
+            or existing.period_scheme_id != scheme.id
+        ):
+            raise ValidationError(
+                {"period": "A conflicting place hold already exists."}
+            )
+        return existing
+
+    overlapping = (
+        GroupPlaceHold.objects.select_for_update()
+        .filter(
+            student=student,
+            group=group,
+            period_from__lte=period_until,
+            period_until__gte=period_from,
+        )
+        .exclude(status=GroupPlaceHold.Status.CANCELLED)
+        .order_by("period_from", "id")
+        .first()
+    )
+    if overlapping is not None:
+        raise ValidationError(
+            {
+                "period": (
+                    "Another non-cancelled place hold overlaps this period "
+                    "for the same student and group."
+                )
+            }
+        )
+
+    hold = GroupPlaceHold.objects.create(
+        student=student,
+        group=group,
+        period_scheme=scheme,
+        period_from=period_from,
+        period_until=period_until,
+        created_by=actor,
+    )
+
+    _audit(
+        event_type="GroupPlaceHoldCreated",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={
+            "student_id": str(student.id),
+            "group_id": str(group.id),
+            "period_scheme_id": str(scheme.id),
+            "period_from": period_from.isoformat(),
+            "period_until": period_until.isoformat(),
+        },
+    )
+    return hold
+
+
+@transaction.atomic
+def confirm_group_place_hold_fee(
+    *,
+    hold_id: UUID,
+    actor: User,
+    now=None,
+) -> GroupPlaceHold:
+    require_permission(
+        actor,
+        "subscriptions.change_groupplacehold",
+        "Group place hold change permission is required.",
+    )
+    hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
+    if hold.status == GroupPlaceHold.Status.ACTIVE:
+        return hold
+    if hold.status != GroupPlaceHold.Status.PENDING_PAYMENT:
+        raise ValidationError(
+            {"hold": "Only a pending place hold can confirm payment."}
+        )
+
+    confirmed_at = now or timezone.now()
+    hold.status = GroupPlaceHold.Status.ACTIVE
+    hold.fee_confirmed_at = confirmed_at
+    hold.fee_confirmed_by = actor
+    hold.save(
+        update_fields=[
+            "status",
+            "fee_confirmed_at",
+            "fee_confirmed_by",
+        ]
+    )
+    _audit(
+        event_type="GroupPlaceHoldActivated",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={"fee_confirmed_at": confirmed_at.isoformat()},
+    )
+    return hold
+
+
+@transaction.atomic
+def cancel_group_place_hold(
+    *,
+    hold_id: UUID,
+    actor: User,
+    reason: str,
+    now=None,
+) -> GroupPlaceHold:
+    require_permission(
+        actor,
+        "subscriptions.change_groupplacehold",
+        "Group place hold change permission is required.",
+    )
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError(
+            {"reason": "Place hold cancellation reason is required."}
+        )
+    hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
+    if hold.status == GroupPlaceHold.Status.CANCELLED:
+        return hold
+    if hold.status == GroupPlaceHold.Status.EXPIRED:
+        raise ValidationError(
+            {"hold": "Expired place hold cannot be cancelled."}
+        )
+
+    cancelled_at = now or timezone.now()
+    hold.status = GroupPlaceHold.Status.CANCELLED
+    hold.cancelled_at = cancelled_at
+    hold.cancelled_by = actor
+    hold.cancellation_reason = reason
+    hold.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+            "cancellation_reason",
+        ]
+    )
+    _audit(
+        event_type="GroupPlaceHoldCancelled",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={
+            "reason": reason,
+            "cancelled_at": cancelled_at.isoformat(),
+        },
+    )
+    return hold
+
+
 @transaction.atomic
 def issue_subscription(
     *,
     student_id: UUID,
     plan_id: UUID,
-    valid_from: date,
-    valid_until: date,
+    valid_from: date | None,
+    valid_until: date | None,
     actor: User,
 ) -> Subscription:
     require_permission(
@@ -1748,7 +2230,20 @@ def issue_subscription(
         "subscriptions.add_subscription",
         "Subscription issue permission is required.",
     )
-    if valid_until < valid_from:
+    if (valid_from is None) != (valid_until is None):
+        raise ValidationError(
+            {
+                "valid_until": (
+                    "valid_from and valid_until must either both be set "
+                    "or both be empty."
+                )
+            }
+        )
+    if (
+        valid_from is not None
+        and valid_until is not None
+        and valid_until < valid_from
+    ):
         raise ValidationError(
             {"valid_until": "valid_until must be on or after valid_from."}
         )
@@ -1803,10 +2298,65 @@ def issue_subscription(
             "student_id": str(student.id),
             "plan_id": str(plan.id),
             "plan_code": subscription.plan_code_snapshot,
-            "valid_from": valid_from.isoformat(),
-            "valid_until": valid_until.isoformat(),
+            "valid_from": (
+                valid_from.isoformat() if valid_from is not None else None
+            ),
+            "valid_until": (
+                valid_until.isoformat() if valid_until is not None else None
+            ),
             "allowances": issued,
         },
+    )
+    return subscription
+
+
+@transaction.atomic
+def issue_subscription_for_period(
+    *,
+    student_id: UUID,
+    plan_id: UUID,
+    reference_date: date,
+    actor: User,
+    now=None,
+) -> Subscription:
+    plan = (
+        SubscriptionPlan.objects.select_for_update(of=("self",))
+        .select_related("period_scheme")
+        .get(pk=plan_id)
+    )
+    if plan.period_scheme is None:
+        raise ValidationError(
+            {"plan": "Subscription plan has no period scheme."}
+        )
+    scheme = plan.period_scheme
+    if not scheme.is_active:
+        raise ValidationError(
+            {"plan": "Subscription plan period scheme is inactive."}
+        )
+
+    resolved = resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=reference_date,
+    )
+    if resolved is None:
+        valid_from = None
+        valid_until = None
+    else:
+        valid_from, valid_until = resolved
+
+    subscription = issue_subscription(
+        student_id=student_id,
+        plan_id=plan.id,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        actor=actor,
+    )
+    attach_subscription_period(
+        subscription_id=subscription.id,
+        scheme_id=scheme.id,
+        reference_date=reference_date,
+        actor=actor,
+        now=now,
     )
     return subscription
 
@@ -2050,6 +2600,99 @@ def _try_makeup_coverage(
     return None
 
 
+def _activate_pending_rolling_subscription_for_attendance(
+    *,
+    attendance: Attendance,
+    category: str,
+    lesson_date: date,
+    actor: User | None,
+    now=None,
+) -> bool:
+    period_ids = list(
+        SubscriptionPeriod.objects.filter(
+            state=SubscriptionPeriod.State.PENDING,
+            mode_snapshot=(
+                SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+            ),
+            subscription__student_id=attendance.student_id,
+            subscription__cancelled_at__isnull=True,
+            subscription__allowances__category=category,
+            reference_date__lte=lesson_date,
+        )
+        .order_by(
+            "subscription__created_at",
+            "created_at",
+            "id",
+        )
+        .values_list("id", flat=True)
+    )
+
+    for period_id in period_ids:
+        period = (
+            SubscriptionPeriod.objects.select_for_update()
+            .select_related("subscription", "scheme")
+            .get(pk=period_id)
+        )
+        if period.state != SubscriptionPeriod.State.PENDING:
+            continue
+        if lesson_date < period.reference_date:
+            continue
+
+        allowance = (
+            SubscriptionAllowance.objects.select_for_update()
+            .filter(
+                subscription_id=period.subscription_id,
+                category=category,
+            )
+            .first()
+        )
+        if allowance is None:
+            continue
+        _locked, balance = locked_allowance_balance(allowance.id)
+        if balance <= 0:
+            continue
+
+        starts_on, ends_on = resolve_subscription_period_window(
+            scheme=period.scheme,
+            reference_date=lesson_date,
+            first_lesson_date=lesson_date,
+        )
+        subscription = period.subscription
+        subscription.valid_from = starts_on
+        subscription.valid_until = ends_on
+        subscription.save(update_fields=["valid_from", "valid_until"])
+
+        period.state = SubscriptionPeriod.State.ACTIVE
+        period.starts_on = starts_on
+        period.ends_on = ends_on
+        period.activation_lesson_id = attendance.lesson_id
+        period.activated_at = now or timezone.now()
+        period.save(
+            update_fields=[
+                "state",
+                "starts_on",
+                "ends_on",
+                "activation_lesson",
+                "activated_at",
+            ]
+        )
+        _audit(
+            event_type="SubscriptionPeriodActivated",
+            aggregate_type="SubscriptionPeriod",
+            aggregate_id=period.id,
+            actor=actor,
+            payload={
+                "subscription_id": str(subscription.id),
+                "lesson_id": str(attendance.lesson_id),
+                "starts_on": starts_on.isoformat(),
+                "ends_on": ends_on.isoformat(),
+                "source": "first_covered_lesson",
+            },
+        )
+        return True
+    return False
+
+
 def _try_ordinary_allowance_coverage(
     *,
     attendance: Attendance,
@@ -2163,6 +2806,7 @@ def assign_attendance_coverage(
     attendance_id: UUID,
     actor: User | None = None,
     correlation_id: UUID | None = None,
+    now=None,
 ) -> AttendanceCoverage | None:
     correlation_id = correlation_id or uuid4()
     attendance = (
@@ -2206,6 +2850,26 @@ def assign_attendance_coverage(
     if coverage is not None:
         return coverage
 
+    coverage = _try_ordinary_allowance_coverage(
+        attendance=attendance,
+        category=category,
+        lesson_date=lesson_date,
+        actor=actor,
+        correlation_id=correlation_id,
+    )
+    if coverage is not None:
+        return coverage
+
+    activated = _activate_pending_rolling_subscription_for_attendance(
+        attendance=attendance,
+        category=category,
+        lesson_date=lesson_date,
+        actor=actor,
+        now=now,
+    )
+    if not activated:
+        return None
+
     return _try_ordinary_allowance_coverage(
         attendance=attendance,
         category=category,
@@ -2215,21 +2879,178 @@ def assign_attendance_coverage(
     )
 
 
+def _rolling_period_revert_dependencies(
+    *,
+    subscription_id: UUID,
+    excluded_coverage_id: UUID,
+) -> dict[str, bool]:
+    return {
+        "active_coverages": AttendanceCoverage.objects.filter(
+            subscription_allowance__subscription_id=subscription_id,
+            reversed_at__isnull=True,
+        )
+        .exclude(pk=excluded_coverage_id)
+        .exists(),
+        "active_makeups": MakeupEntitlement.objects.filter(
+            source_subscription_allowance__subscription_id=subscription_id,
+            cancelled_at__isnull=True,
+        ).exists(),
+        "active_compensation_cases": AbsenceCompensationCase.objects.filter(
+            source_subscription_allowance__subscription_id=subscription_id,
+            status__in=[
+                AbsenceCompensationCase.Status.OPEN,
+                AbsenceCompensationCase.Status.MATERIALIZED,
+            ],
+        ).exists(),
+        "active_compensation_grants": AbsenceCompensationActionGrant.objects.filter(
+            case__source_subscription_allowance__subscription_id=subscription_id,
+            reversed_at__isnull=True,
+        ).exists(),
+    }
+
+
+def _maybe_revert_rolling_subscription_activation(
+    *,
+    coverage: AttendanceCoverage,
+    subscription_id: UUID,
+    period: SubscriptionPeriod | None,
+    actor: User | None,
+    correlation_id: UUID,
+) -> bool:
+    if period is None:
+        return False
+    if (
+        period.state != SubscriptionPeriod.State.ACTIVE
+        or period.mode_snapshot
+        != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        or period.activation_lesson_id != coverage.attendance.lesson_id
+    ):
+        return False
+
+    dependencies = _rolling_period_revert_dependencies(
+        subscription_id=subscription_id,
+        excluded_coverage_id=coverage.id,
+    )
+    if dependencies["active_coverages"]:
+        _audit(
+            event_type="SubscriptionPeriodActivationRevertSkipped",
+            aggregate_type="SubscriptionPeriod",
+            aggregate_id=period.id,
+            actor=actor,
+            payload={
+                "subscription_id": str(subscription_id),
+                "activation_lesson_id": str(period.activation_lesson_id),
+                "reversed_coverage_id": str(coverage.id),
+                "reason": "active_coverages_remain",
+                "dependencies": dependencies,
+            },
+            correlation_id=correlation_id,
+        )
+        return False
+
+    if any(
+        dependencies[key]
+        for key in (
+            "active_makeups",
+            "active_compensation_cases",
+            "active_compensation_grants",
+        )
+    ):
+        _audit(
+            event_type="SubscriptionPeriodActivationRevertSkipped",
+            aggregate_type="SubscriptionPeriod",
+            aggregate_id=period.id,
+            actor=actor,
+            payload={
+                "subscription_id": str(subscription_id),
+                "activation_lesson_id": str(period.activation_lesson_id),
+                "reversed_coverage_id": str(coverage.id),
+                "reason": "dependent_rights_exist",
+                "dependencies": dependencies,
+            },
+            correlation_id=correlation_id,
+        )
+        return False
+
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    previous_starts_on = period.starts_on
+    previous_ends_on = period.ends_on
+    activation_lesson_id = period.activation_lesson_id
+
+    subscription.valid_from = None
+    subscription.valid_until = None
+    subscription.save(update_fields=["valid_from", "valid_until"])
+
+    period.state = SubscriptionPeriod.State.PENDING
+    period.starts_on = None
+    period.ends_on = None
+    period.activation_lesson = None
+    period.activated_at = None
+    period.save(
+        update_fields=[
+            "state",
+            "starts_on",
+            "ends_on",
+            "activation_lesson",
+            "activated_at",
+        ]
+    )
+    _audit(
+        event_type="SubscriptionPeriodActivationReverted",
+        aggregate_type="SubscriptionPeriod",
+        aggregate_id=period.id,
+        actor=actor,
+        payload={
+            "subscription_id": str(subscription.id),
+            "activation_lesson_id": str(activation_lesson_id),
+            "reverted_coverage_id": str(coverage.id),
+            "previous_starts_on": (
+                previous_starts_on.isoformat()
+                if previous_starts_on is not None
+                else None
+            ),
+            "previous_ends_on": (
+                previous_ends_on.isoformat()
+                if previous_ends_on is not None
+                else None
+            ),
+            "reason": "attendance_coverage_reversed",
+        },
+        correlation_id=correlation_id,
+    )
+    return True
+
 @transaction.atomic
 def reverse_attendance_coverage(
     *,
     coverage_id: UUID,
     actor: User | None = None,
     correlation_id: UUID | None = None,
+    now=None,
 ) -> AttendanceCoverage:
     correlation_id = correlation_id or uuid4()
-    coverage = AttendanceCoverage.objects.select_for_update().get(
-        pk=coverage_id
+    coverage = (
+        AttendanceCoverage.objects.select_for_update()
+        .select_related("attendance")
+        .get(pk=coverage_id)
     )
     if coverage.reversed_at is not None:
         return coverage
 
+    subscription_id = None
+    period = None
     if coverage.subscription_allowance_id is not None:
+        allowance_ref = SubscriptionAllowance.objects.only(
+            "subscription_id"
+        ).get(pk=coverage.subscription_allowance_id)
+        subscription_id = allowance_ref.subscription_id
+        period = (
+            SubscriptionPeriod.objects.select_for_update()
+            .filter(subscription_id=subscription_id)
+            .first()
+        )
         allowance, _ = locked_allowance_balance(
             coverage.subscription_allowance_id
         )
@@ -2242,7 +3063,7 @@ def reverse_attendance_coverage(
             created_by=actor,
         )
 
-    coverage.reversed_at = timezone.now()
+    coverage.reversed_at = now or timezone.now()
     coverage.reversed_by = actor
     coverage.save(update_fields=["reversed_at", "reversed_by"])
 
@@ -2268,8 +3089,15 @@ def reverse_attendance_coverage(
             },
             correlation_id=correlation_id,
         )
+    if subscription_id is not None:
+        _maybe_revert_rolling_subscription_activation(
+            coverage=coverage,
+            subscription_id=subscription_id,
+            period=period,
+            actor=actor,
+            correlation_id=correlation_id,
+        )
     return coverage
-
 
 @transaction.atomic
 def adjust_allowance(
@@ -3439,7 +4267,27 @@ def _paid_makeup_authorization_deadline(
     ):
         if grant.target_subscription is None:
             return None, "missing_target_subscription"
-        return grant.target_subscription.valid_until, None
+        if grant.target_subscription.valid_until is not None:
+            return grant.target_subscription.valid_until, None
+        try:
+            target_period = grant.target_subscription.billing_period
+        except SubscriptionPeriod.DoesNotExist:
+            return None, "target_subscription_missing_period"
+        if (
+            target_period.state != SubscriptionPeriod.State.PENDING
+            or target_period.mode_snapshot
+            != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        ):
+            return None, "target_subscription_pending_activation"
+        target_window = resolve_subscription_period_window(
+            scheme=target_period.scheme,
+            reference_date=target_period.reference_date,
+            first_lesson_date=target_period.reference_date,
+        )
+        if target_window is None:
+            return None, "target_subscription_deadline_unresolved"
+        _target_from, target_until = target_window
+        return target_until, None
 
     if (
         target_rule
@@ -3468,6 +4316,7 @@ def _process_one_paid_makeup_authorization_expiry(
             "case",
             "case__source_subscription_allowance__subscription",
             "target_subscription",
+            "target_subscription__billing_period__scheme",
         )
         .get(pk=grant_id)
     )
@@ -3536,6 +4385,38 @@ def _process_one_paid_makeup_authorization_expiry(
     return 0
 
 
+@transaction.atomic
+def _process_one_group_place_hold_expiry(
+    *,
+    hold_id: UUID,
+    as_of: date,
+    actor: User | None,
+) -> int:
+    hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
+    if (
+        hold.status != GroupPlaceHold.Status.ACTIVE
+        or hold.period_until >= as_of
+    ):
+        return 0
+
+    hold.status = GroupPlaceHold.Status.EXPIRED
+    hold.save(update_fields=["status"])
+    _audit(
+        event_type="GroupPlaceHoldExpired",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={
+            "student_id": str(hold.student_id),
+            "group_id": str(hold.group_id),
+            "period_from": hold.period_from.isoformat(),
+            "period_until": hold.period_until.isoformat(),
+            "as_of": as_of.isoformat(),
+        },
+    )
+    return 1
+
+
 def process_subscription_lifecycle(
     *,
     as_of: date,
@@ -3548,6 +4429,7 @@ def process_subscription_lifecycle(
         "expired_with_unused": 0,
         "makeup_expired": 0,
         "paid_authorization_expired": 0,
+        "group_place_hold_expired": 0,
     }
 
     activated_event = AuditEvent.objects.filter(
@@ -3649,6 +4531,23 @@ def process_subscription_lifecycle(
             "paid_authorization_expired"
         ] += _process_one_paid_makeup_authorization_expiry(
             grant_id=grant_id,
+            as_of=as_of,
+            actor=actor,
+        )
+
+    active_hold_ids = list(
+        GroupPlaceHold.objects.filter(
+            status=GroupPlaceHold.Status.ACTIVE,
+            period_until__lt=as_of,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    for hold_id in active_hold_ids:
+        counts[
+            "group_place_hold_expired"
+        ] += _process_one_group_place_hold_expiry(
+            hold_id=hold_id,
             as_of=as_of,
             actor=actor,
         )

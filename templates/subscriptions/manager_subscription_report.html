@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}Отчёт по абонементам{% endblock %}
+
+{% block content %}
+<header class="page-header">
+  <h1>Отчёт по абонементам</h1>
+  <p class="page-header__meta">
+    Состояние на {{ as_of|date:"d.m.Y" }}.
+    Показаны списания, остатки, отработки и сохранение места.
+  </p>
+</header>
+
+<div class="toolbar">
+  <a class="btn btn-primary" href="{% url 'subscriptions:manager_subscription_issue' %}">
+    Выдать абонемент
+  </a>
+  <a class="btn btn-secondary" href="{% url 'subscriptions:manager_place_holds' %}">
+    Сохранение места
+  </a>
+</div>
+
+<form class="filter-form" method="get">
+  <div class="field">
+    <label for="student">Ученик</label>
+    <select id="student" name="student">
+      <option value="">Все ученики</option>
+      {% for student in students %}
+        <option
+          value="{{ student.id }}"
+          {% if selected_student_id == student.id|stringformat:"s" %}selected{% endif %}
+        >
+          {{ student.display_name }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="from">Период с</label>
+    <input id="from" type="date" name="from" value="{{ from_date|date:'Y-m-d' }}">
+  </div>
+  <div class="field">
+    <label for="until">Период по</label>
+    <input id="until" type="date" name="until" value="{{ until_date|date:'Y-m-d' }}">
+  </div>
+  <button class="btn-primary" type="submit">Показать</button>
+</form>
+
+{% if rows %}
+  <div class="report-list">
+    {% for row in rows %}
+      <article class="report-card">
+        <div class="report-card__top">
+          <div>
+            <h2>
+              <a href="{% url 'subscriptions:manager_subscription_detail' row.subscription.id %}">
+                {{ row.subscription.student.display_name }}
+              </a>
+            </h2>
+            <p class="report-card__meta">
+              {{ row.subscription.plan_name_snapshot }}
+              · {{ row.subscription.valid_from|date:"d.m.Y" }}
+              — {{ row.subscription.valid_until|date:"d.m.Y" }}
+            </p>
+          </div>
+          <span class="badge">{{ row.subscription_state }}</span>
+        </div>
+
+        {% if row.period %}
+          <p class="report-card__period">
+            Расчётный период:
+            <strong>{{ row.period.get_mode_snapshot_display }}</strong>
+            · {{ row.period.state }}
+            {% if row.period.starts_on %}
+              · {{ row.period.starts_on|date:"d.m.Y" }}—{{ row.period.ends_on|date:"d.m.Y" }}
+            {% else %}
+              · ожидает первого занятия
+            {% endif %}
+          </p>
+        {% else %}
+          <p class="report-card__period muted">
+            Расчётный период ещё не переведён на новую модель.
+          </p>
+        {% endif %}
+
+        <div class="report-allowances">
+          {% for allowance in row.allowances %}
+            <section class="report-allowance">
+              <h3>{{ allowance.category|upper }}</h3>
+              <div class="report-stats">
+                <div class="stat">
+                  <strong>{{ allowance.granted_visits }}</strong>
+                  <span>выдано</span>
+                </div>
+                <div class="stat">
+                  <strong>{{ allowance.consumed_visits }}</strong>
+                  <span>отходил</span>
+                </div>
+                <div class="stat">
+                  <strong>{{ allowance.remaining_visits }}</strong>
+                  <span>остаток</span>
+                </div>
+                <div class="stat">
+                  <strong>{{ allowance.direct_visits }}</strong>
+                  <span>обычные</span>
+                </div>
+                <div class="stat">
+                  <strong>{{ allowance.makeup_visits }}</strong>
+                  <span>по отработке</span>
+                </div>
+                <div class="stat">
+                  <strong>{{ allowance.makeup_available }}</strong>
+                  <span>переносов доступно</span>
+                </div>
+              </div>
+              {% if allowance.makeup_total %}
+                <p class="report-card__meta">
+                  Переносы: всего {{ allowance.makeup_total }},
+                  использовано {{ allowance.makeup_used }},
+                  истекло {{ allowance.makeup_expired_unused }},
+                  отменено {{ allowance.makeup_cancelled }}.
+                </p>
+              {% endif %}
+            </section>
+          {% endfor %}
+        </div>
+
+        {% if row.place_holds %}
+          <section class="report-holds">
+            <h3>Сохранение места</h3>
+            <ul>
+              {% for hold in row.place_holds %}
+                <li>
+                  {{ hold.group.name }}:
+                  {{ hold.period_from|date:"d.m.Y" }}—{{ hold.period_until|date:"d.m.Y" }}
+                  · {{ hold.get_status_display }}
+                </li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endif %}
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="empty-state">За выбранный период абонементы не найдены.</p>
+{% endif %}
+{% endblock %}
