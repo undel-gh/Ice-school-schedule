@@ -74,3 +74,23 @@ def test_manager_verifies_pending_medical_absence(client):
     justification.refresh_from_db()
     assert justification.status == AbsenceJustification.Status.VERIFIED
     assert justification.reviewed_by == manager
+
+
+@pytest.mark.django_db
+def test_manager_post_checks_permission_before_medical_lookup(client):
+    import uuid
+
+    outsider = User.objects.create_user(
+        username="medical-outsider",
+        password="test",
+    )
+    client.force_login(outsider)
+
+    response = client.post(
+        reverse(
+            "attendance_manager:medical_reject",
+            kwargs={"justification_id": uuid.uuid4()},
+        )
+    )
+
+    assert response.status_code == 403
