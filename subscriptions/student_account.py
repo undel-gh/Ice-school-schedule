@@ -253,18 +253,23 @@ def _makeup_rights(
             status = "expired"
         elif entitlement.valid_from > as_of:
             status = "not_started"
-        elif (
-            source_subscription.cancelled_at is not None
-            or source_balance <= 0
-        ):
-            status = "source_unavailable"
         elif entitlement.target_lesson_id is not None:
             if entitlement.target_lesson.status == Lesson.Status.CANCELLED:
                 status = "target_cancelled"
             elif entitlement.target_lesson.ends_at < now:
                 status = "target_passed"
+            elif (
+                source_subscription.cancelled_at is not None
+                or source_balance <= 0
+            ):
+                status = "source_unavailable"
             else:
                 status = "targeted"
+        elif (
+            source_subscription.cancelled_at is not None
+            or source_balance <= 0
+        ):
+            status = "source_unavailable"
         else:
             status = "available"
 
@@ -278,7 +283,6 @@ def _makeup_rights(
 
     priority = {
         "available": 0,
-        "not_started": 1,
         "targeted": 1,
         "not_started": 2,
         "used": 3,
