@@ -162,3 +162,46 @@ def test_manager_creates_and_materializes_free_compensation(client, operations_c
         source_lesson=ctx["lesson"],
         reason=MakeupEntitlement.Reason.ABSENCE_COMPENSATION,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_manager_grants_administrative_makeup(client, operations_context):
+    ctx = operations_context
+    source_date = timezone.localdate(ctx["lesson"].starts_at)
+    plan = SubscriptionPlan.objects.create(
+        code="admin-makeup-plan",
+        name="Administrative makeup plan",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=4,
+    )
+    subscription = issue_subscription(
+        student_id=ctx["student"].id,
+        plan_id=plan.id,
+        valid_from=source_date.replace(day=1),
+        valid_until=source_date.replace(day=28),
+        actor=ctx["manager"],
+    )
+    allowance = subscription.allowances.get(category=SubscriptionCategory.ICE)
+    client.force_login(ctx["manager"])
+
+    response = client.post(
+        reverse("subscriptions:manager_administrative_makeup_create"),
+        {
+            "source_subscription_allowance": str(allowance.id),
+            "source_lesson": str(ctx["lesson"].id),
+            "valid_from": source_date.isoformat(),
+            "valid_until": (source_date + timedelta(days=14)).isoformat(),
+            "target_lesson": "",
+            "reason": "manager correction",
+        },
+    )
+
+    assert response.status_code == 302
+    assert MakeupEntitlement.objects.filter(
+        source_subscription_allowance=allowance,
+        source_lesson=ctx["lesson"],
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+    ).exists()
