@@ -294,7 +294,7 @@ def test_manager_reschedule_datetime_local_uses_school_timezone(
 ):
     ctx = manager_schedule_context
     settings.TIME_ZONE = "UTC"
-    settings.SCHOOL_TIME_ZONE = "Europe/Riga"
+    settings.SCHOOL_TIME_ZONE = "Asia/Tokyo"
 
     source_start = timezone.now() + timedelta(days=10)
     lesson = Lesson.objects.create(
@@ -310,7 +310,7 @@ def test_manager_reschedule_datetime_local_uses_school_timezone(
         status=Lesson.Status.DRAFT,
     )
     school_target_date = (
-        timezone.now().astimezone(ZoneInfo("Europe/Riga"))
+        timezone.now().astimezone(ZoneInfo("Asia/Tokyo"))
         + timedelta(days=20)
     ).date()
     client.force_login(ctx["manager"])
@@ -331,10 +331,10 @@ def test_manager_reschedule_datetime_local_uses_school_timezone(
     lesson.refresh_from_db()
     replacement = lesson.replacement_lesson
     local_start = replacement.starts_at.astimezone(
-        ZoneInfo("Europe/Riga")
+        ZoneInfo("Asia/Tokyo")
     )
     local_end = replacement.ends_at.astimezone(
-        ZoneInfo("Europe/Riga")
+        ZoneInfo("Asia/Tokyo")
     )
     assert (local_start.hour, local_start.minute) == (18, 0)
     assert (local_end.hour, local_end.minute) == (19, 0)
