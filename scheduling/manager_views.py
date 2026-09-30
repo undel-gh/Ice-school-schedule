@@ -223,43 +223,57 @@ def manager_generation_conflicts(request: HttpRequest) -> HttpResponse:
         for item in ScheduleTemplate.objects.filter(id__in=template_ids)
         .select_related("group", "lesson_type")
     }
-    lesson_ids = {
-        UUID(event.payload["conflicting_lesson_id"])
-        for event in events
-        if event.payload.get("conflicting_lesson_id")
-    }
-    lessons = {
-        item.id: item
-        for item in Lesson.objects.filter(id__in=lesson_ids)
-        .select_related("group", "lesson_type", "coach", "venue")
-    }
-    rows = []
+    parsed_rows = []
+    lesson_ids = set()
+    expected_starts = set()
     for event in events:
+        conflicting_uuid = None
+        raw_conflicting_id = event.payload.get("conflicting_lesson_id")
+        if raw_conflicting_id:
+            try:
+                conflicting_uuid = UUID(raw_conflicting_id)
+            except (TypeError, ValueError):
+                conflicting_uuid = None
+        if conflicting_uuid is not None:
+            lesson_ids.add(conflicting_uuid)
         try:
             expected_starts_at = datetime.fromisoformat(
                 event.payload["expected_starts_at"]
             )
         except (KeyError, TypeError, ValueError):
             expected_starts_at = None
-        resolved = False
         if expected_starts_at is not None:
-            resolved = Lesson.objects.filter(
-                source_template_id=event.aggregate_id,
-                starts_at=expected_starts_at,
-                status=Lesson.Status.CANCELLED,
-            ).exists()
-        conflicting_id = event.payload.get("conflicting_lesson_id")
+            expected_starts.add(expected_starts_at)
+        parsed_rows.append(
+            (event, conflicting_uuid, expected_starts_at)
+        )
+
+    lessons = {
+        item.id: item
+        for item in Lesson.objects.filter(id__in=lesson_ids)
+        .select_related("group", "lesson_type", "coach", "venue")
+    }
+    resolved_occurrences = set(
+        Lesson.objects.filter(
+            source_template_id__in=template_ids,
+            starts_at__in=expected_starts,
+            status=Lesson.Status.CANCELLED,
+        ).values_list("source_template_id", "starts_at")
+    )
+
+    rows = []
+    for event, conflicting_uuid, expected_starts_at in parsed_rows:
         rows.append(
             {
                 "event": event,
                 "template": templates.get(event.aggregate_id),
-                "conflicting_lesson": (
-                    lessons.get(UUID(conflicting_id))
-                    if conflicting_id
-                    else None
-                ),
+                "conflicting_lesson": lessons.get(conflicting_uuid),
                 "expected_starts_at": expected_starts_at,
-                "resolved": resolved,
+                "resolved": (
+                    expected_starts_at is not None
+                    and (event.aggregate_id, expected_starts_at)
+                    in resolved_occurrences
+                ),
             }
         )
     return render(
