@@ -1082,8 +1082,11 @@ presentation helper. POST endpoints сначала проверяют требу
 
 # 13. Реализованный school administration UI
 
-Штатное администрирование основных сущностей школы доступно через manager web
-и не требует Django Admin или management commands.
+Штатное администрирование доменных сущностей школы доступно через manager web.
+Создание authentication User пока остаётся отдельной identity-операцией:
+существующий manager UI связывает уже созданные User с StudentAccess и
+CoachProfile. До реализации invitation/external-auth workflow новый User
+создаётся через Django Admin или другой административный identity-механизм.
 
 Реализованы:
 
@@ -1105,3 +1108,33 @@ StudentAccess и CoachProfile не перепривязываются к дру�
 Все записи выполняются через application services и создают AuditEvent.
 Существующие проверки пересечения GroupMembership остаются источником истины
 для web и CLI.
+
+## 13.1. Семантика активности
+
+`Student.is_active = false` сохраняет историю и существующие StudentAccess,
+но запрещает новые GroupMembership, не добавляет ученика в новые roster при
+публикации и запрещает новые/изменённые RSVP. Родитель или SELF-пользователь
+может продолжать видеть исторические данные.
+
+`TrainingGroup.is_active = false` разрешается только после завершения либо
+версионирования активных текущих/будущих ScheduleTemplate и после отмены или
+переноса всех будущих неотменённых Lesson. Новые GroupMembership и новые
+активные ScheduleTemplate для неактивной группы запрещены.
+
+`CoachProfile.is_active = false` разрешается только после переназначения или
+завершения активных текущих/будущих ScheduleTemplate и после
+переназначения/отмены будущих неотменённых Lesson. Неактивный CoachProfile
+нельзя использовать в новом активном ScheduleTemplate.
+
+Генерация и публикация дополнительно проверяют активность group/coach, чтобы
+legacy или ручные неконсистентные данные не создавали новые занятия.
+
+## 13.2. Списки и identity choices
+
+Списки Student, CoachProfile, TrainingGroup и GroupMembership пагинируются по
+50 строк и показывают общий размер выборки; поиск и membership-state filter
+сохраняются при переходе между страницами.
+
+User dropdown в StudentAccess/CoachProfile не показывает email. Полнотекстовый
+поиск/autocomplete пользователей и отдельный invitation workflow остаются
+следующим этапом identity UI.
