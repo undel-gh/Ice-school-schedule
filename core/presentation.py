@@ -62,6 +62,36 @@ MANAGER_LABELS = {
         "ice": "Лёд",
         "hall": "Зал",
     },
+    "subscription_period_mode": {
+        "calendar_month": "Календарный месяц",
+        "rolling_28_first_lesson": "28 дней от первого занятия",
+        "fixed_28_days": "Общие 28-дневные периоды",
+    },
+    "policy_justification": {
+        "none": "Не требуется",
+        "verified_medical": "Подтверждённая медицинская справка",
+    },
+    "policy_limit_scope": {
+        "student_period": "Ученик + период",
+        "category_period": "Ученик + категория + период",
+        "lesson_type_period": "Ученик + тип занятия + период",
+    },
+    "policy_action_type": {
+        "free_makeup": "Бесплатная отработка",
+        "paid_makeup": "Платная отработка",
+        "billing_recalculation": "Перерасчёт оплаты",
+    },
+    "policy_target_period": {
+        "current_period": "Текущий период",
+        "next_student_period": "Следующий период ученика",
+        "explicit_target_window": "Явное окно",
+    },
+    "policy_requirement": {
+        "none": "Нет дополнительных условий",
+        "fee_required": "Требуется оплата",
+        "target_subscription_required": "Требуется целевой абонемент",
+        "fee_and_target_subscription_required": "Требуются оплата и целевой абонемент",
+    },
 }
 
 

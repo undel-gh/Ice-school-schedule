@@ -1,0 +1,17 @@
+{% load manager_labels %}
+{% extends "base.html" %}
+{% block title %}Расчётные периоды{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Расчётные периоды</h1></header>
+{% if perms.subscriptions.add_subscriptionperiodscheme %}<p><a class="btn btn-primary" href="{% url 'subscriptions:manager_period_scheme_create' %}">Новая модель</a></p>{% endif %}
+<div class="card-list">
+{% for scheme in schemes %}
+<article class="lesson-card">
+<div class="lesson-card__top"><div><h2>{{ scheme.name }}</h2><p class="lesson-card__meta">{{ scheme.code }}</p></div>{% if scheme.is_active %}<span class="badge badge--covered">активна</span>{% else %}<span class="badge badge--cancelled">неактивна</span>{% endif %}</div>
+<p>Режим: {{ scheme.mode|manager_label:"subscription_period_mode" }}{% if scheme.fixed_anchor_date %} · anchor {{ scheme.fixed_anchor_date|date:"d.m.Y" }}{% endif %}</p>
+{% if perms.subscriptions.change_subscriptionperiodscheme %}<a href="{% url 'subscriptions:manager_period_scheme_edit' scheme.id %}">Редактировать</a>{% endif %}
+{% if perms.audit.view_auditevent %} · <a href="{% url 'audit_manager:events' %}?aggregate_type=SubscriptionPeriodScheme&aggregate_id={{ scheme.id }}">Журнал</a>{% endif %}
+</article>
+{% empty %}<div class="empty-state">Модели расчётного периода ещё не созданы.</div>{% endfor %}
+</div>
+{% endblock %}

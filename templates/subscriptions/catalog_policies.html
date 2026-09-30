@@ -1,0 +1,15 @@
+{% load manager_labels %}
+{% extends "base.html" %}
+{% block title %}Политики компенсаций{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Политики компенсаций</h1><p class="page-header__meta">Каждая использованная версия неизменяема; изменения оформляются новой версией.</p></header>
+{% if perms.subscriptions.add_absencecompensationpolicy %}<p><a class="btn btn-primary" href="{% url 'subscriptions:manager_policy_create' %}">Новая политика</a></p>{% endif %}
+<div class="card-list">
+{% for policy in policies %}
+<article class="lesson-card">
+<div class="lesson-card__top"><div><h2><a href="{% url 'subscriptions:manager_policy_detail' policy.id %}">{{ policy.name }}</a></h2><p class="lesson-card__meta">{{ policy.code }} · v{{ policy.version }}</p></div>{% if policy.is_active %}<span class="badge badge--covered">активна</span>{% else %}<span class="badge badge--cancelled">неактивна</span>{% endif %}</div>
+<p>{{ policy.absence_reason|manager_label:"absence_reason" }} · {{ policy.effective_from|date:"d.m.Y" }}—{% if policy.effective_until %}{{ policy.effective_until|date:"d.m.Y" }}{% else %}∞{% endif %}</p>
+</article>
+{% empty %}<div class="empty-state">Политики ещё не созданы.</div>{% endfor %}
+</div>
+{% endblock %}

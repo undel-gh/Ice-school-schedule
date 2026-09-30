@@ -37,6 +37,9 @@
   {% if perms.subscriptions.add_makeupentitlement %}
   <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_administrative_makeup_create' %}"><h2>Административная отработка</h2><p>Ручная отработка на основе лимита действующего абонемента.</p></a>
   {% endif %}
+  {% if perms.subscriptions.view_subscriptionplan or perms.subscriptions.view_subscriptionperiodscheme or perms.subscriptions.view_absencecompensationpolicy %}
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_catalog' %}"><h2>Каталог и правила</h2><p>Тарифы, расчётные периоды и политики компенсаций.</p></a>
+  {% endif %}
   {% if perms.subscriptions.view_subscription %}
   <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_subscription_report' %}"><h2>Абонементы</h2><p>Расчётные периоды, остатки и сохранение места.</p></a>
   {% endif %}

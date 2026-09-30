@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import Exists, OuterRef, Q, Sum
 from django.utils import timezone
 
@@ -13,6 +13,7 @@ from accounts.models import Student
 from attendance.models import AbsenceJustification, Attendance
 from audit.models import AuditEvent
 from audit.services import event_exists, record_event
+from core.choices import SubscriptionCategory
 from core.permissions import require_permission
 from core.time import school_date
 from scheduling.models import Lesson, TrainingGroup
@@ -27,6 +28,7 @@ from .models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
+    AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
     GroupPlaceHold,
     MakeupEntitlement,
@@ -69,6 +71,989 @@ def _audit(
     record_event(**values)
 
 
+
+
+
+def _clean_catalog_text(value: str, *, field: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValidationError({field: "This field is required."})
+    return value
+
+
+def _validate_plan_allowances(
+    allowances: dict[str, int | None],
+) -> dict[str, int]:
+    allowed_categories = set(SubscriptionCategory.values)
+    unknown = set(allowances) - allowed_categories
+    if unknown:
+        raise ValidationError(
+            {"allowances": f"Unsupported allowance categories: {sorted(unknown)!r}."}
+        )
+    normalized = {}
+    for category, value in allowances.items():
+        if value in (None, ""):
+            continue
+        value = int(value)
+        if value <= 0:
+            raise ValidationError(
+                {category: "Visit limit must be greater than zero."}
+            )
+        normalized[category] = value
+    if not normalized:
+        raise ValidationError(
+            {"allowances": "Subscription plan requires at least one allowance."}
+        )
+    return normalized
+
+
+@transaction.atomic
+def create_subscription_period_scheme(
+    *,
+    code: str,
+    name: str,
+    mode: str,
+    fixed_anchor_date: date | None,
+    is_active: bool,
+    actor: User,
+) -> SubscriptionPeriodScheme:
+    require_permission(
+        actor,
+        "subscriptions.add_subscriptionperiodscheme",
+        "Subscription period scheme creation permission is required.",
+    )
+    if mode not in SubscriptionPeriodScheme.Mode.values:
+        raise ValidationError({"mode": "Unsupported subscription period mode."})
+    scheme = SubscriptionPeriodScheme(
+        code=_clean_catalog_text(code, field="code"),
+        name=_clean_catalog_text(name, field="name"),
+        mode=mode,
+        fixed_anchor_date=fixed_anchor_date,
+        is_active=is_active,
+    )
+    scheme.full_clean()
+    try:
+        scheme.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A period scheme with this code already exists."}
+        ) from exc
+    _audit(
+        event_type="SubscriptionPeriodSchemeCreated",
+        aggregate_type="SubscriptionPeriodScheme",
+        aggregate_id=scheme.id,
+        actor=actor,
+        payload={
+            "code": scheme.code,
+            "name": scheme.name,
+            "mode": scheme.mode,
+            "fixed_anchor_date": (
+                scheme.fixed_anchor_date.isoformat()
+                if scheme.fixed_anchor_date is not None
+                else None
+            ),
+            "is_active": scheme.is_active,
+        },
+    )
+    return scheme
+
+
+@transaction.atomic
+def update_subscription_period_scheme(
+    *,
+    scheme_id: UUID,
+    code: str,
+    name: str,
+    mode: str,
+    fixed_anchor_date: date | None,
+    is_active: bool,
+    actor: User,
+) -> SubscriptionPeriodScheme:
+    require_permission(
+        actor,
+        "subscriptions.change_subscriptionperiodscheme",
+        "Subscription period scheme change permission is required.",
+    )
+    if mode not in SubscriptionPeriodScheme.Mode.values:
+        raise ValidationError({"mode": "Unsupported subscription period mode."})
+    scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+        pk=scheme_id
+    )
+    referenced = (
+        SubscriptionPlan.objects.filter(period_scheme=scheme).exists()
+        or SubscriptionPeriod.objects.filter(scheme=scheme).exists()
+    )
+    if referenced and (
+        scheme.mode != mode
+        or scheme.fixed_anchor_date != fixed_anchor_date
+    ):
+        raise ValidationError(
+            {
+                "mode": (
+                    "Referenced period schemes cannot change mode or fixed "
+                    "anchor. Create a new scheme and switch future plans to it."
+                )
+            }
+        )
+    if (
+        scheme.is_active
+        and not is_active
+        and SubscriptionPlan.objects.filter(
+            period_scheme=scheme,
+            is_active=True,
+        ).exists()
+    ):
+        raise ValidationError(
+            {
+                "is_active": (
+                    "Deactivate or move active subscription plans before "
+                    "deactivating this period scheme."
+                )
+            }
+        )
+    previous = {
+        "code": scheme.code,
+        "name": scheme.name,
+        "mode": scheme.mode,
+        "fixed_anchor_date": (
+            scheme.fixed_anchor_date.isoformat()
+            if scheme.fixed_anchor_date is not None
+            else None
+        ),
+        "is_active": scheme.is_active,
+    }
+    scheme.code = _clean_catalog_text(code, field="code")
+    scheme.name = _clean_catalog_text(name, field="name")
+    scheme.mode = mode
+    scheme.fixed_anchor_date = fixed_anchor_date
+    scheme.is_active = is_active
+    scheme.full_clean()
+    try:
+        scheme.save(
+            update_fields=[
+                "code",
+                "name",
+                "mode",
+                "fixed_anchor_date",
+                "is_active",
+                "updated_at",
+            ]
+        )
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A period scheme with this code already exists."}
+        ) from exc
+    _audit(
+        event_type="SubscriptionPeriodSchemeChanged",
+        aggregate_type="SubscriptionPeriodScheme",
+        aggregate_id=scheme.id,
+        actor=actor,
+        payload={
+            "previous": previous,
+            "code": scheme.code,
+            "name": scheme.name,
+            "mode": scheme.mode,
+            "fixed_anchor_date": (
+                scheme.fixed_anchor_date.isoformat()
+                if scheme.fixed_anchor_date is not None
+                else None
+            ),
+            "is_active": scheme.is_active,
+        },
+    )
+    return scheme
+
+
+def _replace_plan_allowances_locked(
+    *,
+    plan: SubscriptionPlan,
+    allowances: dict[str, int],
+) -> None:
+    existing = {
+        item.category: item
+        for item in SubscriptionPlanAllowance.objects.select_for_update()
+        .filter(plan=plan)
+        .order_by("category", "id")
+    }
+    for category, visit_limit in allowances.items():
+        item = existing.pop(category, None)
+        if item is None:
+            SubscriptionPlanAllowance.objects.create(
+                plan=plan,
+                category=category,
+                visit_limit=visit_limit,
+            )
+        elif item.visit_limit != visit_limit:
+            item.visit_limit = visit_limit
+            item.save(update_fields=["visit_limit"])
+    if existing:
+        SubscriptionPlanAllowance.objects.filter(
+            id__in=[item.id for item in existing.values()]
+        ).delete()
+
+
+@transaction.atomic
+def create_subscription_plan(
+    *,
+    code: str,
+    name: str,
+    period_scheme_id: UUID | None,
+    is_active: bool,
+    allowances: dict[str, int | None],
+    actor: User,
+) -> SubscriptionPlan:
+    require_permission(
+        actor,
+        "subscriptions.add_subscriptionplan",
+        "Subscription plan creation permission is required.",
+    )
+    normalized = _validate_plan_allowances(allowances)
+    scheme = None
+    if period_scheme_id is not None:
+        scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+            pk=period_scheme_id
+        )
+        if is_active and not scheme.is_active:
+            raise ValidationError(
+                {"period_scheme": "An active plan requires an active period scheme."}
+            )
+    elif is_active:
+        raise ValidationError(
+            {"period_scheme": "An active plan requires a period scheme."}
+        )
+
+    plan = SubscriptionPlan(
+        code=_clean_catalog_text(code, field="code"),
+        name=_clean_catalog_text(name, field="name"),
+        validity_months=1,
+        period_scheme=scheme,
+        is_active=is_active,
+    )
+    plan.full_clean()
+    try:
+        plan.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A subscription plan with this code already exists."}
+        ) from exc
+    _replace_plan_allowances_locked(plan=plan, allowances=normalized)
+    _audit(
+        event_type="SubscriptionPlanCreated",
+        aggregate_type="SubscriptionPlan",
+        aggregate_id=plan.id,
+        actor=actor,
+        payload={
+            "code": plan.code,
+            "name": plan.name,
+            "period_scheme_id": (
+                str(plan.period_scheme_id) if plan.period_scheme_id else None
+            ),
+            "is_active": plan.is_active,
+            "allowances": normalized,
+        },
+    )
+    return plan
+
+
+@transaction.atomic
+def update_subscription_plan(
+    *,
+    plan_id: UUID,
+    code: str,
+    name: str,
+    period_scheme_id: UUID | None,
+    is_active: bool,
+    allowances: dict[str, int | None],
+    actor: User,
+) -> SubscriptionPlan:
+    require_permission(
+        actor,
+        "subscriptions.change_subscriptionplan",
+        "Subscription plan change permission is required.",
+    )
+    normalized = _validate_plan_allowances(allowances)
+    plan = SubscriptionPlan.objects.select_for_update().get(pk=plan_id)
+    scheme = None
+    if period_scheme_id is not None:
+        scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+            pk=period_scheme_id
+        )
+        if is_active and not scheme.is_active:
+            raise ValidationError(
+                {"period_scheme": "An active plan requires an active period scheme."}
+            )
+    elif is_active:
+        raise ValidationError(
+            {"period_scheme": "An active plan requires a period scheme."}
+        )
+    previous_allowances = {
+        item.category: item.visit_limit
+        for item in SubscriptionPlanAllowance.objects.select_for_update()
+        .filter(plan=plan)
+        .order_by("category", "id")
+    }
+    previous = {
+        "code": plan.code,
+        "name": plan.name,
+        "period_scheme_id": (
+            str(plan.period_scheme_id) if plan.period_scheme_id else None
+        ),
+        "is_active": plan.is_active,
+        "allowances": previous_allowances,
+    }
+    plan.code = _clean_catalog_text(code, field="code")
+    plan.name = _clean_catalog_text(name, field="name")
+    plan.period_scheme = scheme
+    plan.is_active = is_active
+    plan.full_clean()
+    try:
+        plan.save(
+            update_fields=[
+                "code",
+                "name",
+                "period_scheme",
+                "is_active",
+                "updated_at",
+            ]
+        )
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A subscription plan with this code already exists."}
+        ) from exc
+    _replace_plan_allowances_locked(plan=plan, allowances=normalized)
+    _audit(
+        event_type="SubscriptionPlanChanged",
+        aggregate_type="SubscriptionPlan",
+        aggregate_id=plan.id,
+        actor=actor,
+        payload={
+            "previous": previous,
+            "code": plan.code,
+            "name": plan.name,
+            "period_scheme_id": (
+                str(plan.period_scheme_id) if plan.period_scheme_id else None
+            ),
+            "is_active": plan.is_active,
+            "allowances": normalized,
+        },
+    )
+    return plan
+
+
+def _policy_has_cases(policy_id: UUID) -> bool:
+    return AbsenceCompensationCase.objects.filter(policy_id=policy_id).exists()
+
+
+def _lock_absence_policy_reasons(*reasons: str) -> None:
+    values = sorted({reason for reason in reasons if reason})
+    if not values:
+        return
+    if connection.vendor == "postgresql":
+        with connection.cursor() as cursor:
+            for reason in values:
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    [f"absence-compensation-policy:{reason}"],
+                )
+    else:
+        list(
+            AbsenceCompensationPolicy.objects.select_for_update()
+            .filter(absence_reason__in=values)
+            .values_list("id", flat=True)
+        )
+
+
+@transaction.atomic
+def create_absence_compensation_policy(
+    *,
+    code: str,
+    name: str,
+    absence_reason: str,
+    justification_requirement: str,
+    max_eligible_absences: int | None,
+    limit_scope: str,
+    effective_from: date,
+    effective_until: date | None,
+    is_active: bool,
+    actor: User,
+) -> AbsenceCompensationPolicy:
+    require_permission(
+        actor,
+        "subscriptions.add_absencecompensationpolicy",
+        "Compensation policy creation permission is required.",
+    )
+    code = _clean_catalog_text(code, field="code")
+    _lock_absence_policy_reasons(absence_reason)
+    if AbsenceCompensationPolicy.objects.filter(code=code).exists():
+        raise ValidationError(
+            {"code": "This policy code already exists. Create a new version instead."}
+        )
+    policy = AbsenceCompensationPolicy(
+        code=code,
+        version=1,
+        name=_clean_catalog_text(name, field="name"),
+        absence_reason=absence_reason,
+        justification_requirement=justification_requirement,
+        max_eligible_absences=max_eligible_absences,
+        limit_scope=limit_scope,
+        effective_from=effective_from,
+        effective_until=effective_until,
+        is_active=is_active,
+    )
+    policy.full_clean()
+    try:
+        policy.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "This policy code already exists. Create a new version instead."}
+        ) from exc
+    _audit(
+        event_type="AbsenceCompensationPolicyCreated",
+        aggregate_type="AbsenceCompensationPolicy",
+        aggregate_id=policy.id,
+        actor=actor,
+        payload={
+            "code": policy.code,
+            "version": policy.version,
+            "absence_reason": policy.absence_reason,
+            "effective_from": policy.effective_from.isoformat(),
+            "effective_until": (
+                policy.effective_until.isoformat()
+                if policy.effective_until is not None
+                else None
+            ),
+            "is_active": policy.is_active,
+        },
+    )
+    return policy
+
+
+@transaction.atomic
+def update_absence_compensation_policy(
+    *,
+    policy_id: UUID,
+    name: str,
+    absence_reason: str,
+    justification_requirement: str,
+    max_eligible_absences: int | None,
+    limit_scope: str,
+    effective_from: date,
+    effective_until: date | None,
+    is_active: bool,
+    actor: User,
+) -> AbsenceCompensationPolicy:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationpolicy",
+        "Compensation policy change permission is required.",
+    )
+    policy_ref = AbsenceCompensationPolicy.objects.only(
+        "absence_reason"
+    ).get(pk=policy_id)
+    _lock_absence_policy_reasons(
+        policy_ref.absence_reason,
+        absence_reason,
+    )
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=policy_id
+    )
+    if policy.absence_reason != policy_ref.absence_reason:
+        raise ValidationError(
+            {"policy": "Compensation policy changed concurrently. Retry."}
+        )
+    if _policy_has_cases(policy.id):
+        raise ValidationError(
+            {"policy": "Referenced policy versions are immutable. Create a new version."}
+        )
+    previous = {
+        "name": policy.name,
+        "absence_reason": policy.absence_reason,
+        "justification_requirement": policy.justification_requirement,
+        "max_eligible_absences": policy.max_eligible_absences,
+        "limit_scope": policy.limit_scope,
+        "effective_from": policy.effective_from.isoformat(),
+        "effective_until": (
+            policy.effective_until.isoformat()
+            if policy.effective_until is not None
+            else None
+        ),
+        "is_active": policy.is_active,
+    }
+    policy.name = _clean_catalog_text(name, field="name")
+    policy.absence_reason = absence_reason
+    policy.justification_requirement = justification_requirement
+    policy.max_eligible_absences = max_eligible_absences
+    policy.limit_scope = limit_scope
+    policy.effective_from = effective_from
+    policy.effective_until = effective_until
+    policy.is_active = is_active
+    policy.full_clean()
+    policy.save()
+    _audit(
+        event_type="AbsenceCompensationPolicyChanged",
+        aggregate_type="AbsenceCompensationPolicy",
+        aggregate_id=policy.id,
+        actor=actor,
+        payload={"previous": previous},
+    )
+    return policy
+
+
+@transaction.atomic
+def version_absence_compensation_policy(
+    *,
+    policy_id: UUID,
+    name: str,
+    justification_requirement: str,
+    max_eligible_absences: int | None,
+    limit_scope: str,
+    effective_from: date,
+    effective_until: date | None,
+    actor: User,
+    now=None,
+) -> AbsenceCompensationPolicy:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationpolicy",
+        "Compensation policy change permission is required.",
+    )
+    require_permission(
+        actor,
+        "subscriptions.add_absencecompensationpolicy",
+        "Compensation policy creation permission is required.",
+    )
+    source_ref = AbsenceCompensationPolicy.objects.only(
+        "code",
+        "absence_reason",
+    ).get(pk=policy_id)
+    _lock_absence_policy_reasons(source_ref.absence_reason)
+    versions = list(
+        AbsenceCompensationPolicy.objects.select_for_update()
+        .filter(code=source_ref.code)
+        .order_by("version", "id")
+    )
+    source = next(
+        (item for item in versions if item.id == policy_id),
+        None,
+    )
+    if source is None:
+        raise AbsenceCompensationPolicy.DoesNotExist
+    if source.absence_reason != source_ref.absence_reason:
+        raise ValidationError(
+            {"policy": "Compensation policy changed concurrently. Retry."}
+        )
+    today = school_date(now or timezone.now())
+    if effective_from <= today:
+        raise ValidationError(
+            {"effective_from": "A new policy version must start after today."}
+        )
+    if effective_from <= source.effective_from:
+        raise ValidationError(
+            {"effective_from": "A new version must start after the source version."}
+        )
+    if effective_until is not None and effective_until < effective_from:
+        raise ValidationError(
+            {"effective_until": "Effective until cannot precede effective from."}
+        )
+
+    latest_version = max(item.version for item in versions)
+    if source.version != latest_version:
+        raise ValidationError(
+            {"policy": "Only the latest policy version can be versioned."}
+        )
+    next_version = latest_version + 1
+
+    replacement = AbsenceCompensationPolicy(
+        code=source.code,
+        version=next_version,
+        name=_clean_catalog_text(name, field="name"),
+        absence_reason=source.absence_reason,
+        justification_requirement=justification_requirement,
+        max_eligible_absences=max_eligible_absences,
+        limit_scope=limit_scope,
+        effective_from=effective_from,
+        effective_until=effective_until,
+        is_active=True,
+    )
+
+    source_new_until = effective_from - timedelta(days=1)
+    if source.effective_until is None or source.effective_until >= effective_from:
+        AbsenceCompensationPolicy.objects.filter(pk=source.id).update(
+            effective_until=source_new_until
+        )
+        source.effective_until = source_new_until
+
+    replacement.full_clean()
+    try:
+        replacement.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"policy": "Concurrent policy version creation detected. Retry."}
+        ) from exc
+
+    source_actions = list(
+        AbsenceCompensationPolicyAction.objects.select_for_update()
+        .filter(policy=source)
+        .order_by("priority", "action_type", "id")
+    )
+    source_windows = list(
+        AbsenceCompensationPolicyWindow.objects.select_for_update()
+        .filter(policy_action__policy=source)
+        .order_by("policy_action_id", "priority", "source_from", "id")
+    )
+    action_map = {}
+    for action in source_actions:
+        copied = AbsenceCompensationPolicyAction.objects.create(
+            policy=replacement,
+            action_type=action.action_type,
+            target_period_rule=action.target_period_rule,
+            requirement=action.requirement,
+            validity_days=action.validity_days,
+            priority=action.priority,
+            is_active=action.is_active,
+        )
+        action_map[action.id] = copied
+    for window in source_windows:
+        copied_action = action_map[window.policy_action_id]
+        AbsenceCompensationPolicyWindow.objects.create(
+            policy_action=copied_action,
+            name=window.name,
+            source_from=window.source_from,
+            source_until=window.source_until,
+            target_from=window.target_from,
+            target_until=window.target_until,
+            requirement_override=window.requirement_override,
+            priority=window.priority,
+            is_active=window.is_active,
+        )
+
+    _audit(
+        event_type="AbsenceCompensationPolicyVersioned",
+        aggregate_type="AbsenceCompensationPolicy",
+        aggregate_id=source.id,
+        actor=actor,
+        payload={
+            "replacement_policy_id": str(replacement.id),
+            "code": source.code,
+            "source_version": source.version,
+            "replacement_version": replacement.version,
+            "effective_from": replacement.effective_from.isoformat(),
+            "source_effective_until": source.effective_until.isoformat(),
+        },
+    )
+    return replacement
+
+
+@transaction.atomic
+def end_absence_compensation_policy(
+    *,
+    policy_id: UUID,
+    inactive_from: date,
+    actor: User,
+    now=None,
+) -> AbsenceCompensationPolicy:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationpolicy",
+        "Compensation policy change permission is required.",
+    )
+    source_ref = AbsenceCompensationPolicy.objects.only(
+        "code",
+        "absence_reason",
+    ).get(pk=policy_id)
+    _lock_absence_policy_reasons(source_ref.absence_reason)
+    versions = list(
+        AbsenceCompensationPolicy.objects.select_for_update()
+        .filter(code=source_ref.code)
+        .order_by("version", "id")
+    )
+    policy = next(
+        (item for item in versions if item.id == policy_id),
+        None,
+    )
+    if policy is None:
+        raise AbsenceCompensationPolicy.DoesNotExist
+    if policy.absence_reason != source_ref.absence_reason:
+        raise ValidationError(
+            {"policy": "Compensation policy changed concurrently. Retry."}
+        )
+    if policy.version != max(item.version for item in versions):
+        raise ValidationError(
+            {"policy": "Only the latest policy version can be ended."}
+        )
+    today = school_date(now or timezone.now())
+    if inactive_from <= today:
+        raise ValidationError(
+            {"inactive_from": "Policy termination must start after today."}
+        )
+    if inactive_from <= policy.effective_from:
+        raise ValidationError(
+            {
+                "inactive_from": (
+                    "Policy termination must start after its effective-from date."
+                )
+            }
+        )
+    new_until = inactive_from - timedelta(days=1)
+    if (
+        policy.effective_until is not None
+        and policy.effective_until <= new_until
+    ):
+        raise ValidationError(
+            {
+                "inactive_from": (
+                    "This policy version already ends on or before that date."
+                )
+            }
+        )
+
+    previous_until = policy.effective_until
+    AbsenceCompensationPolicy.objects.filter(pk=policy.id).update(
+        effective_until=new_until
+    )
+    policy.effective_until = new_until
+    _audit(
+        event_type="AbsenceCompensationPolicyEnded",
+        aggregate_type="AbsenceCompensationPolicy",
+        aggregate_id=policy.id,
+        actor=actor,
+        payload={
+            "code": policy.code,
+            "version": policy.version,
+            "inactive_from": inactive_from.isoformat(),
+            "effective_until": new_until.isoformat(),
+            "previous_effective_until": (
+                previous_until.isoformat()
+                if previous_until is not None
+                else None
+            ),
+        },
+    )
+    return policy
+
+
+def _require_unreferenced_policy(policy: AbsenceCompensationPolicy) -> None:
+    if _policy_has_cases(policy.id):
+        raise ValidationError(
+            {"policy": "Referenced policy versions are immutable. Create a new version."}
+        )
+
+
+@transaction.atomic
+def create_absence_compensation_policy_action(
+    *,
+    policy_id: UUID,
+    action_type: str,
+    target_period_rule: str,
+    requirement: str,
+    validity_days: int | None,
+    priority: int,
+    is_active: bool,
+    actor: User,
+) -> AbsenceCompensationPolicyAction:
+    require_permission(
+        actor,
+        "subscriptions.add_absencecompensationpolicyaction",
+        "Compensation policy action creation permission is required.",
+    )
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=policy_id
+    )
+    _require_unreferenced_policy(policy)
+    action = AbsenceCompensationPolicyAction(
+        policy=policy,
+        action_type=action_type,
+        target_period_rule=target_period_rule,
+        requirement=requirement,
+        validity_days=validity_days,
+        priority=priority,
+        is_active=is_active,
+    )
+    action.full_clean()
+    try:
+        action.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"action_type": "This policy already has an action of this type."}
+        ) from exc
+    _audit(
+        event_type="AbsenceCompensationPolicyActionCreated",
+        aggregate_type="AbsenceCompensationPolicyAction",
+        aggregate_id=action.id,
+        actor=actor,
+        payload={"policy_id": str(policy.id), "action_type": action.action_type},
+    )
+    return action
+
+
+@transaction.atomic
+def update_absence_compensation_policy_action(
+    *,
+    action_id: UUID,
+    action_type: str,
+    target_period_rule: str,
+    requirement: str,
+    validity_days: int | None,
+    priority: int,
+    is_active: bool,
+    actor: User,
+) -> AbsenceCompensationPolicyAction:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationpolicyaction",
+        "Compensation policy action change permission is required.",
+    )
+    action_ref = AbsenceCompensationPolicyAction.objects.only(
+        "policy_id"
+    ).get(pk=action_id)
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=action_ref.policy_id
+    )
+    _require_unreferenced_policy(policy)
+    action = (
+        AbsenceCompensationPolicyAction.objects.select_for_update()
+        .select_related("policy")
+        .get(pk=action_id)
+    )
+    action.action_type = action_type
+    action.target_period_rule = target_period_rule
+    action.requirement = requirement
+    action.validity_days = validity_days
+    action.priority = priority
+    action.is_active = is_active
+    action.full_clean()
+    try:
+        action.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"action_type": "This policy already has an action of this type."}
+        ) from exc
+    _audit(
+        event_type="AbsenceCompensationPolicyActionChanged",
+        aggregate_type="AbsenceCompensationPolicyAction",
+        aggregate_id=action.id,
+        actor=actor,
+        payload={"policy_id": str(action.policy_id)},
+    )
+    return action
+
+
+@transaction.atomic
+def create_absence_compensation_policy_window(
+    *,
+    action_id: UUID,
+    name: str,
+    source_from: date,
+    source_until: date,
+    target_from: date,
+    target_until: date,
+    requirement_override: str,
+    priority: int,
+    is_active: bool,
+    actor: User,
+) -> AbsenceCompensationPolicyWindow:
+    require_permission(
+        actor,
+        "subscriptions.add_absencecompensationpolicywindow",
+        "Compensation policy window creation permission is required.",
+    )
+    action_ref = AbsenceCompensationPolicyAction.objects.only(
+        "policy_id"
+    ).get(pk=action_id)
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=action_ref.policy_id
+    )
+    _require_unreferenced_policy(policy)
+    action = (
+        AbsenceCompensationPolicyAction.objects.select_for_update()
+        .select_related("policy")
+        .get(pk=action_id)
+    )
+    window = AbsenceCompensationPolicyWindow(
+        policy_action=action,
+        name=_clean_catalog_text(name, field="name"),
+        source_from=source_from,
+        source_until=source_until,
+        target_from=target_from,
+        target_until=target_until,
+        requirement_override=requirement_override,
+        priority=priority,
+        is_active=is_active,
+    )
+    window.full_clean()
+    window.save()
+    _audit(
+        event_type="AbsenceCompensationPolicyWindowCreated",
+        aggregate_type="AbsenceCompensationPolicyWindow",
+        aggregate_id=window.id,
+        actor=actor,
+        payload={
+            "policy_id": str(action.policy_id),
+            "action_id": str(action.id),
+        },
+    )
+    return window
+
+
+@transaction.atomic
+def update_absence_compensation_policy_window(
+    *,
+    window_id: UUID,
+    name: str,
+    source_from: date,
+    source_until: date,
+    target_from: date,
+    target_until: date,
+    requirement_override: str,
+    priority: int,
+    is_active: bool,
+    actor: User,
+) -> AbsenceCompensationPolicyWindow:
+    require_permission(
+        actor,
+        "subscriptions.change_absencecompensationpolicywindow",
+        "Compensation policy window change permission is required.",
+    )
+    window_ref = (
+        AbsenceCompensationPolicyWindow.objects.select_related(
+            "policy_action"
+        )
+        .only("policy_action__policy_id")
+        .get(pk=window_id)
+    )
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=window_ref.policy_action.policy_id
+    )
+    _require_unreferenced_policy(policy)
+    action = AbsenceCompensationPolicyAction.objects.select_for_update().get(
+        pk=window_ref.policy_action_id
+    )
+    window = (
+        AbsenceCompensationPolicyWindow.objects.select_for_update()
+        .select_related("policy_action__policy")
+        .get(pk=window_id)
+    )
+    window.name = _clean_catalog_text(name, field="name")
+    window.source_from = source_from
+    window.source_until = source_until
+    window.target_from = target_from
+    window.target_until = target_until
+    window.requirement_override = requirement_override
+    window.priority = priority
+    window.is_active = is_active
+    window.full_clean()
+    window.save()
+    _audit(
+        event_type="AbsenceCompensationPolicyWindowChanged",
+        aggregate_type="AbsenceCompensationPolicyWindow",
+        aggregate_id=window.id,
+        actor=actor,
+        payload={
+            "policy_id": str(window.policy_action.policy_id),
+            "action_id": str(window.policy_action_id),
+        },
+    )
+    return window
 
 
 def _resolved_action_snapshot(resolved) -> list[dict]:
@@ -403,6 +1388,23 @@ def create_absence_compensation_case(
     if policy is None:
         raise ValidationError(
             {"policy": "No active compensation policy matches this absence."}
+        )
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=policy.id
+    )
+    current_policy = get_applicable_absence_policy(
+        absence_reason=absence_reason,
+        source_date=source_date,
+        policy_code=policy_code,
+    )
+    if current_policy is None or current_policy.id != policy.id:
+        raise ValidationError(
+            {
+                "policy": (
+                    "Compensation policy changed concurrently. "
+                    "Retry case creation."
+                )
+            }
         )
 
     source_justification = None
@@ -2324,11 +3326,13 @@ def issue_subscription_for_period(
         .select_related("period_scheme")
         .get(pk=plan_id)
     )
-    if plan.period_scheme is None:
+    if plan.period_scheme_id is None:
         raise ValidationError(
             {"plan": "Subscription plan has no period scheme."}
         )
-    scheme = plan.period_scheme
+    scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+        pk=plan.period_scheme_id
+    )
     if not scheme.is_active:
         raise ValidationError(
             {"plan": "Subscription plan period scheme is inactive."}

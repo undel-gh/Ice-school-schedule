@@ -7,7 +7,9 @@ from scheduling.models import Lesson
 from subscriptions.models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
+    AbsenceCompensationPolicyAction,
     OneTimeEntitlement,
+    SubscriptionPeriodScheme,
 )
 
 
@@ -25,6 +27,18 @@ from subscriptions.models import (
         ("medical_status", AbsenceJustification.Status),
         ("one_time_entitlement", OneTimeEntitlement.Type),
         ("subscription_category", SubscriptionCategory),
+        ("subscription_period_mode", SubscriptionPeriodScheme.Mode),
+        (
+            "policy_justification",
+            AbsenceCompensationPolicy.JustificationRequirement,
+        ),
+        ("policy_limit_scope", AbsenceCompensationPolicy.LimitScope),
+        ("policy_action_type", AbsenceCompensationPolicyAction.ActionType),
+        (
+            "policy_target_period",
+            AbsenceCompensationPolicyAction.TargetPeriodRule,
+        ),
+        ("policy_requirement", AbsenceCompensationPolicyAction.Requirement),
     ],
 )
 def test_manager_labels_cover_textchoices_exactly(kind, choices):

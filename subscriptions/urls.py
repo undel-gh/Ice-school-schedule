@@ -1,10 +1,95 @@
 from django.urls import path
 
-from . import manager_operations, views
+from . import catalog_views, manager_operations, views
 
 app_name = "subscriptions"
 
 urlpatterns = [
+    path(
+        "catalog/",
+        catalog_views.manager_catalog,
+        name="manager_catalog",
+    ),
+    path(
+        "catalog/period-schemes/",
+        catalog_views.manager_period_schemes,
+        name="manager_period_schemes",
+    ),
+    path(
+        "catalog/period-schemes/new/",
+        catalog_views.manager_period_scheme_create,
+        name="manager_period_scheme_create",
+    ),
+    path(
+        "catalog/period-schemes/<uuid:scheme_id>/edit/",
+        catalog_views.manager_period_scheme_edit,
+        name="manager_period_scheme_edit",
+    ),
+    path(
+        "catalog/plans/",
+        catalog_views.manager_plans,
+        name="manager_plans",
+    ),
+    path(
+        "catalog/plans/new/",
+        catalog_views.manager_plan_create,
+        name="manager_plan_create",
+    ),
+    path(
+        "catalog/plans/<uuid:plan_id>/edit/",
+        catalog_views.manager_plan_edit,
+        name="manager_plan_edit",
+    ),
+    path(
+        "catalog/policies/",
+        catalog_views.manager_policies,
+        name="manager_policies",
+    ),
+    path(
+        "catalog/policies/new/",
+        catalog_views.manager_policy_create,
+        name="manager_policy_create",
+    ),
+    path(
+        "catalog/policies/<uuid:policy_id>/",
+        catalog_views.manager_policy_detail,
+        name="manager_policy_detail",
+    ),
+    path(
+        "catalog/policies/<uuid:policy_id>/edit/",
+        catalog_views.manager_policy_edit,
+        name="manager_policy_edit",
+    ),
+    path(
+        "catalog/policies/<uuid:policy_id>/version/",
+        catalog_views.manager_policy_version,
+        name="manager_policy_version",
+    ),
+    path(
+        "catalog/policies/<uuid:policy_id>/end/",
+        catalog_views.manager_policy_end,
+        name="manager_policy_end",
+    ),
+    path(
+        "catalog/policies/<uuid:policy_id>/actions/new/",
+        catalog_views.manager_policy_action_create,
+        name="manager_policy_action_create",
+    ),
+    path(
+        "catalog/policy-actions/<uuid:action_id>/edit/",
+        catalog_views.manager_policy_action_edit,
+        name="manager_policy_action_edit",
+    ),
+    path(
+        "catalog/policy-actions/<uuid:action_id>/windows/new/",
+        catalog_views.manager_policy_window_create,
+        name="manager_policy_window_create",
+    ),
+    path(
+        "catalog/policy-windows/<uuid:window_id>/edit/",
+        catalog_views.manager_policy_window_edit,
+        name="manager_policy_window_edit",
+    ),
     path(
         "operations/",
         manager_operations.manager_operations_dashboard,

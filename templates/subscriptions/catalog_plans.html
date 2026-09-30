@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Тарифы{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Тарифы</h1></header>
+{% if perms.subscriptions.add_subscriptionplan %}<p><a class="btn btn-primary" href="{% url 'subscriptions:manager_plan_create' %}">Новый тариф</a></p>{% endif %}
+<div class="card-list">
+{% for plan in plans %}
+<article class="lesson-card">
+<div class="lesson-card__top"><div><h2>{{ plan.name }}</h2><p class="lesson-card__meta">{{ plan.code }}</p></div>{% if plan.is_active %}<span class="badge badge--covered">активен</span>{% else %}<span class="badge badge--cancelled">неактивен</span>{% endif %}</div>
+<p>Период: {% if plan.period_scheme %}{{ plan.period_scheme.name }}{% else %}не задан{% endif %}</p>
+<p>{% for allowance in plan.allowances.all %}<span class="badge">{{ allowance.category|upper }}: {{ allowance.visit_limit }}</span> {% empty %}Лимитов нет{% endfor %}</p>
+{% if perms.subscriptions.change_subscriptionplan %}<a href="{% url 'subscriptions:manager_plan_edit' plan.id %}">Редактировать</a>{% endif %}
+{% if perms.audit.view_auditevent %} · <a href="{% url 'audit_manager:events' %}?aggregate_type=SubscriptionPlan&aggregate_id={{ plan.id }}">Журнал</a>{% endif %}
+</article>
+{% empty %}<div class="empty-state">Тарифы ещё не созданы.</div>{% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Каталог и правила{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Каталог и правила</h1><p class="page-header__meta">Тарифы, расчётные периоды и компенсационные политики</p></header>
+<div class="manager-operation-grid">
+{% if perms.subscriptions.view_subscriptionperiodscheme %}
+<a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_period_schemes' %}"><h2>Расчётные периоды</h2><p>Календарный месяц, rolling 28 дней и общий fixed-28 anchor.</p></a>
+{% endif %}
+{% if perms.subscriptions.view_subscriptionplan %}
+<a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_plans' %}"><h2>Тарифы</h2><p>Название, модель периода и лимиты ICE/HALL.</p></a>
+{% endif %}
+{% if perms.subscriptions.view_absencecompensationpolicy %}
+<a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_policies' %}"><h2>Политики компенсаций</h2><p>Версии правил, действия и сезонные окна.</p></a>
+{% endif %}
+</div>
+{% endblock %}

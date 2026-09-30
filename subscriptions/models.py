@@ -71,6 +71,40 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
                     )
                 }
             )
+        if self.pk:
+            previous = SubscriptionPeriodScheme.objects.filter(
+                pk=self.pk
+            ).first()
+            if previous is not None:
+                referenced = (
+                    self.plans.exists()
+                    or self.subscription_periods.exists()
+                )
+                if referenced and (
+                    previous.mode != self.mode
+                    or previous.fixed_anchor_date != self.fixed_anchor_date
+                ):
+                    raise ValidationError(
+                        {
+                            "mode": (
+                                "Referenced period schemes cannot change mode "
+                                "or fixed anchor."
+                            )
+                        }
+                    )
+                if (
+                    previous.is_active
+                    and not self.is_active
+                    and self.plans.filter(is_active=True).exists()
+                ):
+                    raise ValidationError(
+                        {
+                            "is_active": (
+                                "Active subscription plans still use this "
+                                "period scheme."
+                            )
+                        }
+                    )
 
     def __str__(self) -> str:
         return self.name
@@ -345,6 +379,14 @@ class AbsenceCompensationPolicyAction(UUIDModel):
                 .filter(pk=self.pk)
                 .first()
             )
+        if previous is None and self.policy_id:
+            if AbsenceCompensationCase.objects.filter(
+                policy_id=self.policy_id
+            ).exists():
+                raise ValidationError(
+                    "Actions cannot be added to referenced compensation "
+                    "policy versions."
+                )
         if previous is not None:
             if previous.policy.compensation_cases.exists():
                 immutable_fields = (
@@ -461,6 +503,14 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
                 .filter(pk=self.pk)
                 .first()
             )
+        if previous is None and self.policy_action_id:
+            if AbsenceCompensationCase.objects.filter(
+                policy_id=self.policy_action.policy_id
+            ).exists():
+                raise ValidationError(
+                    "Windows cannot be added to referenced compensation "
+                    "policy versions."
+                )
         if previous is not None:
             if previous.policy_action.policy.compensation_cases.exists():
                 immutable_fields = (
