@@ -253,27 +253,31 @@ def manager_generation_conflicts(request: HttpRequest) -> HttpResponse:
         for item in Lesson.objects.filter(id__in=lesson_ids)
         .select_related("group", "lesson_type", "coach", "venue")
     }
-    resolved_occurrences = set(
-        Lesson.objects.filter(
+    materialized_occurrences = {
+        (template_id, starts_at): status
+        for template_id, starts_at, status in Lesson.objects.filter(
             source_template_id__in=template_ids,
             starts_at__in=expected_starts,
-            status=Lesson.Status.CANCELLED,
-        ).values_list("source_template_id", "starts_at")
-    )
+        ).values_list("source_template_id", "starts_at", "status")
+    }
 
     rows = []
     for event, conflicting_uuid, expected_starts_at in parsed_rows:
+        occurrence_status = (
+            materialized_occurrences.get(
+                (event.aggregate_id, expected_starts_at)
+            )
+            if expected_starts_at is not None
+            else None
+        )
         rows.append(
             {
                 "event": event,
                 "template": templates.get(event.aggregate_id),
                 "conflicting_lesson": lessons.get(conflicting_uuid),
                 "expected_starts_at": expected_starts_at,
-                "resolved": (
-                    expected_starts_at is not None
-                    and (event.aggregate_id, expected_starts_at)
-                    in resolved_occurrences
-                ),
+                "resolved": occurrence_status is not None,
+                "occurrence_status": occurrence_status,
             }
         )
     return render(
