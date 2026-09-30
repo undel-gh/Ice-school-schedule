@@ -54,7 +54,10 @@ class ManagerLessonCancelForm(forms.Form):
 class ManagerLessonRescheduleForm(forms.Form):
     new_starts_at = forms.DateTimeField(
         label="Новое начало",
-        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}),
+        widget=forms.DateTimeInput(
+            format="%Y-%m-%dT%H:%M",
+            attrs={"type": "datetime-local"},
+        ),
         input_formats=["%Y-%m-%dT%H:%M"],
     )
     new_ends_at = forms.DateTimeField(
