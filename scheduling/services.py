@@ -747,10 +747,11 @@ def generate_lessons(
 
     template = (
         ScheduleTemplate.objects.select_for_update()
-        .select_related("group")
+        .select_related("group", "coach")
         .get(pk=template_id)
     )
     TrainingGroup.objects.select_for_update().get(pk=template.group_id)
+    CoachProfile.objects.select_for_update().get(pk=template.coach_id)
     if not template.is_active:
         raise ValidationError(
             {"template": "Inactive schedule templates cannot generate lessons."}
@@ -1726,8 +1727,7 @@ def update_training_group(
         now = timezone.now()
         today = get_school_date(now)
         has_active_template = (
-            ScheduleTemplate.objects.select_for_update()
-            .filter(group=group, is_active=True)
+            ScheduleTemplate.objects.filter(group=group, is_active=True)
             .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
             .exists()
         )
@@ -1742,8 +1742,7 @@ def update_training_group(
                 }
             )
         has_future_lesson = (
-            Lesson.objects.select_for_update()
-            .filter(group=group, starts_at__gte=now)
+            Lesson.objects.filter(group=group, starts_at__gte=now)
             .exclude(status=Lesson.Status.CANCELLED)
             .exists()
         )
