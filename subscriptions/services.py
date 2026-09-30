@@ -561,9 +561,20 @@ def version_absence_compensation_policy(
         "subscriptions.add_absencecompensationpolicy",
         "Compensation policy creation permission is required.",
     )
-    source = AbsenceCompensationPolicy.objects.select_for_update().get(
-        pk=policy_id
+    source_ref = AbsenceCompensationPolicy.objects.only(
+        "code"
+    ).get(pk=policy_id)
+    versions = list(
+        AbsenceCompensationPolicy.objects.select_for_update()
+        .filter(code=source_ref.code)
+        .order_by("version", "id")
     )
+    source = next(
+        (item for item in versions if item.id == policy_id),
+        None,
+    )
+    if source is None:
+        raise AbsenceCompensationPolicy.DoesNotExist
     today = school_date(now or timezone.now())
     if effective_from <= today:
         raise ValidationError(
@@ -578,11 +589,6 @@ def version_absence_compensation_policy(
             {"effective_until": "Effective until cannot precede effective from."}
         )
 
-    versions = list(
-        AbsenceCompensationPolicy.objects.select_for_update()
-        .filter(code=source.code)
-        .order_by("version", "id")
-    )
     latest_version = max(item.version for item in versions)
     if source.version != latest_version:
         raise ValidationError(
@@ -1227,6 +1233,23 @@ def create_absence_compensation_case(
     if policy is None:
         raise ValidationError(
             {"policy": "No active compensation policy matches this absence."}
+        )
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=policy.id
+    )
+    current_policy = get_applicable_absence_policy(
+        absence_reason=absence_reason,
+        source_date=source_date,
+        policy_code=policy_code,
+    )
+    if current_policy is None or current_policy.id != policy.id:
+        raise ValidationError(
+            {
+                "policy": (
+                    "Compensation policy changed concurrently. "
+                    "Retry case creation."
+                )
+            }
         )
 
     source_justification = None
