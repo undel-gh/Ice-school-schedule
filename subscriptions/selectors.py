@@ -5,7 +5,7 @@ from datetime import date
 from uuid import UUID
 
 from django.core.exceptions import ValidationError
-from django.db.models import Exists, OuterRef, Q, Sum
+from django.db.models import Exists, F, OuterRef, Prefetch, Q, Sum
 
 from scheduling.models import Lesson
 
@@ -432,26 +432,87 @@ def manager_subscription_report(
     *,
     as_of: date,
     student_id: UUID | None = None,
+    subscription_id: UUID | None = None,
     from_date: date | None = None,
     until_date: date | None = None,
 ) -> tuple[ManagerSubscriptionReportRow, ...]:
     """
     Read model for the manager's subscription report.
 
-    "Consumed" means currently effective AttendanceCoverage funded by the
-    allowance. Direct visits and make-up visits are shown separately because
-    both spend the same allowance but represent different operational flows.
+    Related report data is batch-loaded so report query count stays bounded
+    as the number of subscriptions grows.
     """
+    active_makeup_usage = AttendanceCoverage.objects.filter(
+        makeup_entitlement_id=OuterRef("pk"),
+        reversed_at__isnull=True,
+    )
+    allowance_queryset = (
+        SubscriptionAllowance.objects.annotate(
+            report_balance=Sum("ledger_entries__delta"),
+        )
+        .prefetch_related(
+            Prefetch(
+                "coverages",
+                queryset=AttendanceCoverage.objects.filter(
+                    reversed_at__isnull=True,
+                ).only(
+                    "id",
+                    "subscription_allowance_id",
+                    "makeup_entitlement_id",
+                ),
+                to_attr="report_active_coverages",
+            ),
+            Prefetch(
+                "makeup_entitlements",
+                queryset=MakeupEntitlement.objects.annotate(
+                    report_is_used=Exists(active_makeup_usage),
+                ).only(
+                    "id",
+                    "source_subscription_allowance_id",
+                    "valid_from",
+                    "valid_until",
+                    "cancelled_at",
+                ),
+                to_attr="report_makeups",
+            ),
+        )
+        .order_by("category", "id")
+    )
+    hold_queryset = (
+        GroupPlaceHold.objects.select_related(
+            "group",
+            "period_scheme",
+        )
+        .order_by("period_from", "group__name", "id")
+    )
     subscriptions = (
         Subscription.objects.select_related(
             "student",
             "plan",
+            "billing_period",
         )
-        .prefetch_related("allowances")
-        .order_by("-valid_from", "student__display_name", "id")
+        .prefetch_related(
+            Prefetch(
+                "allowances",
+                queryset=allowance_queryset,
+                to_attr="report_allowances",
+            ),
+            Prefetch(
+                "student__group_place_holds",
+                queryset=hold_queryset,
+                to_attr="report_place_holds",
+            ),
+        )
+        .order_by(
+            F("valid_from").desc(nulls_first=True),
+            "student__display_name",
+            "id",
+        )
     )
     if student_id is not None:
         subscriptions = subscriptions.filter(student_id=student_id)
+    if subscription_id is not None:
+        subscriptions = subscriptions.filter(id=subscription_id)
     if from_date is not None:
         subscriptions = subscriptions.filter(
             Q(valid_until__gte=from_date)
@@ -477,48 +538,32 @@ def manager_subscription_report(
             period = None
 
         allowance_rows: list[ManagerAllowanceReport] = []
-        for allowance in subscription.allowances.all():
-            active_coverages = AttendanceCoverage.objects.filter(
-                subscription_allowance=allowance,
-                reversed_at__isnull=True,
+        for allowance in subscription.report_allowances:
+            coverages = allowance.report_active_coverages
+            direct_visits = sum(
+                coverage.makeup_entitlement_id is None
+                for coverage in coverages
             )
-            direct_visits = active_coverages.filter(
-                makeup_entitlement__isnull=True,
-            ).count()
-            makeup_visits = active_coverages.filter(
-                makeup_entitlement__isnull=False,
-            ).count()
+            makeup_visits = len(coverages) - direct_visits
 
-            makeups = MakeupEntitlement.objects.filter(
-                source_subscription_allowance=allowance,
+            makeups = allowance.report_makeups
+            makeup_used = sum(makeup.report_is_used for makeup in makeups)
+            makeup_available = sum(
+                makeup.cancelled_at is None
+                and makeup.valid_from <= as_of <= makeup.valid_until
+                and not makeup.report_is_used
+                for makeup in makeups
             )
-            makeup_used_ids = AttendanceCoverage.objects.filter(
-                makeup_entitlement__source_subscription_allowance=allowance,
-                makeup_entitlement__isnull=False,
-                reversed_at__isnull=True,
-            ).values_list("makeup_entitlement_id", flat=True)
-
-            makeup_used = makeups.filter(id__in=makeup_used_ids).count()
-            makeup_available = (
-                makeups.filter(
-                    cancelled_at__isnull=True,
-                    valid_from__lte=as_of,
-                    valid_until__gte=as_of,
-                )
-                .exclude(id__in=makeup_used_ids)
-                .count()
+            makeup_expired_unused = sum(
+                makeup.cancelled_at is None
+                and makeup.valid_until < as_of
+                and not makeup.report_is_used
+                for makeup in makeups
             )
-            makeup_expired_unused = (
-                makeups.filter(
-                    cancelled_at__isnull=True,
-                    valid_until__lt=as_of,
-                )
-                .exclude(id__in=makeup_used_ids)
-                .count()
+            makeup_cancelled = sum(
+                makeup.cancelled_at is not None
+                for makeup in makeups
             )
-            makeup_cancelled = makeups.filter(
-                cancelled_at__isnull=False,
-            ).count()
 
             allowance_rows.append(
                 ManagerAllowanceReport(
@@ -527,8 +572,8 @@ def manager_subscription_report(
                     consumed_visits=direct_visits + makeup_visits,
                     direct_visits=direct_visits,
                     makeup_visits=makeup_visits,
-                    remaining_visits=ledger_balance(allowance.id),
-                    makeup_total=makeups.count(),
+                    remaining_visits=int(allowance.report_balance or 0),
+                    makeup_total=len(makeups),
                     makeup_available=makeup_available,
                     makeup_used=makeup_used,
                     makeup_expired_unused=makeup_expired_unused,
@@ -536,25 +581,20 @@ def manager_subscription_report(
                 )
             )
 
-        place_holds_query = GroupPlaceHold.objects.filter(
-            student_id=subscription.student_id,
-        )
         if (
             subscription.valid_from is not None
             and subscription.valid_until is not None
         ):
-            place_holds_query = place_holds_query.filter(
-                period_until__gte=subscription.valid_from,
-                period_from__lte=subscription.valid_until,
+            place_holds = tuple(
+                hold
+                for hold in subscription.student.report_place_holds
+                if (
+                    hold.period_until >= subscription.valid_from
+                    and hold.period_from <= subscription.valid_until
+                )
             )
         else:
-            place_holds_query = place_holds_query.none()
-        place_holds = tuple(
-            place_holds_query.select_related(
-                "group",
-                "period_scheme",
-            ).order_by("period_from", "group__name", "id")
-        )
+            place_holds = ()
 
         rows.append(
             ManagerSubscriptionReportRow(
@@ -571,24 +611,19 @@ def manager_subscription_report(
     return tuple(rows)
 
 
-
 def manager_subscription_detail(
     *,
     subscription_id: UUID,
     as_of: date,
 ) -> ManagerSubscriptionDetail:
-    subscription = Subscription.objects.select_related(
-        "student",
-        "plan",
-    ).get(pk=subscription_id)
     rows = manager_subscription_report(
         as_of=as_of,
-        student_id=subscription.student_id,
+        subscription_id=subscription_id,
     )
-    row = next(
-        item for item in rows
-        if item.subscription.id == subscription.id
-    )
+    if not rows:
+        raise Subscription.DoesNotExist
+    row = rows[0]
+    subscription = row.subscription
     ledger_entries = tuple(
         SubscriptionLedgerEntry.objects.filter(
             allowance__subscription=subscription,
