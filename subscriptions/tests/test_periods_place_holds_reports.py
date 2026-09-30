@@ -427,3 +427,36 @@ def test_calendar_subscription_issue_uses_scheme_window(actor, student):
     assert subscription.billing_period.state == SubscriptionPeriod.State.ACTIVE
     assert subscription.billing_period.starts_on == date(2026, 9, 1)
     assert subscription.billing_period.ends_on == date(2026, 9, 30)
+
+
+@pytest.mark.django_db
+def test_group_place_hold_expires_after_period(actor, student, context):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="hold-expiry-calendar",
+        name="Hold expiry",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    hold = create_group_place_hold(
+        student_id=student.id,
+        group_id=context["group"].id,
+        period_scheme_id=scheme.id,
+        period_from=date(2026, 10, 1),
+        period_until=date(2026, 10, 31),
+        actor=actor,
+    )
+    confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=actor,
+        now=datetime(2026, 9, 25, 12, tzinfo=dt_timezone.utc),
+    )
+
+    from subscriptions.services import process_subscription_lifecycle
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 11, 1),
+        actor=actor,
+    )
+
+    hold.refresh_from_db()
+    assert result["group_place_hold_expired"] == 1
+    assert hold.status == GroupPlaceHold.Status.EXPIRED
