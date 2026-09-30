@@ -270,7 +270,7 @@ def test_manager_subscription_detail_adjusts_and_cancels(client):
     assert detail.status_code == 200
     assert "Detail student" in body
     assert "Detail 4 ICE" in body
-    assert "Ledger" in body
+    assert "История списаний и начислений" in body
 
     adjusted = client.post(
         reverse(
