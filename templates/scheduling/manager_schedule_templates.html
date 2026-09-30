@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Шаблоны расписания{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Шаблоны расписания</h1>
+  <p class="page-header__meta">Регулярное расписание и его версии</p>
+</header>
+<p><a class="btn btn-primary" href="{% url 'scheduling_manager:template_create' %}">Новый шаблон</a></p>
+<div class="card-list">
+{% for template in templates %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <h2><a href="{% url 'scheduling_manager:template_detail' template.id %}">{{ template.group.name }} · {{ template.lesson_type.name }}</a></h2>
+        <p class="lesson-card__meta">
+          {{ template.get_weekday_display|default:template.weekday }} · {{ template.start_time|time:"H:i" }} ·
+          {{ template.coach.display_name }} · {{ template.venue.name }}
+        </p>
+      </div>
+      {% if template.is_active %}<span class="badge badge--covered">активен</span>{% else %}<span class="badge">архив</span>{% endif %}
+    </div>
+    <p class="lesson-card__meta">
+      {{ template.valid_from|date:"d.m.Y" }}—{% if template.valid_until %}{{ template.valid_until|date:"d.m.Y" }}{% else %}∞{% endif %}
+    </p>
+  </article>
+{% empty %}
+  <div class="empty-state">Шаблонов пока нет.</div>
+{% endfor %}
+</div>
+{% endblock %}
