@@ -30,6 +30,8 @@ from subscriptions.selectors import (
     manager_subscription_detail,
     manager_subscription_report,
 )
+MAX_MANAGER_REPORT_RANGE_DAYS = 366
+
 from subscriptions.services import (
     adjust_allowance,
     cancel_group_place_hold,
@@ -82,6 +84,8 @@ def manager_subscription_report_view(
     )
     if until_date < from_date:
         raise Http404("Invalid date range.")
+    if (until_date - from_date).days > MAX_MANAGER_REPORT_RANGE_DAYS:
+        raise Http404("Date range is too large.")
 
     student_id = None
     raw_student = request.GET.get("student")
