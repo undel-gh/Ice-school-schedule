@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Выдать абонемент{% endblock %}
+
+{% block content %}
+<header class="page-header">
+  <h1>Выдать абонемент</h1>
+  <p class="page-header__meta">
+    Период рассчитывается по модели, указанной в тарифе.
+  </p>
+</header>
+
+<form class="auth-card" method="post">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  {% for field in form %}
+    <div class="field">
+      {{ field.label_tag }}
+      {{ field }}
+      {{ field.errors }}
+    </div>
+  {% endfor %}
+  <button class="btn-primary" type="submit">Выдать абонемент</button>
+</form>
+{% endblock %}
