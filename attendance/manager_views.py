@@ -90,6 +90,11 @@ def manager_medical_verify(
     *,
     justification_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "attendance.change_absencejustification",
+        "Medical absence review permission is required.",
+    )
     get_object_or_404(
         AbsenceJustification,
         pk=justification_id,
@@ -123,6 +128,11 @@ def manager_medical_reject(
     *,
     justification_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "attendance.change_absencejustification",
+        "Medical absence review permission is required.",
+    )
     get_object_or_404(
         AbsenceJustification,
         pk=justification_id,
@@ -151,6 +161,11 @@ def manager_medical_revoke(
     *,
     justification_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "attendance.change_absencejustification",
+        "Medical absence review permission is required.",
+    )
     get_object_or_404(
         AbsenceJustification,
         pk=justification_id,
