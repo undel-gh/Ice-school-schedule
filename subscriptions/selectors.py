@@ -51,6 +51,7 @@ class ManagerSubscriptionReportRow:
 
 
 class SubscriptionState:
+    PENDING = "pending"
     UPCOMING = "upcoming"
     ACTIVE = "active"
     EXPIRED = "expired"
@@ -393,6 +394,8 @@ def subscription_state(
 ) -> str:
     if subscription.cancelled_at is not None:
         return SubscriptionState.CANCELLED
+    if subscription.valid_from is None or subscription.valid_until is None:
+        return SubscriptionState.PENDING
     if as_of < subscription.valid_from:
         return SubscriptionState.UPCOMING
     if as_of > subscription.valid_until:
@@ -443,9 +446,21 @@ def manager_subscription_report(
     if student_id is not None:
         subscriptions = subscriptions.filter(student_id=student_id)
     if from_date is not None:
-        subscriptions = subscriptions.filter(valid_until__gte=from_date)
+        subscriptions = subscriptions.filter(
+            Q(valid_until__gte=from_date)
+            | Q(
+                valid_from__isnull=True,
+                created_at__date__gte=from_date,
+            )
+        )
     if until_date is not None:
-        subscriptions = subscriptions.filter(valid_from__lte=until_date)
+        subscriptions = subscriptions.filter(
+            Q(valid_from__lte=until_date)
+            | Q(
+                valid_from__isnull=True,
+                created_at__date__lte=until_date,
+            )
+        )
 
     rows: list[ManagerSubscriptionReportRow] = []
     for subscription in subscriptions:
@@ -514,14 +529,24 @@ def manager_subscription_report(
                 )
             )
 
-        place_holds = tuple(
-            GroupPlaceHold.objects.filter(
-                student_id=subscription.student_id,
+        place_holds_query = GroupPlaceHold.objects.filter(
+            student_id=subscription.student_id,
+        )
+        if (
+            subscription.valid_from is not None
+            and subscription.valid_until is not None
+        ):
+            place_holds_query = place_holds_query.filter(
                 period_until__gte=subscription.valid_from,
                 period_from__lte=subscription.valid_until,
             )
-            .select_related("group", "period_scheme")
-            .order_by("period_from", "group__name", "id")
+        else:
+            place_holds_query = place_holds_query.none()
+        place_holds = tuple(
+            place_holds_query.select_related(
+                "group",
+                "period_scheme",
+            ).order_by("period_from", "group__name", "id")
         )
 
         rows.append(
