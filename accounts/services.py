@@ -5,9 +5,12 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
 
 from audit.services import record_event
 from core.permissions import require_permission
+from core.time import school_date
 
 from .models import CoachProfile, Student, StudentAccess
 
@@ -222,6 +225,43 @@ def update_coach_profile(
         "display_name": coach.display_name,
         "is_active": coach.is_active,
     }
+    if coach.is_active and not is_active:
+        from scheduling.models import Lesson, ScheduleTemplate
+
+        now = timezone.now()
+        today = school_date(now)
+        has_active_template = (
+            ScheduleTemplate.objects.select_for_update()
+            .filter(coach=coach, is_active=True)
+            .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
+            .exists()
+        )
+        if has_active_template:
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "The coach cannot be deactivated while assigned to an "
+                        "active current or future schedule template. Reassign or "
+                        "version the template first."
+                    )
+                }
+            )
+        has_future_lesson = (
+            Lesson.objects.select_for_update()
+            .filter(coach=coach, starts_at__gte=now)
+            .exclude(status=Lesson.Status.CANCELLED)
+            .exists()
+        )
+        if has_future_lesson:
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "The coach cannot be deactivated while assigned to future "
+                        "non-cancelled lessons. Reassign, reschedule or cancel "
+                        "them first."
+                    )
+                }
+            )
     coach.display_name = _clean_display_name(display_name)
     coach.is_active = is_active
     coach.save(update_fields=["display_name", "is_active"])
