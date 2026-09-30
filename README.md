@@ -33,6 +33,11 @@ export POSTGRES_PORT=5432
 
 The domain documentation lives in `docs/` and is the source for business rules implemented in the model/service layers.
 
+Set `SCHOOL_TIME_ZONE` to the school's local IANA time zone (for example
+`Europe/Riga`, `America/Toronto` or `Asia/Tokyo`). The open-source
+default is `UTC`. `DJANGO_TIME_ZONE` may be configured separately; school
+schedule forms and labels use `SCHOOL_TIME_ZONE`.
+
 
 ## PostgreSQL development database
 
