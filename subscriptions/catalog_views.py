@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID
 
 from django.contrib import messages
@@ -439,9 +440,7 @@ def manager_policy_version(
             "justification_requirement": policy.justification_requirement,
             "max_eligible_absences": policy.max_eligible_absences,
             "limit_scope": policy.limit_scope,
-            "effective_from": school_date(timezone.now()).fromordinal(
-                school_date(timezone.now()).toordinal() + 1
-            ),
+            "effective_from": school_date(timezone.now()) + timedelta(days=1),
         },
     )
     if request.method == "POST" and form.is_valid():
