@@ -777,6 +777,7 @@ class SubscriptionPeriod(UUIDModel):
         choices=SubscriptionPeriodScheme.Mode.choices,
     )
     fixed_anchor_snapshot = models.DateField(null=True, blank=True)
+    reference_date = models.DateField()
     state = models.CharField(
         max_length=16,
         choices=State.choices,
@@ -915,7 +916,8 @@ class GroupPlaceHold(UUIDModel):
             ),
             models.UniqueConstraint(
                 fields=["student", "group", "period_from"],
-                name="grouphold_student_group_period_uq",
+                condition=~models.Q(status="cancelled"),
+                name="grouphold_active_student_group_period_uq",
             ),
             models.CheckConstraint(
                 condition=(
