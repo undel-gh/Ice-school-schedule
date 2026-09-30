@@ -29,12 +29,14 @@ from subscriptions.models import (
     AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
     MakeupEntitlement,
+    SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
 from subscriptions.selectors import get_reversed_paid_makeups
 from subscriptions.services import (
     activate_paid_makeup_grant,
+    activate_rolling_subscription_period,
     adjust_allowance,
     authorize_paid_makeup_from_case,
     cancel_absence_compensation_case,
@@ -42,6 +44,7 @@ from subscriptions.services import (
     confirm_paid_makeup_fee,
     create_absence_compensation_case,
     issue_subscription,
+    issue_subscription_for_period,
     materialize_free_makeup_from_case,
     process_subscription_lifecycle,
     reverse_absence_compensation_case,
@@ -2911,3 +2914,96 @@ def test_lifecycle_skips_legacy_next_period_grant_without_target(actor, context)
         event_type="PaidFreezeAuthorizationDeadlineUnresolved",
         aggregate_id=grant.id,
     ).count() == 1
+
+
+@pytest.mark.django_db
+def test_paid_makeup_accepts_pending_rolling_target_subscription(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-pending-rolling-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="paid-pending-rolling-scheme",
+        name="Pending rolling target",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    target_plan = SubscriptionPlan.objects.create(
+        code="paid-pending-rolling-target",
+        name="Pending rolling target",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=target_plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=target_plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 9, 25, 12, tzinfo=dt_timezone.utc),
+    )
+    assert target.valid_from is None
+    assert target.billing_period.reference_date == date(2026, 10, 1)
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        fee_confirmed=True,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    assert grant.target_subscription_id == target.id
+
+    with pytest.raises(
+        ValidationError,
+        match="still pending activation",
+    ):
+        activate_paid_makeup_grant(
+            grant_id=grant.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=2),
+        )
+
+    first_target_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=datetime(2026, 10, 5, 15, tzinfo=dt_timezone.utc),
+        ends_at=datetime(2026, 10, 5, 16, tzinfo=dt_timezone.utc),
+        minimum_attendees=1,
+        rsvp_deadline=datetime(2026, 10, 5, 13, tzinfo=dt_timezone.utc),
+        decision_deadline=datetime(2026, 10, 5, 14, tzinfo=dt_timezone.utc),
+        status=Lesson.Status.COMPLETED,
+    )
+    activate_rolling_subscription_period(
+        subscription_id=target.id,
+        lesson_id=first_target_lesson.id,
+        actor=actor,
+        now=datetime(2026, 10, 5, 16, tzinfo=dt_timezone.utc),
+    )
+
+    activated = activate_paid_makeup_grant(
+        grant_id=grant.id,
+        actor=actor,
+        now=datetime(2026, 10, 5, 16, 30, tzinfo=dt_timezone.utc),
+    )
+    entitlement = activated.makeup_entitlement
+    assert entitlement is not None
+    assert entitlement.valid_from == date(2026, 10, 5)
+    assert entitlement.valid_until == date(2026, 11, 1)
