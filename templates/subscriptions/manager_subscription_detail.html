@@ -27,11 +27,13 @@
         · ожидает первого занятия
       {% endif %}
     </p>
+    {% if perms.audit.view_auditevent %}
     <p>
       <a href="{% url 'audit_manager:events' %}?aggregate_type=SubscriptionPeriod&aggregate_id={{ detail.row.period.id }}">
-        Audit расчётного периода
+        Журнал расчётного периода
       </a>
     </p>
+    {% endif %}
   {% else %}
     <p class="muted">Исторический абонемент без SubscriptionPeriod.</p>
   {% endif %}
@@ -112,7 +114,7 @@
   <p class="empty-state">Переносов и отработок нет.</p>
 {% endif %}
 
-<section class="section-title">Ledger</section>
+<section class="section-title">История списаний и начислений</section>
 {% if detail.ledger_entries %}
   <div class="card-list">
     {% for entry in detail.ledger_entries %}
@@ -129,6 +131,6 @@
     {% endfor %}
   </div>
 {% else %}
-  <p class="empty-state">Ledger пуст.</p>
+  <p class="empty-state">История операций пуста.</p>
 {% endif %}
 {% endblock %}
