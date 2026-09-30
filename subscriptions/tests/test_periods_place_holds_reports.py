@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
+from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
@@ -29,6 +30,7 @@ from subscriptions.services import (
     issue_subscription,
     issue_subscription_for_period,
     resolve_subscription_period_window,
+    reverse_attendance_coverage,
 )
 
 User = get_user_model()
