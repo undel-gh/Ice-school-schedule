@@ -7,6 +7,7 @@
   {% for field in form %}
     <div class="field">
       {{ field.label_tag }}{{ field }}
+      {% if field.help_text %}<small class="muted">{{ field.help_text }}</small>{% endif %}
       {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
     </div>
   {% endfor %}
