@@ -110,8 +110,8 @@ def test_manager_creates_and_materializes_free_compensation(client, operations_c
     issue_subscription(
         student_id=ctx["student"].id,
         plan_id=plan.id,
-        valid_from=source_date.replace(day=1),
-        valid_until=source_date.replace(day=28),
+        valid_from=source_date - timedelta(days=5),
+        valid_until=source_date + timedelta(days=5),
         actor=ctx["manager"],
     )
     policy = AbsenceCompensationPolicy.objects.create(
