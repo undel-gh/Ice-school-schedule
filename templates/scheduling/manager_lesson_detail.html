@@ -1,3 +1,4 @@
+{% load manager_labels %}
 {% extends "base.html" %}
 {% block title %}Занятие{% endblock %}
 {% block content %}
@@ -6,7 +7,7 @@
   <p class="page-header__meta">{{ lesson.starts_at|date:"d.m.Y H:i" }}–{{ lesson.ends_at|date:"H:i" }} · {{ lesson.coach.display_name }} · {{ lesson.venue.name }}</p>
 </header>
 <article class="report-card">
-  <div class="lesson-card__top"><h2>Статус</h2><span class="badge">{{ lesson.get_status_display }}</span></div>
+  <div class="lesson-card__top"><h2>Статус</h2><span class="badge">{{ lesson.status|manager_label:"lesson_status" }}</span></div>
   {% if lesson.source_template %}<p><a href="{% url 'scheduling_manager:template_detail' lesson.source_template.id %}">Исходный шаблон</a></p>{% endif %}
   {% if lesson.replacement_lesson %}<p>Замещающее занятие: <a href="{% url 'scheduling_manager:lesson_detail' lesson.replacement_lesson.id %}">{{ lesson.replacement_lesson.starts_at|date:"d.m.Y H:i" }}</a></p>{% endif %}
   {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=Lesson&aggregate_id={{ lesson.id }}">Журнал действий</a></p>{% endif %}
