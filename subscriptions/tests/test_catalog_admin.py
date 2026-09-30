@@ -77,6 +77,74 @@ def test_fixed_period_scheme_requires_anchor_in_manager_ui(client, manager):
     assert scheme.fixed_anchor_date == anchor
 
 
+
+
+@pytest.mark.django_db
+def test_fixed_anchor_change_only_affects_future_period_snapshots(
+    client,
+    manager,
+):
+    first_anchor = date(2026, 1, 5)
+    second_anchor = date(2026, 1, 12)
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="fixed-snapshot",
+        name="Fixed snapshot",
+        mode=SubscriptionPeriodScheme.Mode.FIXED_28_DAYS,
+        fixed_anchor_date=first_anchor,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="fixed-plan",
+        name="Fixed plan",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    first_student = Student.objects.create(display_name="Anchor first")
+    second_student = Student.objects.create(display_name="Anchor second")
+    reference_date = date(2026, 10, 20)
+
+    first = issue_subscription_for_period(
+        student_id=first_student.id,
+        plan_id=plan.id,
+        reference_date=reference_date,
+        actor=manager,
+        now=make_school_aware(datetime(2026, 10, 20, 9, 0)),
+    )
+    first_period = first.billing_period
+    assert first_period.fixed_anchor_snapshot == first_anchor
+
+    client.force_login(manager)
+    response = client.post(
+        reverse(
+            "subscriptions:manager_period_scheme_edit",
+            kwargs={"scheme_id": scheme.id},
+        ),
+        {
+            "code": scheme.code,
+            "name": scheme.name,
+            "mode": SubscriptionPeriodScheme.Mode.FIXED_28_DAYS,
+            "fixed_anchor_date": second_anchor.isoformat(),
+            "is_active": "on",
+        },
+    )
+    assert response.status_code == 302
+
+    first_period.refresh_from_db()
+    assert first_period.fixed_anchor_snapshot == first_anchor
+
+    second = issue_subscription_for_period(
+        student_id=second_student.id,
+        plan_id=plan.id,
+        reference_date=reference_date,
+        actor=manager,
+        now=make_school_aware(datetime(2026, 10, 20, 10, 0)),
+    )
+    assert second.billing_period.fixed_anchor_snapshot == second_anchor
+
+
 @pytest.mark.django_db
 def test_plan_catalog_changes_only_future_subscription_snapshots(
     client,
