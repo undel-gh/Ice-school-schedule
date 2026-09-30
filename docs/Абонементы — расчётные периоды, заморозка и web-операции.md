@@ -203,6 +203,15 @@ AttendanceCoverage
 Такое посещение становится одновременно точкой активации и первым расходом.
 RSVP, ABSENT и само наличие Lesson период не активируют.
 
+Для rolling-периода сохраняется `reference_date` выдачи. Она является нижней
+границей активации: занятие с `lesson_date < reference_date` не может
+активировать абонемент. Это защищает от позднего исправления старых ведомостей.
+
+Кроме того, pending rolling Subscription активируется только после того, как
+обычное покрытие уже не нашло действующий allowance той же категории. Поэтому
+заранее купленный следующий абонемент не начинает свои 28 дней, пока текущее
+занятие может быть покрыто уже действующим абонементом.
+
 Service API:
 
 ```python
@@ -246,6 +255,15 @@ create_group_place_hold(...)
 confirm_group_place_hold_fee(...)
 cancel_group_place_hold(...)
 ```
+
+В текущем срезе GroupPlaceHold фиксирует оплату/обязательство сохранить место,
+но **ещё не изменяет автоматически** GroupMembership, roster, вместимость группы
+или правила зачисления. Интеграция hold с фактическим удержанием места — отдельный
+следующий этап.
+
+Для одного ученика и группы одновременно запрещены пересекающиеся
+non-CANCELLED hold. CANCELLED запись остаётся историей и не мешает создать
+новый hold на тот же период.
 
 
 ---
@@ -524,8 +542,17 @@ PAID_MAKEUP без требования оплаты считается ошиб
 выбрать target Subscription **до authorization**. Пока следующего абонемента
 нет, case остаётся OPEN и не занимает лимит как MATERIALIZED paid grant.
 Target Subscription должен принадлежать тому же ученику, содержать нужную
-ICE/HALL category, не быть отменён и начинаться после окончания source
-Subscription. Entitlement получает его `valid_from/valid_until`.
+ICE/HALL category и не быть отменён.
+
+Для pending rolling target допускается отсутствие `valid_from/valid_until`:
+authorization проверяет его сохранённую `billing_period.reference_date`,
+которая должна быть позже окончания source Subscription. Сам PAID_MAKEUP
+entitlement до активации target rolling period не создаётся. После первого
+обычного занятия target Subscription получает реальные даты, и paid grant
+можно активировать с этими `valid_from/valid_until`.
+
+Для уже активного target Subscription по-прежнему требуется начало после
+окончания source Subscription.
 
 Пока полноценного Billing нет, оплату подтверждает менеджер через
 `confirm_paid_makeup_fee(...)`. В будущем Billing должен заменить это
@@ -850,3 +877,23 @@ subscription balance.
 Каждый этап должен сохранять правило:
 
 > web, CLI и automation вызывают один и тот же application-service layer.
+
+
+## 8.4. Производительность отчёта менеджера
+
+Manager subscription report является read-model и не должен выполнять запросы
+на каждый Subscription/Allowance отдельно.
+
+Текущая реализация пакетно загружает:
+
+- Subscription + billing period;
+- allowances с агрегированным ledger balance;
+- active AttendanceCoverage;
+- MakeupEntitlement с признаком использования;
+- GroupPlaceHold по ученикам.
+
+Число запросов остаётся ограниченным при росте количества строк отчёта.
+Диапазон отчёта через web ограничен 366 днями, как и пользовательский schedule.
+
+Pending Subscription с `valid_from = NULL` сортируются явно первыми через
+`NULLS FIRST`, чтобы порядок не зависел от PostgreSQL/SQLite.
