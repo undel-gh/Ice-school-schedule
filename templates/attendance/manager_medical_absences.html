@@ -1,3 +1,4 @@
+{% load manager_labels %}
 {% extends "base.html" %}
 {% block title %}Медицинские основания{% endblock %}
 {% block content %}
@@ -11,7 +12,7 @@
   <article class="lesson-card">
     <div class="lesson-card__top">
       <div><h2><a href="{% url 'attendance_manager:medical_detail' item.id %}">{{ item.student.display_name }}</a></h2><p class="lesson-card__meta">{{ item.lesson.starts_at|date:"d.m.Y H:i" }} · {{ item.lesson.lesson_type.name }}</p></div>
-      <span class="badge">{{ item.get_status_display }}</span>
+      <span class="badge">{{ item.status|manager_label:"medical_status" }}</span>
     </div>
     <p class="lesson-card__meta">Заявлено {{ item.declared_at|date:"d.m.Y H:i" }}</p>
   </article>
