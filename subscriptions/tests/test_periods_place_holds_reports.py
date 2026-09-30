@@ -10,7 +10,7 @@ from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
 from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
-from core.time import make_school_aware
+from core.testing import school_dt
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
     GroupPlaceHold,
@@ -35,16 +35,6 @@ from subscriptions.services import (
 )
 
 User = get_user_model()
-
-
-def school_dt(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    minute: int = 0,
-) -> datetime:
-    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 @pytest.fixture
