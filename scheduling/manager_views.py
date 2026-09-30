@@ -14,7 +14,7 @@ from django.views.decorators.http import require_POST
 
 from audit.models import AuditEvent
 from core.permissions import require_permission
-from core.presentation import validation_message
+from core.presentation import localized_choices, validation_message
 from core.time import make_school_aware, school_date
 from ice_school.workflows import reschedule_lesson_with_entitlements
 
@@ -307,7 +307,7 @@ def manager_skip_generation_conflict(
             now=timezone.now(),
         )
     except (KeyError, TypeError, ValueError):
-        messages.error(request, "Audit-событие конфликта повреждено.")
+        messages.error(request, "Событие журнала конфликта повреждено.")
     except ValidationError as exc:
         messages.error(request, validation_message(exc))
     else:
@@ -355,7 +355,10 @@ def manager_lessons(request: HttpRequest) -> HttpResponse:
             "from_date": from_date,
             "until_date": until_date,
             "selected_status": status or "",
-            "statuses": Lesson.Status.choices,
+            "statuses": localized_choices(
+                "lesson_status",
+                Lesson.Status.choices,
+            ),
         },
     )
 
