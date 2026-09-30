@@ -7,6 +7,7 @@ from subscriptions.models import (
     AbsenceCompensationPolicy,
     OneTimeEntitlement,
     Subscription,
+    SubscriptionAllowance,
 )
 from accounts.models import Student
 from scheduling.models import Lesson
@@ -130,3 +131,46 @@ class ManagerOneTimeEntitlementForm(forms.Form):
             .select_related("group", "lesson_type")
             .order_by("-starts_at", "id")
         )
+
+
+class ManagerAdministrativeMakeupForm(forms.Form):
+    source_subscription_allowance = forms.ModelChoiceField(
+        queryset=SubscriptionAllowance.objects.none(),
+        label="Source allowance",
+    )
+    source_lesson = forms.ModelChoiceField(
+        queryset=Lesson.objects.none(),
+        label="Source Lesson",
+    )
+    valid_from = forms.DateField(
+        label="Действует с",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    valid_until = forms.DateField(
+        label="Действует по",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    target_lesson = forms.ModelChoiceField(
+        queryset=Lesson.objects.none(),
+        required=False,
+        label="Target Lesson",
+    )
+    reason = forms.CharField(label="Причина", max_length=255)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["source_subscription_allowance"].queryset = (
+            SubscriptionAllowance.objects.select_related(
+                "subscription__student"
+            ).order_by(
+                "subscription__student__display_name",
+                "subscription__valid_until",
+                "category",
+                "id",
+            )
+        )
+        lessons = Lesson.objects.exclude(
+            status=Lesson.Status.CANCELLED
+        ).select_related("group", "lesson_type").order_by("-starts_at", "id")
+        self.fields["source_lesson"].queryset = lessons
+        self.fields["target_lesson"].queryset = lessons
