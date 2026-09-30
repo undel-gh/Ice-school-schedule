@@ -1,6 +1,6 @@
 # Абонементы: расчётные периоды, заморозка, сохранение места и web-операции
 
-**Статус:** согласованные продуктовые требования и архитектурное направление перед реализацией  
+**Статус:** реализация начата; period foundation, GroupPlaceHold и первый Manager web/reporting slice находятся в `feat/billing-periods-place-hold-manager-web`  
 **Область:** subscriptions, scheduling, group membership, manager/trainer web UI  
 **Не является:** спецификацией биллинга или онлайн-оплаты
 
@@ -139,48 +139,114 @@ school period:
 
 ---
 
-# 4. Архитектурное направление для периода
+# 4. Реализованная модель расчётного периода
 
-Текущий `SubscriptionPlan.validity_months=1` недостаточен и должен быть
-заменён явной политикой периода.
-
-Предлагаемое направление:
+Введена общешкольная конфигурация:
 
 ```text
-SubscriptionPlan
-    period_policy:
+SubscriptionPeriodScheme
+    code
+    name
+    mode:
         CALENDAR_MONTH
-        FIRST_ATTENDANCE_28_DAYS
+        ROLLING_28_FROM_FIRST_LESSON
         FIXED_28_DAYS
+    fixed_anchor_date
+    is_active
 ```
 
-Для общих фиксированных периодов вводится отдельная сущность, рабочее имя:
+`SubscriptionPlan.period_scheme` связывает тариф с моделью периода.
+Поле пока nullable для совместимости с историческими тарифами; новые
+manager-driven выдачи требуют активный period scheme.
+
+Для каждой переведённой на новую модель выдачи создаётся:
 
 ```text
 SubscriptionPeriod
-    id
-    policy
+    subscription (1:1)
+    scheme
+    mode_snapshot
+    fixed_anchor_snapshot
+    state: PENDING | ACTIVE
     starts_on
     ends_on
-    label
+    activation_lesson
+    activated_at
 ```
 
-`Subscription.period` обязателен для `FIXED_28_DAYS` и может использоваться
-для календарных периодов как read/admin convenience.
+Правила:
 
-Для `FIRST_ATTENDANCE_28_DAYS` Subscription может быть создан до активации.
-Следовательно, текущий инвариант обязательных `valid_from/valid_until`
-потребует изменения. После активации даты становятся неизменяемым snapshot.
+- `CALENDAR_MONTH` сразу создаётся ACTIVE с границами календарного месяца;
+- `FIXED_28_DAYS` сразу создаётся ACTIVE по общей 28-дневной сетке от
+  `fixed_anchor_date`;
+- `ROLLING_28_FROM_FIRST_LESSON` создаётся PENDING без искусственных
+  `valid_from/valid_until`.
 
-Точная схема полей и constraints фиксируется перед миграцией, но следующие
-инварианты обязательны:
+Для rolling-модели `Subscription.valid_from/valid_until` допускают NULL до
+первого обычного покрытия. При первом `Attendance=PRESENT`, дошедшем до
+обычного SubscriptionAllowance после one-time и makeup приоритетов, в одной
+транзакции:
 
-- исторические даты периода не пересчитываются;
-- один Subscription использует ровно одну period policy;
-- `FIXED_28_DAYS` не допускает индивидуально отличающиеся даты внутри одного
-  общего периода;
-- `FIRST_ATTENDANCE_28_DAYS` активируется только один раз;
-- активация и первое списание выполняются в одной транзакции.
+```text
+PENDING SubscriptionPeriod
+    → starts_on = lesson_date
+    → ends_on = lesson_date + 27 days
+    → ACTIVE
+
+Subscription
+    → valid_from / valid_until = те же даты
+
+AttendanceCoverage
+    → CONSUME -1
+```
+
+Такое посещение становится одновременно точкой активации и первым расходом.
+RSVP, ABSENT и само наличие Lesson период не активируют.
+
+Service API:
+
+```python
+resolve_subscription_period_window(...)
+issue_subscription_for_period(...)
+attach_subscription_period(...)
+activate_rolling_subscription_period(...)
+```
+
+Исторические даты и mode/anchor snapshots после создания периода не должны
+пересчитываться из-за последующих изменений тарифа или scheme.
+
+## 4.1. Реализованный GroupPlaceHold
+
+Платное сохранение места представлено отдельной сущностью:
+
+```text
+GroupPlaceHold
+    student
+    group
+    period_scheme
+    period_from / period_until
+    status:
+        PENDING_PAYMENT
+        ACTIVE
+        CANCELLED
+        EXPIRED
+    fee_confirmed_at / fee_confirmed_by
+    cancellation metadata
+```
+
+Hold обязан покрывать ровно один полный период выбранного scheme. Оплата
+подтверждается application service, после чего статус становится ACTIVE.
+`process_subscription_lifecycle(...)` переводит ACTIVE hold в EXPIRED после
+`period_until`.
+
+Основные services:
+
+```python
+create_group_place_hold(...)
+confirm_group_place_hold_fee(...)
+cancel_group_place_hold(...)
+```
+
 
 ---
 
