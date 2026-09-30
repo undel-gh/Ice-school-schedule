@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from django import forms
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.models import Student
@@ -98,6 +99,10 @@ class ManagerCompensationCaseCreateForm(forms.Form):
     attendance = AttendanceChoiceField(
         queryset=Attendance.objects.none(),
         label="Пропуск",
+        help_text=(
+            "Показываются пропуски за последние 60 дней и на 60 дней вперёд. "
+            "Более старые случаи пока оформляются через административный процесс."
+        ),
     )
     absence_reason = forms.ChoiceField(
         choices=localized_choices(
@@ -203,6 +208,7 @@ class ManagerOneTimeEntitlementForm(forms.Form):
     lesson = LessonChoiceField(
         queryset=Lesson.objects.none(),
         label="Занятие",
+        help_text="Показываются занятия в окне ±60 дней от текущей даты.",
     )
     entitlement_type = forms.ChoiceField(
         choices=localized_choices(
@@ -228,6 +234,7 @@ class ManagerAdministrativeMakeupForm(forms.Form):
     source_lesson = LessonChoiceField(
         queryset=Lesson.objects.none(),
         label="Исходное занятие",
+        help_text="Показываются занятия в окне ±60 дней от текущей даты.",
     )
     valid_from = forms.DateField(
         label="Действует с",
@@ -241,15 +248,34 @@ class ManagerAdministrativeMakeupForm(forms.Form):
         queryset=Lesson.objects.none(),
         required=False,
         label="Целевое занятие",
+        help_text="Показываются занятия в окне ±60 дней от текущей даты.",
     )
     reason = forms.CharField(label="Причина", max_length=255)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        today = school_date(timezone.now())
+        recent_from = today - timedelta(days=MANAGER_CHOICE_WINDOW_DAYS)
         self.fields["source_subscription_allowance"].queryset = (
-            SubscriptionAllowance.objects.select_related(
-                "subscription__student"
-            ).order_by(
+            SubscriptionAllowance.objects.filter(
+                subscription__cancelled_at__isnull=True,
+            )
+            .filter(
+                Q(
+                    subscription__valid_from__isnull=True,
+                    subscription__valid_until__isnull=True,
+                )
+                | Q(
+                    subscription__valid_from__lte=today,
+                    subscription__valid_until__gte=today,
+                )
+                | Q(
+                    subscription__valid_until__gte=recent_from,
+                    subscription__valid_until__lt=today,
+                )
+            )
+            .select_related("subscription__student")
+            .order_by(
                 "subscription__student__display_name",
                 "subscription__valid_until",
                 "category",
