@@ -16,12 +16,16 @@
 
 {% if case.status == "open" %}
 <section class="manager-operation-grid">
+  {% if can_materialize_free %}
   <form class="report-card" method="post" action="{% url 'subscriptions:manager_compensation_materialize_free' case.id %}">
     {% csrf_token %}<h2>FREE_MAKEUP</h2><p>Выдать бесплатную отработку согласно snapshot policy.</p><button class="btn-primary" type="submit">Materialize</button>
   </form>
+  {% endif %}
+  {% if can_authorize_paid %}
   <form class="report-card manager-form" method="post" action="{% url 'subscriptions:manager_compensation_authorize_paid' case.id %}">
     {% csrf_token %}<h2>PAID_MAKEUP</h2>{{ authorize_form.as_p }}<button class="btn-primary" type="submit">Authorize</button>
   </form>
+  {% endif %}
   <form class="report-card" method="post" action="{% url 'subscriptions:manager_compensation_cancel' case.id %}" onsubmit="return confirm('Отменить OPEN case?');">
     {% csrf_token %}<h2>Отмена</h2><button class="btn-absent" type="submit">Cancel case</button>
   </form>
