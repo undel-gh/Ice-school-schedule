@@ -78,6 +78,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.manager_operations",
+                "core.context_processors.student_navigation",
             ],
         },
     },
