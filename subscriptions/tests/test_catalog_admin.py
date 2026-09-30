@@ -454,7 +454,7 @@ def test_referenced_policy_versions_instead_of_mutating(
         source_date=effective_from,
     ) == replacement
 
-    with pytest.raises(ValidationError, match="referenced"):
+    with pytest.raises(ValidationError, match="Referenced"):
         create_absence_compensation_policy_action(
             policy_id=policy.id,
             action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
