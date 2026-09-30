@@ -13,9 +13,9 @@
 </div>
 <article class="report-card">
   <h2>Параметры</h2>
-  <p>weekday: {{ template.weekday }} · длительность {{ template.duration_minutes }} мин.</p>
+  <p>день недели: {{ template.weekday }} · длительность {{ template.duration_minutes }} мин.</p>
   <p>{{ template.valid_from|date:"d.m.Y" }}—{% if template.valid_until %}{{ template.valid_until|date:"d.m.Y" }}{% else %}∞{% endif %}</p>
-  <p><a href="{% url 'audit_manager:events' %}?aggregate_type=ScheduleTemplate&aggregate_id={{ template.id }}">Audit trail</a></p>
+  {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=ScheduleTemplate&aggregate_id={{ template.id }}">Журнал действий</a></p>{% endif %}
 </article>
 <h2 class="section-title">Последние занятия</h2>
 <div class="card-list">
