@@ -2546,3 +2546,114 @@ def test_skip_template_occurrence_retry_remains_idempotent_after_date_passes(
         event_type="LessonCancelled",
         aggregate_id=first.id,
     ).count() == 1
+
+
+@pytest.mark.django_db
+def test_inactive_student_cannot_submit_rsvp(
+    school_context,
+    student,
+    guardian,
+    coach_user,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = school_dt(2026, 11, 10, 18, 0)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=1),
+        decision_deadline=starts_at - timedelta(minutes=30),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=student,
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=coach_user,
+    )
+    StudentAccess.objects.create(
+        user=guardian,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+    )
+    Student.objects.filter(pk=student.id).update(is_active=False)
+
+    with pytest.raises(ValidationError, match="Inactive students"):
+        set_lesson_response(
+            actor=guardian,
+            student_id=student.id,
+            lesson_id=lesson.id,
+            status=LessonResponse.Status.YES,
+            now=starts_at - timedelta(hours=2),
+        )
+
+    assert not LessonResponse.objects.filter(
+        lesson=lesson,
+        student=student,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_generate_lessons_rejects_legacy_inactive_group(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=0,
+        start_time=datetime(2026, 11, 2, 18, 0).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 11, 1),
+        is_active=True,
+    )
+    TrainingGroup.objects.filter(pk=group.id).update(is_active=False)
+
+    with pytest.raises(ValidationError, match="Inactive groups"):
+        generate_lessons(
+            template_id=template.id,
+            from_date=date(2026, 11, 1),
+            until_date=date(2026, 11, 30),
+            actor=admin,
+        )
+
+    assert not Lesson.objects.filter(source_template=template).exists()
+
+
+@pytest.mark.django_db
+def test_publish_lesson_rejects_legacy_inactive_coach(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    starts_at = school_dt(2026, 11, 10, 18, 0)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    CoachProfile.objects.filter(pk=coach.id).update(is_active=False)
+
+    with pytest.raises(ValidationError, match="inactive coach"):
+        publish_lesson(
+            lesson_id=lesson.id,
+            actor=admin,
+            now=starts_at - timedelta(days=1),
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.status == Lesson.Status.DRAFT
