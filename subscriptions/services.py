@@ -804,8 +804,12 @@ def materialize_free_makeup_from_case(
             "makeup_entitlement_id": str(entitlement.id),
             "eligibility_status": case.eligibility_status,
             "eligible_absence_ordinal": case.eligible_absence_ordinal,
-            "valid_from": valid_from.isoformat(),
-            "valid_until": valid_until.isoformat(),
+            "valid_from": (
+                valid_from.isoformat() if valid_from is not None else None
+            ),
+            "valid_until": (
+                valid_until.isoformat() if valid_until is not None else None
+            ),
         },
     )
     _audit(
@@ -1893,6 +1897,10 @@ def activate_rolling_subscription_period(
         first_lesson_date=lesson_date,
     )
 
+    subscription.valid_from = starts_on
+    subscription.valid_until = ends_on
+    subscription.save(update_fields=["valid_from", "valid_until"])
+
     period.state = SubscriptionPeriod.State.ACTIVE
     period.starts_on = starts_on
     period.ends_on = ends_on
@@ -2103,8 +2111,8 @@ def issue_subscription(
     *,
     student_id: UUID,
     plan_id: UUID,
-    valid_from: date,
-    valid_until: date,
+    valid_from: date | None,
+    valid_until: date | None,
     actor: User,
 ) -> Subscription:
     require_permission(
@@ -2112,7 +2120,20 @@ def issue_subscription(
         "subscriptions.add_subscription",
         "Subscription issue permission is required.",
     )
-    if valid_until < valid_from:
+    if (valid_from is None) != (valid_until is None):
+        raise ValidationError(
+            {
+                "valid_until": (
+                    "valid_from and valid_until must either both be set "
+                    "or both be empty."
+                )
+            }
+        )
+    if (
+        valid_from is not None
+        and valid_until is not None
+        and valid_until < valid_from
+    ):
         raise ValidationError(
             {"valid_until": "valid_until must be on or after valid_from."}
         )
@@ -2171,6 +2192,57 @@ def issue_subscription(
             "valid_until": valid_until.isoformat(),
             "allowances": issued,
         },
+    )
+    return subscription
+
+
+@transaction.atomic
+def issue_subscription_for_period(
+    *,
+    student_id: UUID,
+    plan_id: UUID,
+    reference_date: date,
+    actor: User,
+    now=None,
+) -> Subscription:
+    plan = (
+        SubscriptionPlan.objects.select_for_update()
+        .select_related("period_scheme")
+        .get(pk=plan_id)
+    )
+    if plan.period_scheme is None:
+        raise ValidationError(
+            {"plan": "Subscription plan has no period scheme."}
+        )
+    scheme = plan.period_scheme
+    if not scheme.is_active:
+        raise ValidationError(
+            {"plan": "Subscription plan period scheme is inactive."}
+        )
+
+    resolved = resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=reference_date,
+    )
+    if resolved is None:
+        valid_from = None
+        valid_until = None
+    else:
+        valid_from, valid_until = resolved
+
+    subscription = issue_subscription(
+        student_id=student_id,
+        plan_id=plan.id,
+        valid_from=valid_from,
+        valid_until=valid_until,
+        actor=actor,
+    )
+    attach_subscription_period(
+        subscription_id=subscription.id,
+        scheme_id=scheme.id,
+        reference_date=reference_date,
+        actor=actor,
+        now=now,
     )
     return subscription
 
@@ -2414,6 +2486,95 @@ def _try_makeup_coverage(
     return None
 
 
+def _activate_pending_rolling_subscription_for_attendance(
+    *,
+    attendance: Attendance,
+    category: str,
+    lesson_date: date,
+    actor: User | None,
+) -> bool:
+    period_ids = list(
+        SubscriptionPeriod.objects.filter(
+            state=SubscriptionPeriod.State.PENDING,
+            mode_snapshot=(
+                SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+            ),
+            subscription__student_id=attendance.student_id,
+            subscription__cancelled_at__isnull=True,
+            subscription__allowances__category=category,
+        )
+        .order_by(
+            "subscription__created_at",
+            "created_at",
+            "id",
+        )
+        .values_list("id", flat=True)
+    )
+
+    for period_id in period_ids:
+        period = (
+            SubscriptionPeriod.objects.select_for_update()
+            .select_related("subscription", "scheme")
+            .get(pk=period_id)
+        )
+        if period.state != SubscriptionPeriod.State.PENDING:
+            continue
+
+        allowance = (
+            SubscriptionAllowance.objects.select_for_update()
+            .filter(
+                subscription_id=period.subscription_id,
+                category=category,
+            )
+            .first()
+        )
+        if allowance is None:
+            continue
+        _locked, balance = locked_allowance_balance(allowance.id)
+        if balance <= 0:
+            continue
+
+        starts_on, ends_on = resolve_subscription_period_window(
+            scheme=period.scheme,
+            reference_date=lesson_date,
+            first_lesson_date=lesson_date,
+        )
+        subscription = period.subscription
+        subscription.valid_from = starts_on
+        subscription.valid_until = ends_on
+        subscription.save(update_fields=["valid_from", "valid_until"])
+
+        period.state = SubscriptionPeriod.State.ACTIVE
+        period.starts_on = starts_on
+        period.ends_on = ends_on
+        period.activation_lesson_id = attendance.lesson_id
+        period.activated_at = timezone.now()
+        period.save(
+            update_fields=[
+                "state",
+                "starts_on",
+                "ends_on",
+                "activation_lesson",
+                "activated_at",
+            ]
+        )
+        _audit(
+            event_type="SubscriptionPeriodActivated",
+            aggregate_type="SubscriptionPeriod",
+            aggregate_id=period.id,
+            actor=actor,
+            payload={
+                "subscription_id": str(subscription.id),
+                "lesson_id": str(attendance.lesson_id),
+                "starts_on": starts_on.isoformat(),
+                "ends_on": ends_on.isoformat(),
+                "source": "first_covered_lesson",
+            },
+        )
+        return True
+    return False
+
+
 def _try_ordinary_allowance_coverage(
     *,
     attendance: Attendance,
@@ -2569,6 +2730,13 @@ def assign_attendance_coverage(
     )
     if coverage is not None:
         return coverage
+
+    _activate_pending_rolling_subscription_for_attendance(
+        attendance=attendance,
+        category=category,
+        lesson_date=lesson_date,
+        actor=actor,
+    )
 
     return _try_ordinary_allowance_coverage(
         attendance=attendance,
