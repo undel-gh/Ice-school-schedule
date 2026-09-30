@@ -52,7 +52,19 @@ def _validation_message(exc: ValidationError) -> str:
 
 
 def _require_operations_access(user) -> None:
-    if user.is_superuser or user.has_perm("subscriptions.view_subscription"):
+    manager_permissions = (
+        "subscriptions.view_subscription",
+        "subscriptions.view_absencecompensationcase",
+        "subscriptions.view_onetimeentitlement",
+        "scheduling.view_scheduletemplate",
+        "scheduling.view_lesson",
+        "attendance.view_absencejustification",
+        "audit.view_auditevent",
+    )
+    if user.is_superuser or any(
+        user.has_perm(permission)
+        for permission in manager_permissions
+    ):
         return
     raise PermissionDenied("Manager operations permission is required.")
 
