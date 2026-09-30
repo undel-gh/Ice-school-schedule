@@ -11,7 +11,7 @@
   {% if case.eligible_absence_ordinal %}<p>Порядковый номер: {{ case.eligible_absence_ordinal }}</p>{% endif %}
   {% if case.eligibility_period_from %}<p>Период оценки права: {{ case.eligibility_period_from|date:"d.m.Y" }}—{{ case.eligibility_period_until|date:"d.m.Y" }}</p>{% endif %}
   <p>Правило: {{ case.policy_name_snapshot }} v{{ case.policy_version_snapshot }}</p>
-  <p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationCase&aggregate_id={{ case.id }}">Журнал действий</a></p>
+  {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationCase&aggregate_id={{ case.id }}">Журнал действий</a></p>{% endif %}
 </article>
 
 {% if case.status == "open" %}
@@ -36,7 +36,7 @@
 <div class="card-list">
 {% for grant in grants %}
   <article class="lesson-card">
-    <div class="lesson-card__top"><strong>{{ grant.get_action_type_display }}</strong>{% if grant.reversed_at %}<span class="badge badge--cancelled">отменено</span>{% elif grant.activated_at %}<span class="badge badge--covered">активировано</span>{% else %}<span class="badge badge--unknown">ожидает</span>{% endif %}</div>
+    <div class="lesson-card__top"><strong>{% if grant.action_type == "free_makeup" %}Бесплатная отработка{% elif grant.action_type == "paid_makeup" %}Платная отработка{% elif grant.action_type == "billing_recalculation" %}Перерасчёт{% else %}{{ grant.get_action_type_display }}{% endif %}</strong>{% if grant.reversed_at %}<span class="badge badge--cancelled">отменено</span>{% elif grant.activated_at %}<span class="badge badge--covered">активировано</span>{% else %}<span class="badge badge--unknown">ожидает</span>{% endif %}</div>
     {% if grant.target_subscription %}<p>Целевой абонемент: {{ grant.target_subscription.plan_name_snapshot }}</p>{% endif %}
     <p>Оплата: {% if grant.fee_confirmed_at %}подтверждена {{ grant.fee_confirmed_at|date:"d.m.Y H:i" }}{% else %}не подтверждена{% endif %}</p>
     {% if grant.action_type == paid_action_type and not grant.reversed_at %}
@@ -47,7 +47,7 @@
       <form class="manager-form" method="post" action="{% url 'subscriptions:manager_compensation_activate_paid' grant.id %}">{% csrf_token %}{{ activate_form.as_p }}<button class="btn-primary" type="submit">Активировать</button></form>
       {% endif %}
     {% endif %}
-    <p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Журнал действий</a></p>
+    {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Журнал действий</a></p>{% endif %}
   </article>
 {% empty %}<div class="empty-state">Право ещё не выдано.</div>{% endfor %}
 </div>
