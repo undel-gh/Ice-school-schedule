@@ -10,4 +10,5 @@
 <div class="card-list">{% for membership in memberships %}
 <article class="lesson-card"><div class="lesson-card__top"><div><strong>{{ membership.student.display_name }}</strong><p class="lesson-card__meta">{{ membership.group.name }}</p></div><span class="badge">{{ membership.starts_on|date:"d.m.Y" }}—{% if membership.ends_on %}{{ membership.ends_on|date:"d.m.Y" }}{% else %}∞{% endif %}</span></div>{% if perms.scheduling.change_groupmembership %}<a href="{% url 'school_scheduling:membership_edit' membership.id %}">Изменить</a>{% endif %}</article>
 {% empty %}<div class="empty-state">Записей нет.</div>{% endfor %}</div>
+{% include "shared/manager_pagination.html" %}
 {% endblock %}
