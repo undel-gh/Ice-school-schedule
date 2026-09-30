@@ -793,7 +793,9 @@ def generate_lessons(
         .get(pk=template_id)
     )
     TrainingGroup.objects.select_for_update().get(pk=template.group_id)
-    CoachProfile.objects.select_for_update().get(pk=template.coach_id)
+    coach = CoachProfile.objects.select_for_update().get(
+        pk=template.coach_id
+    )
     if not template.is_active:
         raise ValidationError(
             {"template": "Inactive schedule templates cannot generate lessons."}
