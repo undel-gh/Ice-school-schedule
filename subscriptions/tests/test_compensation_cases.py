@@ -14,7 +14,8 @@ from attendance.services import (
 )
 from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
-from core.time import make_school_aware, school_date
+from core.testing import school_dt
+from core.time import school_date
 from scheduling.models import (
     Lesson,
     LessonRosterEntry,
@@ -54,16 +55,6 @@ from subscriptions.services import (
 )
 
 User = get_user_model()
-
-
-def school_dt(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    minute: int = 0,
-) -> datetime:
-    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 @pytest.fixture
