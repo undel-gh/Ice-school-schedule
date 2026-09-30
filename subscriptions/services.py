@@ -2055,25 +2055,57 @@ def create_group_place_hold(
             }
         )
 
-    hold, created = GroupPlaceHold.objects.get_or_create(
-        student=student,
-        group=group,
-        period_from=period_from,
-        defaults={
-            "period_scheme": scheme,
-            "period_until": period_until,
-            "created_by": actor,
-        },
+    existing = (
+        GroupPlaceHold.objects.select_for_update()
+        .filter(
+            student=student,
+            group=group,
+            period_from=period_from,
+        )
+        .exclude(status=GroupPlaceHold.Status.CANCELLED)
+        .order_by("created_at", "id")
+        .first()
     )
-    if not created:
+    if existing is not None:
         if (
-            hold.period_until != period_until
-            or hold.period_scheme_id != scheme.id
+            existing.period_until != period_until
+            or existing.period_scheme_id != scheme.id
         ):
             raise ValidationError(
                 {"period": "A conflicting place hold already exists."}
             )
-        return hold
+        return existing
+
+    overlapping = (
+        GroupPlaceHold.objects.select_for_update()
+        .filter(
+            student=student,
+            group=group,
+            period_from__lte=period_until,
+            period_until__gte=period_from,
+        )
+        .exclude(status=GroupPlaceHold.Status.CANCELLED)
+        .order_by("period_from", "id")
+        .first()
+    )
+    if overlapping is not None:
+        raise ValidationError(
+            {
+                "period": (
+                    "Another non-cancelled place hold overlaps this period "
+                    "for the same student and group."
+                )
+            }
+        )
+
+    hold = GroupPlaceHold.objects.create(
+        student=student,
+        group=group,
+        period_scheme=scheme,
+        period_from=period_from,
+        period_until=period_until,
+        created_by=actor,
+    )
 
     _audit(
         event_type="GroupPlaceHoldCreated",
