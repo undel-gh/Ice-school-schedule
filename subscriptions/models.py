@@ -723,8 +723,8 @@ class Subscription(UUIDModel):
     plan = models.ForeignKey(SubscriptionPlan, on_delete=models.PROTECT, related_name="subscriptions")
     plan_code_snapshot = models.CharField(max_length=64)
     plan_name_snapshot = models.CharField(max_length=128)
-    valid_from = models.DateField()
-    valid_until = models.DateField()
+    valid_from = models.DateField(null=True, blank=True)
+    valid_until = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
     cancelled_at = models.DateTimeField(null=True, blank=True)
@@ -733,8 +733,18 @@ class Subscription(UUIDModel):
     class Meta:
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(valid_until__gte=models.F("valid_from")),
-                name="subscription_until_gte_from",
+                condition=(
+                    models.Q(
+                        valid_from__isnull=True,
+                        valid_until__isnull=True,
+                    )
+                    | models.Q(
+                        valid_from__isnull=False,
+                        valid_until__isnull=False,
+                        valid_until__gte=models.F("valid_from"),
+                    )
+                ),
+                name="subscription_dates_ck",
             ),
             models.CheckConstraint(
                 condition=models.Q(cancelled_at__isnull=False) | models.Q(cancelled_by__isnull=True),
