@@ -17,6 +17,7 @@ from core.time import school_date
 
 from .catalog_forms import (
     ManagerCompensationPolicyActionForm,
+    ManagerCompensationPolicyEndForm,
     ManagerCompensationPolicyForm,
     ManagerCompensationPolicyVersionForm,
     ManagerCompensationPolicyWindowForm,
@@ -36,6 +37,7 @@ from .services import (
     create_absence_compensation_policy_window,
     create_subscription_period_scheme,
     create_subscription_plan,
+    end_absence_compensation_policy,
     update_absence_compensation_policy,
     update_absence_compensation_policy_action,
     update_absence_compensation_policy_window,
@@ -496,6 +498,60 @@ def manager_policy_version(
         {
             "form": form,
             "title": f"Новая версия {policy.code} v{policy.version}",
+            "object": policy,
+        },
+    )
+
+
+@login_required
+def manager_policy_end(
+    request: HttpRequest,
+    *,
+    policy_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_absencecompensationpolicy",
+        "Compensation policy change permission is required.",
+    )
+    policy = get_object_or_404(AbsenceCompensationPolicy, pk=policy_id)
+    if AbsenceCompensationPolicy.objects.filter(
+        code=policy.code,
+        version__gt=policy.version,
+    ).exists():
+        messages.error(request, "Завершить можно только последнюю версию.")
+        return redirect(
+            "subscriptions:manager_policy_detail",
+            policy_id=policy.id,
+        )
+
+    today = school_date(timezone.now())
+    form = ManagerCompensationPolicyEndForm(
+        request.POST or None,
+        initial={"inactive_from": today + timedelta(days=1)},
+    )
+    if request.method == "POST" and form.is_valid():
+        try:
+            end_absence_compensation_policy(
+                policy_id=policy.id,
+                inactive_from=form.cleaned_data["inactive_from"],
+                actor=request.user,
+                now=timezone.now(),
+            )
+        except ValidationError as exc:
+            form.add_error(None, validation_message(exc))
+        else:
+            messages.success(request, "Политика завершена.")
+            return redirect(
+                "subscriptions:manager_policy_detail",
+                policy_id=policy.id,
+            )
+    return render(
+        request,
+        "subscriptions/catalog_form.html",
+        {
+            "form": form,
+            "title": f"Завершить {policy.code} v{policy.version}",
             "object": policy,
         },
     )
