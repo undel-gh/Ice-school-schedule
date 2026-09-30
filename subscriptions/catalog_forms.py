@@ -229,6 +229,16 @@ class ManagerCompensationPolicyVersionForm(forms.Form):
     )
 
 
+class ManagerCompensationPolicyEndForm(forms.Form):
+    inactive_from = forms.DateField(
+        label="Не применять с",
+        widget=forms.DateInput(attrs={"type": "date"}),
+        help_text=(
+            "Последним днём действия станет предыдущий календарный день."
+        ),
+    )
+
+
 class ManagerCompensationPolicyActionForm(forms.Form):
     action_type = forms.ChoiceField(label="Действие", choices=ACTION_TYPE_CHOICES)
     target_period_rule = forms.ChoiceField(
