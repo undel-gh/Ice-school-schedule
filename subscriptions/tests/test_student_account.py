@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -428,12 +428,12 @@ def test_student_account_formats_lesson_time_in_school_timezone(
     ctx = account_context
     settings.TIME_ZONE = "UTC"
     settings.SCHOOL_TIME_ZONE = "Asia/Tokyo"
-    fixed_now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 9, 30, 12, 0, tzinfo=dt_timezone.utc)
     monkeypatch.setattr(timezone, "now", lambda: fixed_now)
 
     lesson = make_lesson(
         ctx=ctx,
-        starts_at=datetime(2026, 9, 30, 15, 30, tzinfo=timezone.utc),
+        starts_at=datetime(2026, 9, 30, 15, 30, tzinfo=dt_timezone.utc),
         status=Lesson.Status.CONFIRMED,
     )
     OneTimeEntitlement.objects.create(
