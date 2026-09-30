@@ -125,6 +125,7 @@ from scheduling.services import (
     generate_lessons,
     publish_daily_schedule,
     publish_lesson,
+    reassign_lesson_coach,
     reschedule_lesson,
     set_lesson_response,
     skip_template_occurrence,
@@ -2657,3 +2658,188 @@ def test_publish_lesson_rejects_legacy_inactive_coach(
 
     lesson.refresh_from_db()
     assert lesson.status == Lesson.Status.DRAFT
+
+
+@pytest.mark.django_db
+def test_reassign_lesson_coach_keeps_lesson_and_records_audit(
+    school_context,
+    admin,
+):
+    old_coach, group, venue, lesson_type = school_context
+    new_user = User.objects.create_user(
+        username="replacement-coach",
+        password="test",
+    )
+    new_coach = CoachProfile.objects.create(
+        user=new_user,
+        display_name="Replacement Coach",
+    )
+    starts_at = school_dt(2026, 11, 12, 18, 0)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    response = LessonResponse.objects.create(
+        lesson=lesson,
+        student=Student.objects.create(display_name="RSVP Student"),
+        status=LessonResponse.Status.YES,
+        updated_by=admin,
+    )
+
+    reassigned = reassign_lesson_coach(
+        lesson_id=lesson.id,
+        coach_id=new_coach.id,
+        actor=admin,
+        reason="Подмена из-за болезни",
+    )
+
+    assert reassigned.id == lesson.id
+    assert reassigned.coach_id == new_coach.id
+    assert reassigned.status == Lesson.Status.RSVP_OPEN
+    assert LessonResponse.objects.get(pk=response.id).lesson_id == lesson.id
+    event = AuditEvent.objects.get(
+        event_type="LessonCoachReassigned",
+        aggregate_id=lesson.id,
+    )
+    assert event.payload["previous_coach_id"] == str(old_coach.id)
+    assert event.payload["coach_id"] == str(new_coach.id)
+    assert event.payload["reason"] == "Подмена из-за болезни"
+
+
+@pytest.mark.django_db
+def test_reassign_lesson_coach_rejects_busy_coach(
+    school_context,
+    admin,
+):
+    old_coach, group, venue, lesson_type = school_context
+    busy_user = User.objects.create_user(
+        username="busy-coach",
+        password="test",
+    )
+    busy_coach = CoachProfile.objects.create(
+        user=busy_user,
+        display_name="Busy Coach",
+    )
+    starts_at = school_dt(2026, 11, 13, 18, 0)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CONFIRMED,
+    )
+    other_group = TrainingGroup.objects.create(
+        code="busy-coach-group",
+        name="Busy coach group",
+    )
+    Lesson.objects.create(
+        group=other_group,
+        lesson_type=lesson_type,
+        coach=busy_coach,
+        venue=venue,
+        starts_at=starts_at + timedelta(minutes=30),
+        ends_at=starts_at + timedelta(hours=1, minutes=30),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=1),
+        decision_deadline=starts_at - timedelta(minutes=30),
+        status=Lesson.Status.DRAFT,
+    )
+
+    with pytest.raises(ValidationError, match="overlapping"):
+        reassign_lesson_coach(
+            lesson_id=lesson.id,
+            coach_id=busy_coach.id,
+            actor=admin,
+            reason="Подмена",
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.coach_id == old_coach.id
+
+
+@pytest.mark.django_db
+def test_reassign_lesson_coach_rejects_inactive_coach(
+    school_context,
+    admin,
+):
+    old_coach, group, venue, lesson_type = school_context
+    inactive_user = User.objects.create_user(
+        username="inactive-replacement-coach",
+        password="test",
+    )
+    inactive_coach = CoachProfile.objects.create(
+        user=inactive_user,
+        display_name="Inactive Replacement",
+        is_active=False,
+    )
+    starts_at = school_dt(2026, 11, 14, 18, 0)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+
+    with pytest.raises(ValidationError, match="active coach"):
+        reassign_lesson_coach(
+            lesson_id=lesson.id,
+            coach_id=inactive_coach.id,
+            actor=admin,
+            reason="Подмена",
+        )
+
+
+@pytest.mark.django_db
+def test_reassign_lesson_coach_rejects_closed_lesson(
+    school_context,
+    admin,
+):
+    old_coach, group, venue, lesson_type = school_context
+    new_user = User.objects.create_user(
+        username="closed-replacement-coach",
+        password="test",
+    )
+    new_coach = CoachProfile.objects.create(
+        user=new_user,
+        display_name="Closed Replacement",
+    )
+    starts_at = school_dt(2026, 11, 15, 18, 0)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CLOSED,
+    )
+
+    with pytest.raises(ValidationError, match="Only DRAFT"):
+        reassign_lesson_coach(
+            lesson_id=lesson.id,
+            coach_id=new_coach.id,
+            actor=admin,
+            reason="Too late",
+        )
