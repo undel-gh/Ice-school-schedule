@@ -183,6 +183,16 @@ def manager_compensation_materialize_free(
     *,
     case_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.add_makeupentitlement",
+        "Make-up entitlement permission is required.",
+    )
+    require_permission(
+        request.user,
+        "subscriptions.change_absencecompensationcase",
+        "Compensation case change permission is required.",
+    )
     get_object_or_404(AbsenceCompensationCase, pk=case_id)
     try:
         materialize_free_makeup_from_case(
@@ -207,6 +217,16 @@ def manager_compensation_authorize_paid(
     *,
     case_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.add_absencecompensationactiongrant",
+        "Compensation action grant permission is required.",
+    )
+    require_permission(
+        request.user,
+        "subscriptions.change_absencecompensationcase",
+        "Compensation case change permission is required.",
+    )
     case = get_object_or_404(AbsenceCompensationCase, pk=case_id)
     form = ManagerPaidMakeupAuthorizeForm(
         request.POST,
@@ -241,6 +261,11 @@ def manager_compensation_confirm_fee(
     *,
     grant_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_absencecompensationactiongrant",
+        "Compensation action grant change permission is required.",
+    )
     grant = get_object_or_404(AbsenceCompensationActionGrant, pk=grant_id)
     try:
         confirm_paid_makeup_fee(
@@ -265,6 +290,16 @@ def manager_compensation_activate_paid(
     *,
     grant_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.add_makeupentitlement",
+        "Make-up entitlement permission is required.",
+    )
+    require_permission(
+        request.user,
+        "subscriptions.change_absencecompensationactiongrant",
+        "Compensation action grant change permission is required.",
+    )
     grant = get_object_or_404(
         AbsenceCompensationActionGrant.objects.select_related("case"),
         pk=grant_id,
@@ -301,6 +336,11 @@ def manager_compensation_reverse(
     *,
     case_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_absencecompensationcase",
+        "Compensation case change permission is required.",
+    )
     get_object_or_404(AbsenceCompensationCase, pk=case_id)
     form = ManagerCompensationReverseForm(request.POST)
     if form.is_valid():
@@ -331,6 +371,11 @@ def manager_compensation_cancel(
     *,
     case_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_absencecompensationcase",
+        "Compensation case change permission is required.",
+    )
     get_object_or_404(AbsenceCompensationCase, pk=case_id)
     try:
         cancel_absence_compensation_case(
@@ -403,6 +448,11 @@ def manager_one_time_cancel(
     *,
     entitlement_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_onetimeentitlement",
+        "One-time entitlement change permission is required.",
+    )
     get_object_or_404(OneTimeEntitlement, pk=entitlement_id)
     try:
         cancel_one_time_entitlement(
