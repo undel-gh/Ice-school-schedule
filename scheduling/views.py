@@ -294,7 +294,18 @@ def coach_set_attendance(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        manager_messages = getattr(exc, "message_dict", {}).get(
+            "manager_action_required",
+            (),
+        )
+        if manager_messages:
+            messages.warning(
+                request,
+                "Требуется решение менеджера: "
+                + " ".join(manager_messages),
+            )
+        else:
+            messages.error(request, " ".join(exc.messages))
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
 
 
