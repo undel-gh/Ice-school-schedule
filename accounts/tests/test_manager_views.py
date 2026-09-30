@@ -12,7 +12,7 @@ from accounts.models import CoachProfile, Student, StudentAccess
 from audit.models import AuditEvent
 from core.time import make_school_aware, school_date
 from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
-from scheduling.services import reassign_lesson_coach
+from scheduling.services import generate_lessons, reassign_lesson_coach
 
 User = get_user_model()
 
@@ -515,3 +515,11 @@ def test_reassigning_materialized_lesson_allows_old_coach_deactivation(
     lesson.refresh_from_db()
     assert old_coach.is_active is False
     assert lesson.coach_id == new_coach.id
+
+    generated = generate_lessons(
+        template_id=old_template.id,
+        from_date=occurrence_date,
+        until_date=occurrence_date,
+        actor=manager,
+    )
+    assert generated.lessons == (lesson,)
