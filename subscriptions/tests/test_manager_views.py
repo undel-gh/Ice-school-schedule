@@ -285,9 +285,9 @@ def test_manager_subscription_detail_adjusts_and_cancels(client):
     )
     assert adjusted.status_code == 302
 
-    from subscriptions.balances import allowance_balance
+    from subscriptions.balances import ledger_balance
 
-    assert allowance_balance(allowance.id) == 5
+    assert ledger_balance(allowance.id) == 5
 
     cancelled = client.post(
         reverse(
