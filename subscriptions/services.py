@@ -823,8 +823,12 @@ def materialize_free_makeup_from_case(
             "source_lesson_id": str(case.source_lesson_id),
             "source_allowance_id": str(allowance.id),
             "category": case.category,
-            "valid_from": valid_from.isoformat(),
-            "valid_until": valid_until.isoformat(),
+            "valid_from": (
+                valid_from.isoformat() if valid_from is not None else None
+            ),
+            "valid_until": (
+                valid_until.isoformat() if valid_until is not None else None
+            ),
             "reason": entitlement.reason,
             "compensation_case_id": str(case.id),
             "compensation_grant_id": str(grant.id),
