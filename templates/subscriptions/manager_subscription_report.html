@@ -52,7 +52,11 @@
       <article class="report-card">
         <div class="report-card__top">
           <div>
-            <h2>{{ row.subscription.student.display_name }}</h2>
+            <h2>
+              <a href="{% url 'subscriptions:manager_subscription_detail' row.subscription.id %}">
+                {{ row.subscription.student.display_name }}
+              </a>
+            </h2>
             <p class="report-card__meta">
               {{ row.subscription.plan_name_snapshot }}
               · {{ row.subscription.valid_from|date:"d.m.Y" }}
