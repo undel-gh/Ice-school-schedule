@@ -1,3 +1,4 @@
+{% load manager_labels %}
 {% extends "base.html" %}
 {% block title %}Занятия{% endblock %}
 {% block content %}
@@ -13,7 +14,7 @@
   <article class="lesson-card">
     <div class="lesson-card__top">
       <div><strong>{{ lesson.starts_at|date:"d.m.Y H:i" }}</strong><h2>{{ lesson.group.name }} · {{ lesson.lesson_type.name }}</h2></div>
-      <span class="badge">{{ lesson.get_status_display }}</span>
+      <span class="badge">{{ lesson.status|manager_label:"lesson_status" }}</span>
     </div>
     <p class="lesson-card__meta">{{ lesson.coach.display_name }} · {{ lesson.venue.name }}</p>
     <p><a href="{% url 'scheduling_manager:lesson_detail' lesson.id %}">Открыть</a></p>
