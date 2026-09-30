@@ -3007,3 +3007,87 @@ def test_paid_makeup_accepts_pending_rolling_target_subscription(actor, context)
     assert entitlement is not None
     assert entitlement.valid_from == date(2026, 10, 5)
     assert entitlement.valid_until == date(2026, 11, 1)
+
+
+@pytest.mark.django_db
+def test_unpaid_paid_makeup_with_pending_rolling_target_expires_from_reference_window(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="paid-pending-expiry-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="paid-pending-expiry-scheme",
+        name="Pending rolling expiry",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    target_plan = SubscriptionPlan.objects.create(
+        code="paid-pending-expiry-target",
+        name="Pending rolling expiry",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=target_plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=target_plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 9, 25, 12, tzinfo=dt_timezone.utc),
+    )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+    assert grant.fee_confirmed_at is None
+    assert target.valid_until is None
+
+    on_deadline = process_subscription_lifecycle(
+        as_of=date(2026, 10, 28),
+        actor=actor,
+    )
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert on_deadline["paid_authorization_expired"] == 0
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert grant.reversed_at is None
+
+    after_deadline = process_subscription_lifecycle(
+        as_of=date(2026, 10, 29),
+        actor=actor,
+    )
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert after_deadline["paid_authorization_expired"] == 1
+    assert case.status == AbsenceCompensationCase.Status.REVERSED
+    assert case.reversal_reason == "authorization_expired"
+    assert grant.reversed_at is not None
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeAuthorizationExpired",
+        aggregate_id=grant.id,
+    ).exists()
+    assert not AuditEvent.objects.filter(
+        event_type="PaidFreezeAuthorizationDeadlineUnresolved",
+        aggregate_id=grant.id,
+    ).exists()
