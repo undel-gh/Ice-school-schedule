@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -10,8 +10,9 @@ from django.utils import timezone
 
 from accounts.models import CoachProfile, Student, StudentAccess
 from audit.models import AuditEvent
-from core.time import school_date
+from core.time import make_school_aware, school_date
 from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
+from scheduling.services import reassign_lesson_coach
 
 User = get_user_model()
 
@@ -409,3 +410,108 @@ def test_student_list_is_paginated_without_silent_truncation(client, manager):
     assert len(first.context["students"]) == 50
     assert len(second.context["students"]) >= 5
     assert "Показано" in first.content.decode()
+
+
+@pytest.mark.django_db
+def test_reassigning_materialized_lesson_allows_old_coach_deactivation(
+    client,
+    manager,
+):
+    old_user = User.objects.create_user(
+        username="departing-coach",
+        password="test",
+    )
+    old_coach = CoachProfile.objects.create(
+        user=old_user,
+        display_name="Departing Coach",
+    )
+    new_user = User.objects.create_user(
+        username="incoming-coach",
+        password="test",
+    )
+    new_coach = CoachProfile.objects.create(
+        user=new_user,
+        display_name="Incoming Coach",
+    )
+    group = TrainingGroup.objects.create(
+        code="departure-group",
+        name="Departure group",
+    )
+    venue = Venue.objects.create(
+        code="departure-venue",
+        name="Departure venue",
+    )
+    lesson_type = LessonType.objects.create(
+        code="departure-ice",
+        name="Departure ice",
+        subscription_category="ice",
+    )
+    now = timezone.now()
+    today = school_date(now)
+    occurrence_date = today + timedelta(days=1)
+    starts_at = make_school_aware(
+        datetime.combine(occurrence_date, time(18, 0))
+    )
+    old_template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        weekday=occurrence_date.weekday(),
+        start_time=time(18, 0),
+        duration_minutes=60,
+        valid_from=today - timedelta(days=6),
+        valid_until=occurrence_date,
+        is_active=True,
+    )
+    Lesson.objects.create(
+        source_template=old_template,
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.RSVP_OPEN,
+    )
+    next_date = occurrence_date + timedelta(days=1)
+    ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=new_coach,
+        venue=venue,
+        weekday=next_date.weekday(),
+        start_time=time(18, 0),
+        duration_minutes=60,
+        valid_from=next_date,
+        is_active=True,
+    )
+    lesson = Lesson.objects.get(source_template=old_template)
+
+    reassign_lesson_coach(
+        lesson_id=lesson.id,
+        coach_id=new_coach.id,
+        actor=manager,
+        reason="Постоянная замена тренера",
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "accounts_manager:coach_edit",
+            kwargs={"coach_id": old_coach.id},
+        ),
+        {
+            "display_name": old_coach.display_name,
+            "is_active": "",
+        },
+    )
+
+    assert response.status_code == 302
+    old_coach.refresh_from_db()
+    lesson.refresh_from_db()
+    assert old_coach.is_active is False
+    assert lesson.coach_id == new_coach.id
