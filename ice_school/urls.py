@@ -9,6 +9,7 @@ urlpatterns = [
     path("manager/attendance/", include("attendance.manager_urls")),
     path("manager/audit/", include("audit.urls")),
     path("manager/", include("subscriptions.urls")),
+    path("account/", include("subscriptions.student_urls")),
     path("accounts/", include("django.contrib.auth.urls")),
     path("admin/", admin.site.urls),
 ]
