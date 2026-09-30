@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Audit trail{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Audit trail</h1>
+  <p class="page-header__meta">Domain events, actor и correlation ID</p>
+</header>
+<form class="filter-form audit-filter" method="get">
+  <div class="field"><label for="event_type">Event type</label><input id="event_type" type="text" name="event_type" value="{{ event_type }}"></div>
+  <div class="field"><label for="aggregate_type">Aggregate type</label><input id="aggregate_type" type="text" name="aggregate_type" value="{{ aggregate_type }}"></div>
+  <div class="field"><label for="aggregate_id">Aggregate ID</label><input id="aggregate_id" type="text" name="aggregate_id" value="{{ aggregate_id }}"></div>
+  <div class="field"><label for="correlation_id">Correlation ID</label><input id="correlation_id" type="text" name="correlation_id" value="{{ correlation_id }}"></div>
+  <button class="btn-secondary" type="submit">Фильтр</button>
+</form>
+<div class="card-list">
+{% for event in events %}
+  <article class="lesson-card audit-event">
+    <div class="lesson-card__top">
+      <div><h2>{{ event.event_type }}</h2><p class="lesson-card__meta">{{ event.occurred_at|date:"d.m.Y H:i:s" }} · {% if event.actor %}{{ event.actor.username }}{% else %}system{% endif %}</p></div>
+      <span class="badge">{{ event.aggregate_type }}</span>
+    </div>
+    <p><code>{{ event.aggregate_id }}</code></p>
+    <p class="lesson-card__meta">correlation: <a href="?correlation_id={{ event.correlation_id }}">{{ event.correlation_id }}</a></p>
+    {% if event.payload %}<details><summary>Payload</summary><pre class="audit-payload">{{ event.payload }}</pre></details>{% endif %}
+  </article>
+{% empty %}<div class="empty-state">Событий по фильтру нет.</div>{% endfor %}
+</div>
+{% endblock %}
