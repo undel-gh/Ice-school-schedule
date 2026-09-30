@@ -115,7 +115,7 @@
           {{ right.entitlement.valid_from|date:"d.m.Y" }}–{{ right.entitlement.valid_until|date:"d.m.Y" }}
         </p>
       </div>
-      {% if right.status == "available" %}
+      {% if right.status == "available" or right.status == "targeted" %}
         <span class="badge badge--covered">{{ right.status_label }}</span>
       {% elif right.status == "not_started" or right.status == "used" %}
         <span class="badge badge--unknown">{{ right.status_label }}</span>
