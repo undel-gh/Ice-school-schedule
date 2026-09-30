@@ -1,10 +1,75 @@
 from django.urls import path
 
-from . import views
+from . import manager_operations, views
 
 app_name = "subscriptions"
 
 urlpatterns = [
+    path(
+        "operations/",
+        manager_operations.manager_operations_dashboard,
+        name="manager_operations",
+    ),
+    path(
+        "compensation/",
+        manager_operations.manager_compensation_cases,
+        name="manager_compensation_cases",
+    ),
+    path(
+        "compensation/new/",
+        manager_operations.manager_compensation_case_create,
+        name="manager_compensation_case_create",
+    ),
+    path(
+        "compensation/<uuid:case_id>/",
+        manager_operations.manager_compensation_case_detail,
+        name="manager_compensation_case_detail",
+    ),
+    path(
+        "compensation/<uuid:case_id>/materialize-free/",
+        manager_operations.manager_compensation_materialize_free,
+        name="manager_compensation_materialize_free",
+    ),
+    path(
+        "compensation/<uuid:case_id>/authorize-paid/",
+        manager_operations.manager_compensation_authorize_paid,
+        name="manager_compensation_authorize_paid",
+    ),
+    path(
+        "compensation/grants/<uuid:grant_id>/confirm-fee/",
+        manager_operations.manager_compensation_confirm_fee,
+        name="manager_compensation_confirm_fee",
+    ),
+    path(
+        "compensation/grants/<uuid:grant_id>/activate/",
+        manager_operations.manager_compensation_activate_paid,
+        name="manager_compensation_activate_paid",
+    ),
+    path(
+        "compensation/<uuid:case_id>/reverse/",
+        manager_operations.manager_compensation_reverse,
+        name="manager_compensation_reverse",
+    ),
+    path(
+        "compensation/<uuid:case_id>/cancel/",
+        manager_operations.manager_compensation_cancel,
+        name="manager_compensation_cancel",
+    ),
+    path(
+        "one-time/",
+        manager_operations.manager_one_time_entitlements,
+        name="manager_one_time_entitlements",
+    ),
+    path(
+        "one-time/new/",
+        manager_operations.manager_one_time_create,
+        name="manager_one_time_create",
+    ),
+    path(
+        "one-time/<uuid:entitlement_id>/cancel/",
+        manager_operations.manager_one_time_cancel,
+        name="manager_one_time_cancel",
+    ),
     path(
         "reports/subscriptions/",
         views.manager_subscription_report_view,
