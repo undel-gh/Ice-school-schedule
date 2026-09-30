@@ -318,6 +318,7 @@ def set_attendance(
                 coverage_id=coverage.id,
                 actor=actor,
                 correlation_id=correlation_id,
+                now=now,
             )
 
         attendance.status = Attendance.Status.ABSENT
