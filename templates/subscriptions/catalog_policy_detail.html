@@ -12,6 +12,7 @@
 <div class="action-row manager-actions">
 {% if not referenced and perms.subscriptions.change_absencecompensationpolicy %}<a class="btn btn-secondary" href="{% url 'subscriptions:manager_policy_edit' policy.id %}">Редактировать</a>{% endif %}
 {% if is_latest and perms.subscriptions.change_absencecompensationpolicy and perms.subscriptions.add_absencecompensationpolicy %}<a class="btn btn-primary" href="{% url 'subscriptions:manager_policy_version' policy.id %}">Новая версия</a>{% endif %}
+{% if is_latest and policy.is_active and perms.subscriptions.change_absencecompensationpolicy %}<a class="btn btn-secondary" href="{% url 'subscriptions:manager_policy_end' policy.id %}">Завершить с даты</a>{% endif %}
 {% if perms.audit.view_auditevent %}<a class="btn btn-secondary" href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationPolicy&aggregate_id={{ policy.id }}">Журнал</a>{% endif %}
 </div>
 </article>
