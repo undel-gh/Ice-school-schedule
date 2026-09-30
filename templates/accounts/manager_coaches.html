@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Тренеры{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Тренеры</h1></header>
+{% if perms.accounts.add_coachprofile %}<p><a class="btn btn-primary" href="{% url 'accounts_manager:coach_create' %}">Новый тренер</a></p>{% endif %}
+<form class="filter-form" method="get"><div class="field"><label for="q">Поиск</label><input id="q" name="q" value="{{ query }}" placeholder="Имя тренера"></div><button class="btn-secondary" type="submit">Найти</button></form>
+<div class="card-list">{% for coach in coaches %}
+<article class="lesson-card"><div class="lesson-card__top"><div><h2>{{ coach.display_name }}</h2><p class="lesson-card__meta">{{ coach.user.username }}</p></div>{% if coach.is_active %}<span class="badge badge--covered">активен</span>{% else %}<span class="badge badge--cancelled">неактивен</span>{% endif %}</div>
+{% if perms.accounts.change_coachprofile %}<a href="{% url 'accounts_manager:coach_edit' coach.id %}">Редактировать</a>{% endif %}
+{% if perms.audit.view_auditevent %} · <a href="{% url 'audit_manager:events' %}?aggregate_type=CoachProfile&aggregate_id={{ coach.id }}">Журнал</a>{% endif %}
+</article>{% empty %}<div class="empty-state">Тренеры не найдены.</div>{% endfor %}</div>
+{% endblock %}
