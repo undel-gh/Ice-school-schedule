@@ -1448,6 +1448,89 @@ def cancel_lesson(
 
 
 @transaction.atomic
+def reassign_lesson_coach(
+    *,
+    lesson_id: UUID,
+    coach_id: UUID,
+    actor: User,
+    reason: str,
+) -> Lesson:
+    require_permission(
+        actor,
+        "scheduling.change_lesson",
+        "Lesson coach reassignment permission is required.",
+    )
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError(
+            {"reason": "Coach reassignment reason is required."}
+        )
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    if lesson.status not in {
+        Lesson.Status.DRAFT,
+        Lesson.Status.RSVP_OPEN,
+        Lesson.Status.CONFIRMED,
+    }:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can have "
+                    "their coach reassigned."
+                )
+            }
+        )
+    if lesson.coach_id == coach_id:
+        raise ValidationError(
+            {"coach": "The selected coach is already assigned to this lesson."}
+        )
+
+    coach = CoachProfile.objects.select_for_update().get(pk=coach_id)
+    if not coach.is_active:
+        raise ValidationError(
+            {"coach": "Only an active coach can be assigned to a lesson."}
+        )
+
+    conflicting_lesson = (
+        Lesson.objects.filter(
+            coach=coach,
+            starts_at__lt=lesson.ends_at,
+            ends_at__gt=lesson.starts_at,
+        )
+        .exclude(pk=lesson.id)
+        .exclude(status=Lesson.Status.CANCELLED)
+        .order_by("starts_at", "id")
+        .first()
+    )
+    if conflicting_lesson is not None:
+        raise ValidationError(
+            {
+                "coach": (
+                    "The selected coach has another non-cancelled lesson "
+                    "overlapping this time: "
+                    f"{conflicting_lesson.id}."
+                )
+            }
+        )
+
+    previous_coach_id = lesson.coach_id
+    lesson.coach = coach
+    lesson.save(update_fields=["coach", "updated_at"])
+
+    _audit_lesson(
+        event_type="LessonCoachReassigned",
+        lesson=lesson,
+        actor=actor,
+        payload={
+            "previous_coach_id": str(previous_coach_id),
+            "coach_id": str(coach.id),
+            "reason": reason,
+        },
+    )
+    return lesson
+
+
+@transaction.atomic
 def reschedule_lesson(
     *,
     lesson_id: UUID,
