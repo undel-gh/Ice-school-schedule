@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.urls import reverse
 
 from accounts.models import CoachProfile, Student, StudentAccess
@@ -239,3 +240,29 @@ def test_manager_can_edit_coach_when_linked_user_is_inactive(client, manager):
     coach.refresh_from_db()
     assert coach.display_name == "Бывший тренер"
     assert coach.is_active is False
+
+
+@pytest.mark.django_db
+def test_scoped_student_manager_uses_operations_dashboard(client):
+    manager = User.objects.create_user(
+        username="student-view-manager",
+        password="test",
+        is_staff=True,
+    )
+    manager.user_permissions.add(
+        Permission.objects.get(
+            content_type__app_label="accounts",
+            codename="view_student",
+        )
+    )
+    client.force_login(manager)
+
+    home = client.get(reverse("scheduling:home"))
+    assert home.status_code == 302
+    assert home.url == reverse("subscriptions:manager_operations")
+
+    dashboard = client.get(reverse("subscriptions:manager_operations"))
+    body = dashboard.content.decode()
+    assert dashboard.status_code == 200
+    assert "Ученики и доступы" in body
+    assert "Абонементы" not in body
