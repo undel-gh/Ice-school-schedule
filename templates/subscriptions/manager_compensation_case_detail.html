@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Compensation case{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>{{ case.student.display_name }}</h1>
+  <p class="page-header__meta">{{ case.source_lesson.starts_at|date:"d.m.Y H:i" }} · {{ case.source_lesson.lesson_type.name }}</p>
+</header>
+<article class="report-card">
+  <div class="lesson-card__top"><h2>Case</h2><span class="badge">{{ case.get_status_display }}</span></div>
+  <p>Причина: {{ case.get_absence_reason_display }} · eligibility: {{ case.get_eligibility_status_display }}</p>
+  {% if case.eligible_absence_ordinal %}<p>Порядковый номер: {{ case.eligible_absence_ordinal }}</p>{% endif %}
+  {% if case.eligibility_period_from %}<p>Период eligibility: {{ case.eligibility_period_from|date:"d.m.Y" }}—{{ case.eligibility_period_until|date:"d.m.Y" }}</p>{% endif %}
+  <p>Policy: {{ case.policy_name_snapshot }} v{{ case.policy_version_snapshot }}</p>
+  <p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationCase&aggregate_id={{ case.id }}">Audit trail case</a></p>
+</article>
+
+{% if case.status == "open" %}
+<section class="manager-operation-grid">
+  <form class="report-card" method="post" action="{% url 'subscriptions:manager_compensation_materialize_free' case.id %}">
+    {% csrf_token %}<h2>FREE_MAKEUP</h2><p>Выдать бесплатную отработку согласно snapshot policy.</p><button class="btn-primary" type="submit">Materialize</button>
+  </form>
+  <form class="report-card manager-form" method="post" action="{% url 'subscriptions:manager_compensation_authorize_paid' case.id %}">
+    {% csrf_token %}<h2>PAID_MAKEUP</h2>{{ authorize_form.as_p }}<button class="btn-primary" type="submit">Authorize</button>
+  </form>
+  <form class="report-card" method="post" action="{% url 'subscriptions:manager_compensation_cancel' case.id %}" onsubmit="return confirm('Отменить OPEN case?');">
+    {% csrf_token %}<h2>Отмена</h2><button class="btn-absent" type="submit">Cancel case</button>
+  </form>
+</section>
+{% endif %}
+
+<h2 class="section-title">Grants</h2>
+<div class="card-list">
+{% for grant in grants %}
+  <article class="lesson-card">
+    <div class="lesson-card__top"><strong>{{ grant.get_action_type_display }}</strong>{% if grant.reversed_at %}<span class="badge badge--cancelled">reversed</span>{% elif grant.activated_at %}<span class="badge badge--covered">activated</span>{% else %}<span class="badge badge--unknown">pending</span>{% endif %}</div>
+    {% if grant.target_subscription %}<p>Target Subscription: {{ grant.target_subscription.plan_name_snapshot }}</p>{% endif %}
+    <p>Оплата: {% if grant.fee_confirmed_at %}подтверждена {{ grant.fee_confirmed_at|date:"d.m.Y H:i" }}{% else %}не подтверждена{% endif %}</p>
+    {% if grant.action_type == paid_action_type and not grant.reversed_at %}
+      {% if not grant.fee_confirmed_at %}
+      <form method="post" action="{% url 'subscriptions:manager_compensation_confirm_fee' grant.id %}">{% csrf_token %}<button class="btn-secondary" type="submit">Подтвердить оплату</button></form>
+      {% endif %}
+      {% if not grant.activated_at %}
+      <form class="manager-form" method="post" action="{% url 'subscriptions:manager_compensation_activate_paid' grant.id %}">{% csrf_token %}{{ activate_form.as_p }}<button class="btn-primary" type="submit">Activate</button></form>
+      {% endif %}
+    {% endif %}
+    <p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Audit grant</a></p>
+  </article>
+{% empty %}<div class="empty-state">Grant ещё не создан.</div>{% endfor %}
+</div>
+
+{% if case.status == "materialized" %}
+<section class="report-card manager-form">
+  <h2>Explicit reversal</h2>
+  <form method="post" action="{% url 'subscriptions:manager_compensation_reverse' case.id %}">
+    {% csrf_token %}{{ reverse_form.as_p }}
+    <button class="btn-absent" type="submit">Reverse case</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
