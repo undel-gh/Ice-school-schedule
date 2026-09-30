@@ -217,3 +217,107 @@ def test_manager_can_manage_group_place_hold_from_web(client):
     hold.refresh_from_db()
     assert hold.status == GroupPlaceHold.Status.CANCELLED
     assert hold.cancellation_reason == "family request"
+
+
+@pytest.mark.django_db
+def test_manager_subscription_detail_adjusts_and_cancels(client):
+    manager = User.objects.create_user(
+        username="detail-manager",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+    student = Student.objects.create(display_name="Detail student")
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="detail-calendar",
+        name="Calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="detail-plan",
+        name="Detail 4 ICE",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=4,
+    )
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+        actor=manager,
+    )
+    attach_subscription_period(
+        subscription_id=subscription.id,
+        scheme_id=scheme.id,
+        reference_date=date(2026, 10, 1),
+        actor=manager,
+    )
+    allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE,
+    )
+
+    client.force_login(manager)
+    detail = client.get(
+        reverse(
+            "subscriptions:manager_subscription_detail",
+            kwargs={"subscription_id": subscription.id},
+        )
+    )
+    body = detail.content.decode()
+    assert detail.status_code == 200
+    assert "Detail student" in body
+    assert "Detail 4 ICE" in body
+    assert "Ledger" in body
+
+    adjusted = client.post(
+        reverse(
+            "subscriptions:manager_allowance_adjust",
+            kwargs={"allowance_id": allowance.id},
+        ),
+        {
+            "delta": "1",
+            "reason": "manager correction",
+        },
+    )
+    assert adjusted.status_code == 302
+
+    from subscriptions.balances import allowance_balance
+
+    assert allowance_balance(allowance.id) == 5
+
+    cancelled = client.post(
+        reverse(
+            "subscriptions:manager_subscription_cancel",
+            kwargs={"subscription_id": subscription.id},
+        ),
+        {"confirm": "on"},
+    )
+    assert cancelled.status_code == 302
+    subscription.refresh_from_db()
+    assert subscription.cancelled_at is not None
+
+
+@pytest.mark.django_db
+def test_manager_subscription_detail_missing_returns_404(client):
+    import uuid
+
+    manager = User.objects.create_user(
+        username="detail-404-manager",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+    client.force_login(manager)
+
+    response = client.get(
+        reverse(
+            "subscriptions:manager_subscription_detail",
+            kwargs={"subscription_id": uuid.uuid4()},
+        )
+    )
+
+    assert response.status_code == 404
