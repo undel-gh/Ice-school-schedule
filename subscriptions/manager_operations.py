@@ -15,6 +15,7 @@ from core.permissions import require_permission
 
 from .manager_forms import (
     ManagerCompensationCaseCreateForm,
+    ManagerAdministrativeMakeupForm,
     ManagerCompensationReverseForm,
     ManagerOneTimeEntitlementForm,
     ManagerPaidMakeupActivateForm,
@@ -33,6 +34,7 @@ from .services import (
     cancel_one_time_entitlement,
     confirm_paid_makeup_fee,
     create_absence_compensation_case,
+    grant_administrative_makeup,
     grant_one_time_entitlement,
     materialize_free_makeup_from_case,
     reverse_absence_compensation_case,
@@ -408,3 +410,39 @@ def manager_one_time_cancel(
     else:
         messages.success(request, "Разовое право отменено.")
     return redirect("subscriptions:manager_one_time_entitlements")
+
+
+@login_required
+def manager_administrative_makeup_create(
+    request: HttpRequest,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.add_makeupentitlement",
+        "Make-up entitlement permission is required.",
+    )
+    form = ManagerAdministrativeMakeupForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        target = form.cleaned_data["target_lesson"]
+        try:
+            grant_administrative_makeup(
+                source_subscription_allowance_id=(
+                    form.cleaned_data["source_subscription_allowance"].id
+                ),
+                source_lesson_id=form.cleaned_data["source_lesson"].id,
+                valid_from=form.cleaned_data["valid_from"],
+                valid_until=form.cleaned_data["valid_until"],
+                actor=request.user,
+                reason=form.cleaned_data["reason"],
+                target_lesson_id=target.id if target else None,
+            )
+        except ValidationError as exc:
+            form.add_error(None, _validation_message(exc))
+        else:
+            messages.success(request, "Административная отработка выдана.")
+            return redirect("subscriptions:manager_compensation_cases")
+    return render(
+        request,
+        "subscriptions/manager_administrative_makeup_form.html",
+        {"form": form},
+    )
