@@ -7,6 +7,8 @@ from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.utils import timezone
 
+from core.time import school_date
+
 from accounts.models import CoachProfile, Student
 from attendance.models import AbsenceJustification, Attendance
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
@@ -67,7 +69,7 @@ def test_manager_verifies_pending_medical_absence(client):
             "attendance_manager:medical_verify",
             kwargs={"justification_id": justification.id},
         ),
-        {"valid_until": (timezone.localdate() + timedelta(days=60)).isoformat()},
+        {"valid_until": (school_date(timezone.now()) + timedelta(days=60)).isoformat()},
     )
 
     assert response.status_code == 302
