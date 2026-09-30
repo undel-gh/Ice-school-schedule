@@ -3421,7 +3421,7 @@ def _process_one_makeup_expiry(
 
 def _paid_makeup_authorization_deadline(
     grant: AbsenceCompensationActionGrant,
-) -> date:
+) -> tuple[date | None, str | None]:
     source_subscription = (
         grant.case.source_subscription_allowance.subscription
     )
@@ -3429,18 +3429,17 @@ def _paid_makeup_authorization_deadline(
 
     if (
         target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+    ):
+        return source_subscription.valid_until, None
+
+    if (
+        target_rule
         == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
     ):
         if grant.target_subscription is None:
-            raise ValidationError(
-                {
-                    "target_subscription": (
-                        "NEXT_STUDENT_PERIOD authorization has no target "
-                        "subscription."
-                    )
-                }
-            )
-        return grant.target_subscription.valid_until
+            return None, "missing_target_subscription"
+        return grant.target_subscription.valid_until, None
 
     if (
         target_rule
@@ -3448,12 +3447,13 @@ def _paid_makeup_authorization_deadline(
     ):
         target_until = grant.action_snapshot.get("target_until")
         if not target_until:
-            raise ValidationError(
-                {"grant": "Explicit target window is missing."}
-            )
-        return date.fromisoformat(target_until)
+            return None, "missing_explicit_target_until"
+        try:
+            return date.fromisoformat(target_until), None
+        except (TypeError, ValueError):
+            return None, "invalid_explicit_target_until"
 
-    return source_subscription.valid_until
+    return None, "unsupported_target_period_rule"
 
 
 @transaction.atomic
@@ -3478,8 +3478,37 @@ def _process_one_paid_makeup_authorization_expiry(
         or grant.activated_at is not None
         or grant.fee_confirmed_at is not None
         or grant.case.status != AbsenceCompensationCase.Status.MATERIALIZED
-        or _paid_makeup_authorization_deadline(grant) >= as_of
     ):
+        return 0
+
+    deadline, deadline_issue = _paid_makeup_authorization_deadline(grant)
+    if deadline_issue is not None:
+        if not event_exists(
+            event_type="PaidFreezeAuthorizationDeadlineUnresolved",
+            aggregate_type="AbsenceCompensationActionGrant",
+            aggregate_id=grant.id,
+        ):
+            _audit(
+                event_type="PaidFreezeAuthorizationDeadlineUnresolved",
+                aggregate_type="AbsenceCompensationActionGrant",
+                aggregate_id=grant.id,
+                actor=actor,
+                payload={
+                    "case_id": str(grant.case_id),
+                    "target_period_rule": grant.action_snapshot.get(
+                        "target_period_rule"
+                    ),
+                    "target_subscription_id": (
+                        str(grant.target_subscription_id)
+                        if grant.target_subscription_id is not None
+                        else None
+                    ),
+                    "issue": deadline_issue,
+                    "as_of": as_of.isoformat(),
+                },
+            )
+        return 0
+    if deadline >= as_of:
         return 0
 
     reversed_at = timezone.now()
@@ -3499,7 +3528,7 @@ def _process_one_paid_makeup_authorization_expiry(
             actor=actor,
             payload={
                 "case_id": str(grant.case_id),
-                "deadline": _paid_makeup_authorization_deadline(grant).isoformat(),
+                "deadline": deadline.isoformat(),
                 "as_of": as_of.isoformat(),
             },
         )
