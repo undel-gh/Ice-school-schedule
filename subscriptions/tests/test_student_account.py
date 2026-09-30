@@ -501,7 +501,7 @@ def test_targeted_makeup_status_reflects_target_lesson_state(
     assert "Назначено на занятие" in response.content.decode()
 
     target_lesson.status = Lesson.Status.CANCELLED
-    target_lesson.cancellation_reason = Lesson.CancellationReason.ADMIN
+    target_lesson.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
     target_lesson.save(
         update_fields=["status", "cancellation_reason", "updated_at"]
     )
