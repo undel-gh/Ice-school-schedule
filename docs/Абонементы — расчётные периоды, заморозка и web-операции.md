@@ -1045,3 +1045,36 @@ OneTimeEntitlement, medical justification и SubscriptionPeriod содержат
 `active_coverages_remain` и `dependent_rights_exist` виден менеджеру без
 ручного поиска в Django Admin.
 
+
+
+## 12.5. Ограничения manager choice fields и часовой пояс
+
+Поля выбора занятия в manager operations используют школьный часовой пояс
+`SCHOOL_TIME_ZONE`, а не timezone хранения в БД. Подписи Attendance и Lesson
+форматируются через общий `format_school_datetime(...)`.
+
+Чтобы формы не деградировали при накоплении истории, выбор Lesson в операциях
+one-time entitlement и administrative makeup ограничен окном ±60 школьных
+дней от текущей даты. Список Attendance для создания compensation case
+ограничен тем же окном и дополнительно исключает пропуски, для которых уже
+существует `OPEN` или `MATERIALIZED AbsenceCompensationCase`.
+
+Следующий UX-этап при росте объёма данных — searchable/autocomplete выбор с
+фильтром по ученику; текущий bounded queryset является защитой MVP от списков
+на тысячи строк.
+
+`datetime-local` в форме переноса Lesson разбирается непосредственно в
+`SCHOOL_TIME_ZONE`. Поэтому корректность не зависит от совпадения
+`TIME_ZONE` и `SCHOOL_TIME_ZONE`.
+
+## 12.6. Общая presentation-инфраструктура
+
+Набор permissions, дающих доступ к manager operations, определён один раз в
+`core.permissions`. Home redirect и context processor используют один и тот
+же helper, а базовый шаблон получает готовый
+`manager_operations_available`.
+
+Форматирование `ValidationError` для web messages вынесено в общий
+presentation helper. POST endpoints сначала проверяют требуемые permissions и
+только затем выполняют lookup объекта, поэтому существование UUID не меняет
+403 на 404 для пользователя без соответствующего права.
