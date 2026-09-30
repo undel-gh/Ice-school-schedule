@@ -2838,3 +2838,76 @@ def test_next_period_paid_makeup_requires_target_before_authorization(
         case=case,
         action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_lifecycle_skips_legacy_next_period_grant_without_target(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy()
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="legacy-paid-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    grant = AbsenceCompensationActionGrant.objects.create(
+        case=case,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+        action_snapshot={
+            "action_type": (
+                AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+            ),
+            "target_period_rule": (
+                AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+            ),
+            "requirement": (
+                AbsenceCompensationPolicyAction.Requirement.FEE_AND_TARGET_SUBSCRIPTION_REQUIRED
+            ),
+        },
+        created_by=actor,
+    )
+    case.status = AbsenceCompensationCase.Status.MATERIALIZED
+    case.materialized_at = attendance.marked_at + timedelta(hours=1)
+    case.materialized_by = actor
+    case.save(
+        update_fields=[
+            "status",
+            "materialized_at",
+            "materialized_by",
+        ]
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=date(2026, 11, 1),
+        actor=actor,
+    )
+
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert result["paid_authorization_expired"] == 0
+    assert case.status == AbsenceCompensationCase.Status.MATERIALIZED
+    assert grant.reversed_at is None
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeAuthorizationDeadlineUnresolved",
+        aggregate_id=grant.id,
+    ).count() == 1
+
+    # Repeated lifecycle runs remain non-fatal and do not duplicate the audit.
+    repeated = process_subscription_lifecycle(
+        as_of=date(2026, 12, 1),
+        actor=actor,
+    )
+    assert repeated["paid_authorization_expired"] == 0
+    assert AuditEvent.objects.filter(
+        event_type="PaidFreezeAuthorizationDeadlineUnresolved",
+        aggregate_id=grant.id,
+    ).count() == 1
