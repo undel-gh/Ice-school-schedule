@@ -18,7 +18,8 @@ from core.permissions import (
 from core.time import school_date as get_school_date
 from django.views.decorators.http import require_POST
 
-from accounts.models import CoachProfile, StudentAccess
+from accounts.models import CoachProfile
+from accounts.selectors import student_accesses_for_user
 from attendance.models import Attendance
 from attendance.services import (
     mark_expected_present,
@@ -45,14 +46,9 @@ def _parse_date(value: str | None, *, default: date) -> date:
 
 
 def _active_student_accesses(request: HttpRequest):
-    return (
-        StudentAccess.objects.filter(
-            user=request.user,
-            is_active=True,
-            student__is_active=True,
-        )
-        .select_related("student")
-        .order_by("student__display_name", "student_id")
+    return student_accesses_for_user(
+        request.user,
+        active_students_only=True,
     )
 
 
@@ -82,6 +78,8 @@ def _assert_lesson_actor(request: HttpRequest, lesson: Lesson) -> None:
 def home(request: HttpRequest) -> HttpResponse:
     if _active_student_accesses(request).exists():
         return redirect("scheduling:student_schedule")
+    if student_accesses_for_user(request.user).exists():
+        return redirect("student_account:account")
     try:
         coach = request.user.coach_profile
     except CoachProfile.DoesNotExist:
