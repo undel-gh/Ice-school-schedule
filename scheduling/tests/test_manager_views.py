@@ -233,7 +233,22 @@ def test_generation_conflict_is_resolved_when_template_occurrence_materializes(
     starts_at = timezone.make_aware(
         datetime.combine(occurrence_date, time(18, 0))
     )
-    occurrence = Lesson.objects.create(
+    conflicting = Lesson.objects.create(
+        group=ctx["group"],
+        lesson_type=ctx["lesson_type"],
+        coach=ctx["coach"],
+        venue=ctx["venue"],
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CANCELLED,
+        cancelled_at=timezone.now(),
+        cancelled_by=ctx["manager"],
+        cancellation_reason=Lesson.CancellationReason.ADMINISTRATIVE,
+    )
+    Lesson.objects.create(
         source_template=template,
         group=ctx["group"],
         lesson_type=ctx["lesson_type"],
@@ -252,7 +267,7 @@ def test_generation_conflict_is_resolved_when_template_occurrence_materializes(
         aggregate_type="ScheduleTemplate",
         aggregate_id=template.id,
         payload={
-            "conflicting_lesson_id": str(occurrence.id),
+            "conflicting_lesson_id": str(conflicting.id),
             "expected_starts_at": starts_at.isoformat(),
             "expected_ends_at": (starts_at + timedelta(hours=1)).isoformat(),
         },
