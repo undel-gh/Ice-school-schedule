@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from django.utils import timezone
 
@@ -305,7 +306,7 @@ def test_new_membership_rejects_inactive_student_and_group(manager):
         is_active=False,
     )
 
-    with pytest.raises(Exception) as student_error:
+    with pytest.raises(ValidationError) as student_error:
         create_group_membership(
             student_id=inactive_student.id,
             group_id=active_group.id,
@@ -315,7 +316,7 @@ def test_new_membership_rejects_inactive_student_and_group(manager):
         )
     assert "inactive students" in str(student_error.value).lower()
 
-    with pytest.raises(Exception) as group_error:
+    with pytest.raises(ValidationError) as group_error:
         create_group_membership(
             student_id=active_student.id,
             group_id=inactive_group.id,
