@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
-from django.db.models import Exists, Max, OuterRef, Q, Sum
+from django.db.models import Exists, OuterRef, Q, Sum
 from django.utils import timezone
 
 from accounts.models import Student
@@ -27,6 +27,7 @@ from .models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
+    AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
     GroupPlaceHold,
     MakeupEntitlement,
