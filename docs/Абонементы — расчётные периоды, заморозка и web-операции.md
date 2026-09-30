@@ -1153,3 +1153,75 @@ legacy или ручные неконсистентные данные не со
 User dropdown в StudentAccess/CoachProfile не показывает email. Полнотекстовый
 поиск/autocomplete пользователей и отдельный invitation workflow остаются
 следующим этапом identity UI.
+
+
+# 14. Catalog & policy administration UI
+
+Manager web содержит отдельный раздел «Каталог и правила» для конфигурации
+будущих абонементов и компенсационных правил.
+
+## 14.1. Модели расчётного периода
+
+Через web доступны создание и изменение `SubscriptionPeriodScheme`:
+
+- календарный месяц;
+- rolling 28 дней от первого занятия;
+- общий fixed-28 цикл с `fixed_anchor_date`;
+- активация/деактивация схемы.
+
+Для fixed-28 anchor обязателен; для остальных режимов anchor запрещён.
+Уже созданные `SubscriptionPeriod` сохраняют `mode_snapshot` и
+`fixed_anchor_snapshot`, поэтому изменение схемы влияет только на будущие
+выдачи/периоды и не переписывает существующие абонементы.
+
+## 14.2. Тарифы и allowances
+
+`SubscriptionPlan` редактируется одной атомарной операцией вместе с лимитами
+ICE/HALL. У активного тарифа должна быть активная модель расчётного периода и
+хотя бы один положительный allowance.
+
+Изменение названия, period scheme или ICE/HALL limits применяется только к
+будущим выдачам. Уже выданный `Subscription` хранит plan name/code snapshot,
+а `SubscriptionAllowance` — `visit_limit_snapshot`; manager catalog не
+изменяет эти исторические значения.
+
+## 14.3. Политики компенсаций
+
+Manager web поддерживает:
+
+- создание `AbsenceCompensationPolicy`;
+- настройку `AbsenceCompensationPolicyAction`;
+- сезонные `AbsenceCompensationPolicyWindow`;
+- изменение ещё не использованной версии;
+- создание новой версии использованной политики.
+
+После появления хотя бы одного `AbsenceCompensationCase` policy version,
+её actions и windows считаются неизменяемыми. Добавление новых children к уже
+использованной версии также запрещено на уровне модели и application service.
+
+Versioning выполняется атомарно. Новая версия:
+
+- сохраняет тот же `code` и `absence_reason`;
+- получает следующий `version`;
+- должна начинаться позже текущего школьного дня;
+- копирует actions и windows исходной версии;
+- закрывает исходную версию днём перед `effective_from` новой версии, если
+  исходная версия до этого пересекала новый интервал.
+
+Закрытие `effective_until` использованной исходной версии выполняется только
+в versioning service: это не меняет семантику уже созданных cases и необходимо,
+чтобы selector продолжал возвращать ровно одну policy для каждой source date.
+
+## 14.4. Права и аудит
+
+Catalog UI использует стандартные Django permissions `view/add/change` для:
+
+- `SubscriptionPeriodScheme`;
+- `SubscriptionPlan`;
+- `AbsenceCompensationPolicy`;
+- `AbsenceCompensationPolicyAction`;
+- `AbsenceCompensationPolicyWindow`.
+
+Все изменения проходят через application services и создают `AuditEvent`.
+Удаление из manager UI не используется: исторические конфигурации сохраняются,
+а для ещё не использованных сущностей применяется `is_active=false`.
