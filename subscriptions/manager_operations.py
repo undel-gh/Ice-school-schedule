@@ -102,7 +102,7 @@ def manager_compensation_case_create(request: HttpRequest) -> HttpResponse:
         except ValidationError as exc:
             form.add_error(None, validation_message(exc))
         else:
-            messages.success(request, "Compensation case создан.")
+            messages.success(request, "Компенсационный случай создан.")
             return redirect(
                 "subscriptions:manager_compensation_case_detail",
                 case_id=case.id,
@@ -247,7 +247,7 @@ def manager_compensation_authorize_paid(
         else:
             messages.success(request, "Платная отработка авторизована.")
     else:
-        messages.error(request, "Проверьте target Subscription.")
+        messages.error(request, "Проверьте целевой абонемент.")
     return redirect(
         "subscriptions:manager_compensation_case_detail",
         case_id=case.id,
@@ -322,7 +322,7 @@ def manager_compensation_activate_paid(
         else:
             messages.success(request, "Платная отработка активирована.")
     else:
-        messages.error(request, "Проверьте target Subscription.")
+        messages.error(request, "Проверьте целевой абонемент.")
     return redirect(
         "subscriptions:manager_compensation_case_detail",
         case_id=grant.case_id,
@@ -355,9 +355,9 @@ def manager_compensation_reverse(
         except ValidationError as exc:
             messages.error(request, validation_message(exc))
         else:
-            messages.success(request, "Compensation case отменён через reversal.")
+            messages.success(request, "Компенсационный случай отменён.")
     else:
-        messages.error(request, "Укажите причину reversal.")
+        messages.error(request, "Укажите причину отмены.")
     return redirect(
         "subscriptions:manager_compensation_case_detail",
         case_id=case_id,
@@ -386,7 +386,7 @@ def manager_compensation_cancel(
     except ValidationError as exc:
         messages.error(request, validation_message(exc))
     else:
-        messages.success(request, "OPEN compensation case отменён.")
+        messages.success(request, "Открытый компенсационный случай отменён.")
     return redirect(
         "subscriptions:manager_compensation_case_detail",
         case_id=case_id,
