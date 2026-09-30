@@ -7,7 +7,8 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.utils import timezone
 
-from core.time import make_school_aware, school_date, school_timezone
+from core.testing import school_dt
+from core.time import school_date, school_timezone
 from ice_school.workflows import reschedule_lesson_with_entitlements
 
 from accounts.models import CoachProfile
@@ -17,16 +18,6 @@ from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from scheduling.services import complete_lesson
 
 User = get_user_model()
-
-
-def school_dt(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    minute: int = 0,
-) -> datetime:
-    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 @pytest.fixture
