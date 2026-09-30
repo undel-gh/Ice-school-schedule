@@ -4068,6 +4068,38 @@ def _process_one_paid_makeup_authorization_expiry(
     return 0
 
 
+@transaction.atomic
+def _process_one_group_place_hold_expiry(
+    *,
+    hold_id: UUID,
+    as_of: date,
+    actor: User | None,
+) -> int:
+    hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
+    if (
+        hold.status != GroupPlaceHold.Status.ACTIVE
+        or hold.period_until >= as_of
+    ):
+        return 0
+
+    hold.status = GroupPlaceHold.Status.EXPIRED
+    hold.save(update_fields=["status"])
+    _audit(
+        event_type="GroupPlaceHoldExpired",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={
+            "student_id": str(hold.student_id),
+            "group_id": str(hold.group_id),
+            "period_from": hold.period_from.isoformat(),
+            "period_until": hold.period_until.isoformat(),
+            "as_of": as_of.isoformat(),
+        },
+    )
+    return 1
+
+
 def process_subscription_lifecycle(
     *,
     as_of: date,
@@ -4080,6 +4112,7 @@ def process_subscription_lifecycle(
         "expired_with_unused": 0,
         "makeup_expired": 0,
         "paid_authorization_expired": 0,
+        "group_place_hold_expired": 0,
     }
 
     activated_event = AuditEvent.objects.filter(
@@ -4181,6 +4214,23 @@ def process_subscription_lifecycle(
             "paid_authorization_expired"
         ] += _process_one_paid_makeup_authorization_expiry(
             grant_id=grant_id,
+            as_of=as_of,
+            actor=actor,
+        )
+
+    active_hold_ids = list(
+        GroupPlaceHold.objects.filter(
+            status=GroupPlaceHold.Status.ACTIVE,
+            period_until__lt=as_of,
+        )
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    for hold_id in active_hold_ids:
+        counts[
+            "group_place_hold_expired"
+        ] += _process_one_group_place_hold_expiry(
+            hold_id=hold_id,
             as_of=as_of,
             actor=actor,
         )
