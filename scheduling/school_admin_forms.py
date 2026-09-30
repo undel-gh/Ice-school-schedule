@@ -42,13 +42,20 @@ class GroupMembershipForm(forms.Form):
 
     def __init__(self, *args, membership: GroupMembership | None = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["student"].queryset = Student.objects.order_by(
-            "-is_active", "display_name", "id"
-        )
-        self.fields["group"].queryset = TrainingGroup.objects.order_by(
-            "-is_active", "name", "id"
-        )
-        if membership is not None:
+        if membership is None:
+            self.fields["student"].queryset = Student.objects.filter(
+                is_active=True
+            ).order_by("display_name", "id")
+            self.fields["group"].queryset = TrainingGroup.objects.filter(
+                is_active=True
+            ).order_by("name", "id")
+        else:
+            self.fields["student"].queryset = Student.objects.filter(
+                pk=membership.student_id
+            )
+            self.fields["group"].queryset = TrainingGroup.objects.filter(
+                pk=membership.group_id
+            )
             self.fields["student"].initial = membership.student_id
             self.fields["group"].initial = membership.group_id
             self.fields["student"].disabled = True
