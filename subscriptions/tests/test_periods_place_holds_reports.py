@@ -10,6 +10,7 @@ from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
 from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
+from core.time import make_school_aware
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
     GroupPlaceHold,
@@ -34,6 +35,16 @@ from subscriptions.services import (
 )
 
 User = get_user_model()
+
+
+def school_dt(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int = 0,
+) -> datetime:
+    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 @pytest.fixture
@@ -174,13 +185,7 @@ def test_rolling_28_period_stays_pending_until_first_lesson(
 
     lesson = make_lesson(
         context=context,
-        starts_at=datetime(
-            2026,
-            9,
-            12,
-            15,
-            tzinfo=dt_timezone.utc,
-        ),
+        starts_at=school_dt(2026, 9, 12, 18, 0),
     )
     activated = activate_rolling_subscription_period(
         subscription_id=subscription.id,
@@ -279,13 +284,7 @@ def test_manager_subscription_report_separates_direct_and_makeup_visits(
 
     source_lesson = make_lesson(
         context=context,
-        starts_at=datetime(
-            2026,
-            9,
-            12,
-            15,
-            tzinfo=dt_timezone.utc,
-        ),
+        starts_at=school_dt(2026, 9, 12, 18, 0),
     )
     target_lesson = make_lesson(
         context=context,
@@ -369,13 +368,7 @@ def test_rolling_subscription_activates_on_first_ordinary_coverage(
 
     first_lesson = make_lesson(
         context=context,
-        starts_at=datetime(
-            2026,
-            9,
-            12,
-            15,
-            tzinfo=dt_timezone.utc,
-        ),
+        starts_at=school_dt(2026, 9, 12, 18, 0),
     )
     attendance = Attendance.objects.create(
         lesson=first_lesson,
@@ -519,7 +512,7 @@ def test_existing_subscription_coverage_does_not_activate_future_rolling(
 
     lesson = make_lesson(
         context=context,
-        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 10, 18, 0),
     )
     attendance = Attendance.objects.create(
         lesson=lesson,
@@ -530,7 +523,7 @@ def test_existing_subscription_coverage_does_not_activate_future_rolling(
     coverage = assign_attendance_coverage(
         attendance_id=attendance.id,
         actor=actor,
-        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 10, 19, 0),
     )
 
     future.refresh_from_db()
@@ -772,20 +765,20 @@ def test_reversing_activation_coverage_returns_unused_rolling_period_to_pending(
     )
     lesson = make_lesson(
         context=context,
-        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 10, 18, 0),
     )
     attendance = Attendance.objects.create(
         lesson=lesson,
         student=student,
         status=Attendance.Status.PRESENT,
-        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_at=school_dt(2026, 10, 10, 19, 0),
         marked_by=actor,
         updated_by=actor,
     )
     coverage = assign_attendance_coverage(
         attendance_id=attendance.id,
         actor=actor,
-        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 10, 19, 0),
     )
     assert coverage is not None
 
@@ -839,17 +832,17 @@ def test_reversing_activation_coverage_keeps_period_after_other_coverage(
     )
     first_lesson = make_lesson(
         context=context,
-        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 10, 18, 0),
     )
     second_lesson = make_lesson(
         context=context,
-        starts_at=datetime(2026, 10, 17, 15, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 17, 18, 0),
     )
     first_attendance = Attendance.objects.create(
         lesson=first_lesson,
         student=student,
         status=Attendance.Status.PRESENT,
-        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_at=school_dt(2026, 10, 10, 19, 0),
         marked_by=actor,
         updated_by=actor,
     )
@@ -857,19 +850,19 @@ def test_reversing_activation_coverage_keeps_period_after_other_coverage(
         lesson=second_lesson,
         student=student,
         status=Attendance.Status.PRESENT,
-        marked_at=datetime(2026, 10, 17, 16, tzinfo=dt_timezone.utc),
+        marked_at=school_dt(2026, 10, 17, 19, 0),
         marked_by=actor,
         updated_by=actor,
     )
     first_coverage = assign_attendance_coverage(
         attendance_id=first_attendance.id,
         actor=actor,
-        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 10, 19, 0),
     )
     second_coverage = assign_attendance_coverage(
         attendance_id=second_attendance.id,
         actor=actor,
-        now=datetime(2026, 10, 17, 16, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 17, 19, 0),
     )
     assert first_coverage is not None
     assert second_coverage is not None
@@ -877,7 +870,7 @@ def test_reversing_activation_coverage_keeps_period_after_other_coverage(
     reverse_attendance_coverage(
         coverage_id=first_coverage.id,
         actor=actor,
-        now=datetime(2026, 10, 17, 17, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 17, 20, 0),
     )
 
     subscription.refresh_from_db()
@@ -913,26 +906,26 @@ def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
     )
     activation_lesson = make_lesson(
         context=context,
-        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 10, 18, 0),
     )
     attendance = Attendance.objects.create(
         lesson=activation_lesson,
         student=student,
         status=Attendance.Status.PRESENT,
-        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_at=school_dt(2026, 10, 10, 19, 0),
         marked_by=actor,
         updated_by=actor,
     )
     coverage = assign_attendance_coverage(
         attendance_id=attendance.id,
         actor=actor,
-        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 10, 19, 0),
     )
     assert coverage is not None
 
     source_lesson = make_lesson(
         context=context,
-        starts_at=datetime(2026, 10, 12, 15, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 12, 18, 0),
     )
     allowance = subscription.allowances.get(category=SubscriptionCategory.ICE)
     MakeupEntitlement.objects.create(
@@ -949,7 +942,7 @@ def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
     reverse_attendance_coverage(
         coverage_id=coverage.id,
         actor=actor,
-        now=datetime(2026, 10, 12, 17, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 12, 20, 0),
     )
 
     subscription.refresh_from_db()
