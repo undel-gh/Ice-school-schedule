@@ -22,6 +22,43 @@ class AttendanceChoiceField(forms.ModelChoiceField):
         )
 
 
+class LessonChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        return (
+            f"{obj.starts_at:%d.%m.%Y %H:%M} · "
+            f"{obj.group.name} · {obj.lesson_type.name}"
+        )
+
+
+class SubscriptionChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        if obj.valid_from is None:
+            period = "ожидает активации"
+        else:
+            period = f"{obj.valid_from:%d.%m.%Y}—{obj.valid_until:%d.%m.%Y}"
+        return (
+            f"{obj.student.display_name} · "
+            f"{obj.plan_name_snapshot} · {period}"
+        )
+
+
+class AllowanceChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        subscription = obj.subscription
+        if subscription.valid_from is None:
+            period = "ожидает активации"
+        else:
+            period = (
+                f"{subscription.valid_from:%d.%m.%Y}—"
+                f"{subscription.valid_until:%d.%m.%Y}"
+            )
+        return (
+            f"{subscription.student.display_name} · "
+            f"{subscription.plan_name_snapshot} · "
+            f"{obj.category.upper()} · {period}"
+        )
+
+
 class ManagerCompensationCaseCreateForm(forms.Form):
     attendance = AttendanceChoiceField(
         queryset=Attendance.objects.none(),
@@ -47,7 +84,7 @@ class ManagerCompensationCaseCreateForm(forms.Form):
 
 
 class ManagerPaidMakeupAuthorizeForm(forms.Form):
-    target_subscription = forms.ModelChoiceField(
+    target_subscription = SubscriptionChoiceField(
         queryset=Subscription.objects.none(),
         label="Target Subscription",
         required=False,
@@ -70,7 +107,7 @@ class ManagerPaidMakeupAuthorizeForm(forms.Form):
 
 
 class ManagerPaidMakeupActivateForm(forms.Form):
-    target_subscription = forms.ModelChoiceField(
+    target_subscription = SubscriptionChoiceField(
         queryset=Subscription.objects.none(),
         label="Target Subscription",
         required=False,
@@ -78,7 +115,9 @@ class ManagerPaidMakeupActivateForm(forms.Form):
 
     def __init__(self, *args, student_id=None, **kwargs):
         super().__init__(*args, **kwargs)
-        queryset = Subscription.objects.filter(cancelled_at__isnull=True)
+        queryset = Subscription.objects.filter(
+            cancelled_at__isnull=True
+        ).select_related("student")
         if student_id is not None:
             queryset = queryset.filter(student_id=student_id)
         self.fields["target_subscription"].queryset = queryset.order_by(
@@ -112,7 +151,7 @@ class ManagerOneTimeEntitlementForm(forms.Form):
         queryset=Student.objects.none(),
         label="Ученик",
     )
-    lesson = forms.ModelChoiceField(
+    lesson = LessonChoiceField(
         queryset=Lesson.objects.none(),
         label="Занятие",
     )
@@ -134,11 +173,11 @@ class ManagerOneTimeEntitlementForm(forms.Form):
 
 
 class ManagerAdministrativeMakeupForm(forms.Form):
-    source_subscription_allowance = forms.ModelChoiceField(
+    source_subscription_allowance = AllowanceChoiceField(
         queryset=SubscriptionAllowance.objects.none(),
         label="Source allowance",
     )
-    source_lesson = forms.ModelChoiceField(
+    source_lesson = LessonChoiceField(
         queryset=Lesson.objects.none(),
         label="Source Lesson",
     )
@@ -150,7 +189,7 @@ class ManagerAdministrativeMakeupForm(forms.Form):
         label="Действует по",
         widget=forms.DateInput(attrs={"type": "date"}),
     )
-    target_lesson = forms.ModelChoiceField(
+    target_lesson = LessonChoiceField(
         queryset=Lesson.objects.none(),
         required=False,
         label="Target Lesson",
