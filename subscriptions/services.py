@@ -2879,18 +2879,44 @@ def assign_attendance_coverage(
     )
 
 
+def _rolling_period_revert_dependencies(
+    *,
+    subscription_id: UUID,
+    excluded_coverage_id: UUID,
+) -> dict[str, bool]:
+    return {
+        "active_coverages": AttendanceCoverage.objects.filter(
+            subscription_allowance__subscription_id=subscription_id,
+            reversed_at__isnull=True,
+        )
+        .exclude(pk=excluded_coverage_id)
+        .exists(),
+        "active_makeups": MakeupEntitlement.objects.filter(
+            source_subscription_allowance__subscription_id=subscription_id,
+            cancelled_at__isnull=True,
+        ).exists(),
+        "active_compensation_cases": AbsenceCompensationCase.objects.filter(
+            source_subscription_allowance__subscription_id=subscription_id,
+            status__in=[
+                AbsenceCompensationCase.Status.OPEN,
+                AbsenceCompensationCase.Status.MATERIALIZED,
+            ],
+        ).exists(),
+        "active_compensation_grants": AbsenceCompensationActionGrant.objects.filter(
+            case__source_subscription_allowance__subscription_id=subscription_id,
+            reversed_at__isnull=True,
+        ).exists(),
+    }
+
+
 def _maybe_revert_rolling_subscription_activation(
     *,
     coverage: AttendanceCoverage,
     subscription_id: UUID,
+    period: SubscriptionPeriod | None,
     actor: User | None,
     correlation_id: UUID,
 ) -> bool:
-    period = (
-        SubscriptionPeriod.objects.select_for_update()
-        .filter(subscription_id=subscription_id)
-        .first()
-    )
     if period is None:
         return False
     if (
@@ -2901,15 +2927,11 @@ def _maybe_revert_rolling_subscription_activation(
     ):
         return False
 
-    has_other_active_coverage = (
-        AttendanceCoverage.objects.filter(
-            subscription_allowance__subscription_id=subscription_id,
-            reversed_at__isnull=True,
-        )
-        .exclude(pk=coverage.id)
-        .exists()
+    dependencies = _rolling_period_revert_dependencies(
+        subscription_id=subscription_id,
+        excluded_coverage_id=coverage.id,
     )
-    if has_other_active_coverage:
+    if dependencies["active_coverages"]:
         _audit(
             event_type="SubscriptionPeriodActivationRevertSkipped",
             aggregate_type="SubscriptionPeriod",
@@ -2920,6 +2942,31 @@ def _maybe_revert_rolling_subscription_activation(
                 "activation_lesson_id": str(period.activation_lesson_id),
                 "reversed_coverage_id": str(coverage.id),
                 "reason": "active_coverages_remain",
+                "dependencies": dependencies,
+            },
+            correlation_id=correlation_id,
+        )
+        return False
+
+    if any(
+        dependencies[key]
+        for key in (
+            "active_makeups",
+            "active_compensation_cases",
+            "active_compensation_grants",
+        )
+    ):
+        _audit(
+            event_type="SubscriptionPeriodActivationRevertSkipped",
+            aggregate_type="SubscriptionPeriod",
+            aggregate_id=period.id,
+            actor=actor,
+            payload={
+                "subscription_id": str(subscription_id),
+                "activation_lesson_id": str(period.activation_lesson_id),
+                "reversed_coverage_id": str(coverage.id),
+                "reason": "dependent_rights_exist",
+                "dependencies": dependencies,
             },
             correlation_id=correlation_id,
         )
@@ -2975,7 +3022,6 @@ def _maybe_revert_rolling_subscription_activation(
     )
     return True
 
-
 @transaction.atomic
 def reverse_attendance_coverage(
     *,
@@ -2994,11 +3040,20 @@ def reverse_attendance_coverage(
         return coverage
 
     subscription_id = None
+    period = None
     if coverage.subscription_allowance_id is not None:
+        allowance_ref = SubscriptionAllowance.objects.only(
+            "subscription_id"
+        ).get(pk=coverage.subscription_allowance_id)
+        subscription_id = allowance_ref.subscription_id
+        period = (
+            SubscriptionPeriod.objects.select_for_update()
+            .filter(subscription_id=subscription_id)
+            .first()
+        )
         allowance, _ = locked_allowance_balance(
             coverage.subscription_allowance_id
         )
-        subscription_id = allowance.subscription_id
         SubscriptionLedgerEntry.objects.create(
             allowance=allowance,
             coverage=coverage,
@@ -3038,6 +3093,7 @@ def reverse_attendance_coverage(
         _maybe_revert_rolling_subscription_activation(
             coverage=coverage,
             subscription_id=subscription_id,
+            period=period,
             actor=actor,
             correlation_id=correlation_id,
         )
