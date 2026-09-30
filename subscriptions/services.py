@@ -618,8 +618,18 @@ def version_absence_compensation_policy(
             {"policy": "Concurrent policy version creation detected. Retry."}
         ) from exc
 
+    source_actions = list(
+        AbsenceCompensationPolicyAction.objects.select_for_update()
+        .filter(policy=source)
+        .order_by("priority", "action_type", "id")
+    )
+    source_windows = list(
+        AbsenceCompensationPolicyWindow.objects.select_for_update()
+        .filter(policy_action__policy=source)
+        .order_by("policy_action_id", "priority", "source_from", "id")
+    )
     action_map = {}
-    for action in source.actions.order_by("priority", "action_type", "id"):
+    for action in source_actions:
         copied = AbsenceCompensationPolicyAction.objects.create(
             policy=replacement,
             action_type=action.action_type,
@@ -630,20 +640,19 @@ def version_absence_compensation_policy(
             is_active=action.is_active,
         )
         action_map[action.id] = copied
-    for action in source.actions.prefetch_related("windows").all():
-        copied_action = action_map[action.id]
-        for window in action.windows.order_by("priority", "source_from", "id"):
-            AbsenceCompensationPolicyWindow.objects.create(
-                policy_action=copied_action,
-                name=window.name,
-                source_from=window.source_from,
-                source_until=window.source_until,
-                target_from=window.target_from,
-                target_until=window.target_until,
-                requirement_override=window.requirement_override,
-                priority=window.priority,
-                is_active=window.is_active,
-            )
+    for window in source_windows:
+        copied_action = action_map[window.policy_action_id]
+        AbsenceCompensationPolicyWindow.objects.create(
+            policy_action=copied_action,
+            name=window.name,
+            source_from=window.source_from,
+            source_until=window.source_until,
+            target_from=window.target_from,
+            target_until=window.target_until,
+            requirement_override=window.requirement_override,
+            priority=window.priority,
+            is_active=window.is_active,
+        )
 
     _audit(
         event_type="AbsenceCompensationPolicyVersioned",
@@ -733,12 +742,18 @@ def update_absence_compensation_policy_action(
         "subscriptions.change_absencecompensationpolicyaction",
         "Compensation policy action change permission is required.",
     )
+    action_ref = AbsenceCompensationPolicyAction.objects.only(
+        "policy_id"
+    ).get(pk=action_id)
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=action_ref.policy_id
+    )
+    _require_unreferenced_policy(policy)
     action = (
         AbsenceCompensationPolicyAction.objects.select_for_update()
         .select_related("policy")
         .get(pk=action_id)
     )
-    _require_unreferenced_policy(action.policy)
     action.action_type = action_type
     action.target_period_rule = target_period_rule
     action.requirement = requirement
@@ -781,12 +796,18 @@ def create_absence_compensation_policy_window(
         "subscriptions.add_absencecompensationpolicywindow",
         "Compensation policy window creation permission is required.",
     )
+    action_ref = AbsenceCompensationPolicyAction.objects.only(
+        "policy_id"
+    ).get(pk=action_id)
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=action_ref.policy_id
+    )
+    _require_unreferenced_policy(policy)
     action = (
         AbsenceCompensationPolicyAction.objects.select_for_update()
         .select_related("policy")
         .get(pk=action_id)
     )
-    _require_unreferenced_policy(action.policy)
     window = AbsenceCompensationPolicyWindow(
         policy_action=action,
         name=_clean_catalog_text(name, field="name"),
@@ -832,12 +853,25 @@ def update_absence_compensation_policy_window(
         "subscriptions.change_absencecompensationpolicywindow",
         "Compensation policy window change permission is required.",
     )
+    window_ref = (
+        AbsenceCompensationPolicyWindow.objects.select_related(
+            "policy_action"
+        )
+        .only("policy_action__policy_id")
+        .get(pk=window_id)
+    )
+    policy = AbsenceCompensationPolicy.objects.select_for_update().get(
+        pk=window_ref.policy_action.policy_id
+    )
+    _require_unreferenced_policy(policy)
+    action = AbsenceCompensationPolicyAction.objects.select_for_update().get(
+        pk=window_ref.policy_action_id
+    )
     window = (
         AbsenceCompensationPolicyWindow.objects.select_for_update()
         .select_related("policy_action__policy")
         .get(pk=window_id)
     )
-    _require_unreferenced_policy(window.policy_action.policy)
     window.name = _clean_catalog_text(name, field="name")
     window.source_from = source_from
     window.source_until = source_until
@@ -3114,11 +3148,13 @@ def issue_subscription_for_period(
         .select_related("period_scheme")
         .get(pk=plan_id)
     )
-    if plan.period_scheme is None:
+    if plan.period_scheme_id is None:
         raise ValidationError(
             {"plan": "Subscription plan has no period scheme."}
         )
-    scheme = plan.period_scheme
+    scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+        pk=plan.period_scheme_id
+    )
     if not scheme.is_active:
         raise ValidationError(
             {"plan": "Subscription plan period scheme is inactive."}
