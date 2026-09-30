@@ -10,10 +10,7 @@ User = get_user_model()
 
 class UserChoiceField(forms.ModelChoiceField):
     def label_from_instance(self, obj):
-        label = obj.get_full_name().strip() or obj.username
-        if obj.email:
-            return f"{label} · {obj.email}"
-        return label
+        return obj.get_full_name().strip() or obj.username
 
 
 class StudentForm(forms.Form):
