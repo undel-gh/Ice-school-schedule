@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from accounts.models import Student
@@ -35,6 +36,612 @@ class SubscriptionPlanAllowance(UUIDModel):
             models.CheckConstraint(condition=models.Q(visit_limit__gt=0), name="subplan_allow_limit_gt0"),
         ]
         indexes = [models.Index(fields=["category", "visit_limit"], name="subplan_allow_lookup_ix")]
+
+
+class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
+    class AbsenceReason(models.TextChoices):
+        MEDICAL = "medical", "Medical"
+        UNEXCUSED = "unexcused", "Unexcused"
+        OTHER = "other", "Other"
+
+    class JustificationRequirement(models.TextChoices):
+        NONE = "none", "No justification required"
+        VERIFIED_MEDICAL = "verified_medical", "Verified medical justification"
+
+    class LimitScope(models.TextChoices):
+        STUDENT_PERIOD = "student_period", "Student + period"
+        CATEGORY_PERIOD = "category_period", "Student + category + period"
+        LESSON_TYPE_PERIOD = (
+            "lesson_type_period",
+            "Student + lesson type + period",
+        )
+
+    code = models.SlugField(max_length=64)
+    version = models.PositiveSmallIntegerField()
+    name = models.CharField(max_length=128)
+    absence_reason = models.CharField(
+        max_length=24,
+        choices=AbsenceReason.choices,
+    )
+    justification_requirement = models.CharField(
+        max_length=32,
+        choices=JustificationRequirement.choices,
+        default=JustificationRequirement.NONE,
+    )
+    max_eligible_absences = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    limit_scope = models.CharField(
+        max_length=32,
+        choices=LimitScope.choices,
+        default=LimitScope.STUDENT_PERIOD,
+    )
+    effective_from = models.DateField()
+    effective_until = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["code", "version"],
+                name="absence_policy_code_version_uq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(version__gt=0),
+                name="absence_policy_version_gt0",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(max_eligible_absences__isnull=True)
+                    | models.Q(max_eligible_absences__gt=0)
+                ),
+                name="absence_policy_max_gt0",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(effective_until__isnull=True)
+                    | models.Q(effective_until__gte=models.F("effective_from"))
+                ),
+                name="absence_policy_dates_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["absence_reason", "is_active", "effective_from"],
+                name="absence_policy_lookup_ix",
+            ),
+            models.Index(
+                fields=["code", "-version"],
+                name="absence_policy_version_ix",
+            ),
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        if not self.is_active or self.effective_from is None:
+            return
+        overlaps = AbsenceCompensationPolicy.objects.filter(
+            absence_reason=self.absence_reason,
+            is_active=True,
+        ).exclude(pk=self.pk)
+        overlaps = overlaps.filter(
+            models.Q(effective_until__isnull=True)
+            | models.Q(effective_until__gte=self.effective_from)
+        )
+        if self.effective_until is not None:
+            overlaps = overlaps.filter(
+                effective_from__lte=self.effective_until
+            )
+        if overlaps.exists():
+            raise ValidationError(
+                {
+                    "effective_from": (
+                        "Another active compensation policy for this "
+                        "absence reason overlaps this effective interval."
+                    )
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        if self.pk and AbsenceCompensationCase.objects.filter(
+            policy_id=self.pk
+        ).exists():
+            previous = AbsenceCompensationPolicy.objects.get(pk=self.pk)
+            immutable_fields = (
+                "code",
+                "version",
+                "name",
+                "absence_reason",
+                "justification_requirement",
+                "max_eligible_absences",
+                "limit_scope",
+                "effective_from",
+                "effective_until",
+                "is_active",
+            )
+            if any(
+                getattr(previous, field) != getattr(self, field)
+                for field in immutable_fields
+            ):
+                raise ValidationError(
+                    "Referenced compensation policy versions are immutable."
+                )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.pk and AbsenceCompensationCase.objects.filter(
+            policy_id=self.pk
+        ).exists():
+            raise ValidationError(
+                "Referenced compensation policy versions cannot be deleted."
+            )
+        return super().delete(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.name} v{self.version}"
+
+
+class AbsenceCompensationPolicyAction(UUIDModel):
+    class ActionType(models.TextChoices):
+        FREE_MAKEUP = "free_makeup", "Free makeup"
+        PAID_MAKEUP = "paid_makeup", "Paid/deferred makeup"
+        BILLING_RECALCULATION = (
+            "billing_recalculation",
+            "Billing recalculation",
+        )
+
+    class TargetPeriodRule(models.TextChoices):
+        CURRENT_PERIOD = "current_period", "Current period"
+        NEXT_STUDENT_PERIOD = "next_student_period", "Next student period"
+        EXPLICIT_TARGET_WINDOW = (
+            "explicit_target_window",
+            "Explicit target window",
+        )
+
+    class Requirement(models.TextChoices):
+        NONE = "none", "No additional requirement"
+        FEE_REQUIRED = "fee_required", "Fee required"
+        TARGET_SUBSCRIPTION_REQUIRED = (
+            "target_subscription_required",
+            "Target subscription required",
+        )
+        FEE_AND_TARGET_SUBSCRIPTION_REQUIRED = (
+            "fee_and_target_subscription_required",
+            "Fee and target subscription required",
+        )
+
+    policy = models.ForeignKey(
+        AbsenceCompensationPolicy,
+        on_delete=models.CASCADE,
+        related_name="actions",
+    )
+    action_type = models.CharField(
+        max_length=32,
+        choices=ActionType.choices,
+    )
+    target_period_rule = models.CharField(
+        max_length=32,
+        choices=TargetPeriodRule.choices,
+    )
+    requirement = models.CharField(
+        max_length=48,
+        choices=Requirement.choices,
+        default=Requirement.NONE,
+    )
+    validity_days = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    priority = models.PositiveSmallIntegerField(default=100)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["policy", "action_type"],
+                name="absence_policy_action_type_uq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(validity_days__isnull=True)
+                    | models.Q(validity_days__gt=0)
+                ),
+                name="absence_action_validity_gt0",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(priority__gt=0),
+                name="absence_action_priority_gt0",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["policy", "is_active", "priority"],
+                name="absence_action_lookup_ix",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        previous = None
+        if self.pk:
+            previous = (
+                AbsenceCompensationPolicyAction.objects.select_related(
+                    "policy"
+                )
+                .filter(pk=self.pk)
+                .first()
+            )
+        if previous is not None:
+            if previous.policy.compensation_cases.exists():
+                immutable_fields = (
+                    "policy_id",
+                    "action_type",
+                    "target_period_rule",
+                    "requirement",
+                    "validity_days",
+                    "priority",
+                    "is_active",
+                )
+                if any(
+                    getattr(previous, field) != getattr(self, field)
+                    for field in immutable_fields
+                ):
+                    raise ValidationError(
+                        "Actions of referenced compensation policies are "
+                        "immutable."
+                    )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.pk and self.policy.compensation_cases.exists():
+            raise ValidationError(
+                "Actions of referenced compensation policies cannot be "
+                "deleted."
+            )
+        return super().delete(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.policy} / {self.action_type}"
+
+
+class AbsenceCompensationPolicyWindow(UUIDModel):
+    policy_action = models.ForeignKey(
+        AbsenceCompensationPolicyAction,
+        on_delete=models.CASCADE,
+        related_name="windows",
+    )
+    name = models.CharField(max_length=128)
+    source_from = models.DateField()
+    source_until = models.DateField()
+    target_from = models.DateField()
+    target_until = models.DateField()
+    requirement_override = models.CharField(
+        max_length=48,
+        choices=AbsenceCompensationPolicyAction.Requirement.choices,
+        blank=True,
+        default="",
+    )
+    priority = models.PositiveSmallIntegerField(default=100)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(source_until__gte=models.F("source_from")),
+                name="absence_window_source_dates_ck",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(target_until__gte=models.F("target_from")),
+                name="absence_window_target_dates_ck",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(priority__gt=0),
+                name="absence_window_priority_gt0",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=[
+                    "policy_action",
+                    "is_active",
+                    "source_from",
+                    "source_until",
+                ],
+                name="absence_window_lookup_ix",
+            )
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        if (
+            not self.is_active
+            or self.policy_action_id is None
+            or self.source_from is None
+            or self.source_until is None
+        ):
+            return
+        overlaps = AbsenceCompensationPolicyWindow.objects.filter(
+            policy_action_id=self.policy_action_id,
+            is_active=True,
+            priority=self.priority,
+            source_from__lte=self.source_until,
+            source_until__gte=self.source_from,
+        ).exclude(pk=self.pk)
+        if overlaps.exists():
+            raise ValidationError(
+                {
+                    "source_from": (
+                        "Another active window with the same priority "
+                        "overlaps this source interval."
+                    )
+                }
+            )
+
+    def save(self, *args, **kwargs):
+        previous = None
+        if self.pk:
+            previous = (
+                AbsenceCompensationPolicyWindow.objects.select_related(
+                    "policy_action__policy"
+                )
+                .filter(pk=self.pk)
+                .first()
+            )
+        if previous is not None:
+            if previous.policy_action.policy.compensation_cases.exists():
+                immutable_fields = (
+                    "policy_action_id",
+                    "name",
+                    "source_from",
+                    "source_until",
+                    "target_from",
+                    "target_until",
+                    "requirement_override",
+                    "priority",
+                    "is_active",
+                )
+                if any(
+                    getattr(previous, field) != getattr(self, field)
+                    for field in immutable_fields
+                ):
+                    raise ValidationError(
+                        "Windows of referenced compensation policies are "
+                        "immutable."
+                    )
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if (
+            self.pk
+            and self.policy_action.policy.compensation_cases.exists()
+        ):
+            raise ValidationError(
+                "Windows of referenced compensation policies cannot be "
+                "deleted."
+            )
+        return super().delete(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class AbsenceCompensationCase(UUIDModel):
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        MATERIALIZED = "materialized", "Materialized"
+        REVERSED = "reversed", "Reversed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    class EligibilityStatus(models.TextChoices):
+        ELIGIBLE = "eligible", "Eligible"
+        LIMIT_EXCEEDED = "limit_exceeded", "Limit exceeded"
+        UNDETERMINED = "undetermined", "Undetermined"
+
+    attendance = models.ForeignKey(
+        Attendance,
+        on_delete=models.PROTECT,
+        related_name="compensation_cases",
+    )
+    student = models.ForeignKey(
+        Student,
+        on_delete=models.PROTECT,
+        related_name="absence_compensation_cases",
+    )
+    source_lesson = models.ForeignKey(
+        Lesson,
+        on_delete=models.PROTECT,
+        related_name="absence_compensation_cases",
+    )
+    source_subscription_allowance = models.ForeignKey(
+        "SubscriptionAllowance",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="absence_compensation_cases",
+    )
+    source_justification = models.ForeignKey(
+        AbsenceJustification,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="compensation_cases",
+    )
+    policy = models.ForeignKey(
+        AbsenceCompensationPolicy,
+        on_delete=models.PROTECT,
+        related_name="compensation_cases",
+    )
+
+    absence_reason = models.CharField(
+        max_length=24,
+        choices=AbsenceCompensationPolicy.AbsenceReason.choices,
+    )
+    source_date = models.DateField()
+    category = models.CharField(
+        max_length=16,
+        choices=SubscriptionCategory.choices,
+    )
+
+    policy_code_snapshot = models.SlugField(max_length=64)
+    policy_version_snapshot = models.PositiveSmallIntegerField()
+    policy_name_snapshot = models.CharField(max_length=128)
+    justification_requirement_snapshot = models.CharField(max_length=32)
+    max_eligible_absences_snapshot = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    limit_scope_snapshot = models.CharField(max_length=32)
+    actions_snapshot = models.JSONField(default=list)
+
+    eligibility_status = models.CharField(
+        max_length=24,
+        choices=EligibilityStatus.choices,
+        default=EligibilityStatus.UNDETERMINED,
+    )
+    eligible_absence_ordinal = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+    eligibility_period_from = models.DateField(null=True, blank=True)
+    eligibility_period_until = models.DateField(null=True, blank=True)
+    eligibility_evaluated_at = models.DateTimeField(null=True, blank=True)
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.OPEN,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    materialized_at = models.DateTimeField(null=True, blank=True)
+    materialized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reversal_reason = models.CharField(max_length=64, blank=True, default="")
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["attendance"],
+                condition=models.Q(status__in=["open", "materialized"]),
+                name="absence_case_one_active_attendance_uq",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(policy_version_snapshot__gt=0),
+                name="absence_case_policy_version_gt0",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        eligibility_status="undetermined",
+                        eligible_absence_ordinal__isnull=True,
+                        eligibility_period_from__isnull=True,
+                        eligibility_period_until__isnull=True,
+                    )
+                    | models.Q(
+                        eligibility_status="eligible",
+                        max_eligible_absences_snapshot__isnull=True,
+                        eligible_absence_ordinal__isnull=True,
+                        eligibility_period_from__isnull=True,
+                        eligibility_period_until__isnull=True,
+                    )
+                    | models.Q(
+                        eligibility_status__in=[
+                            "eligible",
+                            "limit_exceeded",
+                        ],
+                        max_eligible_absences_snapshot__isnull=False,
+                        eligible_absence_ordinal__isnull=False,
+                        eligibility_period_from__isnull=False,
+                        eligibility_period_until__isnull=False,
+                        eligibility_period_until__gte=models.F(
+                            "eligibility_period_from"
+                        ),
+                    )
+                ),
+                name="absence_case_eligibility_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status="open",
+                        materialized_at__isnull=True,
+                        materialized_by__isnull=True,
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                    )
+                    | models.Q(
+                        status="materialized",
+                        materialized_at__isnull=False,
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                    )
+                    | models.Q(
+                        status="reversed",
+                        materialized_at__isnull=False,
+                        reversed_at__isnull=False,
+                        reversal_reason__gt="",
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                    )
+                    | models.Q(
+                        status="cancelled",
+                        materialized_at__isnull=True,
+                        reversed_at__isnull=True,
+                        reversal_reason="",
+                        cancelled_at__isnull=False,
+                    )
+                ),
+                name="absence_case_status_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["student", "source_date", "status"],
+                name="absence_case_student_date_ix",
+            ),
+            models.Index(
+                fields=["policy", "status"],
+                name="absence_case_policy_status_ix",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.student} / {self.source_date} / "
+            f"{self.absence_reason}"
+        )
 
 
 class Subscription(UUIDModel):
@@ -130,6 +737,10 @@ class MakeupEntitlement(UUIDModel):
         MEDICAL_VERIFIED = "medical", "Verified medical absence"
         SCHOOL_RESCHEDULE = "school_reschedule", "School reschedule"
         ADMINISTRATIVE = "administrative", "Administrative"
+        ABSENCE_COMPENSATION = (
+            "absence_compensation",
+            "Absence compensation",
+        )
 
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="makeup_entitlements")
     source_lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="generated_makeup_entitlements")
@@ -172,6 +783,17 @@ class MakeupEntitlement(UUIDModel):
                 condition=models.Q(cancelled_at__isnull=True),
                 name="makeup_active_student_lesson_uq",
             ),
+            models.UniqueConstraint(
+                fields=["student", "source_lesson"],
+                condition=models.Q(
+                    cancelled_at__isnull=True,
+                    reason__in=[
+                        "medical",
+                        "absence_compensation",
+                    ],
+                ),
+                name="makeup_active_absence_source_uq",
+            ),
             models.CheckConstraint(
                 condition=~models.Q(reason="medical")
                 | models.Q(source_justification__isnull=False),
@@ -194,6 +816,152 @@ class MakeupEntitlement(UUIDModel):
                 name="makeup_available_ix",
             )
         ]
+
+
+class AbsenceCompensationActionGrant(UUIDModel):
+    case = models.ForeignKey(
+        AbsenceCompensationCase,
+        on_delete=models.PROTECT,
+        related_name="action_grants",
+    )
+    action_type = models.CharField(
+        max_length=32,
+        choices=AbsenceCompensationPolicyAction.ActionType.choices,
+    )
+    action_snapshot = models.JSONField(default=dict)
+    makeup_entitlement = models.OneToOneField(
+        MakeupEntitlement,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="compensation_action_grant",
+    )
+    target_subscription = models.ForeignKey(
+        Subscription,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="compensation_action_grants",
+    )
+    fee_confirmed_at = models.DateTimeField(null=True, blank=True)
+    fee_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    activated_at = models.DateTimeField(null=True, blank=True)
+    refund_required = models.BooleanField(null=True, blank=True)
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    reversal_reason = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["case", "action_type"],
+                name="absence_action_grant_type_uq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(action_type="free_makeup")
+                    | models.Q(makeup_entitlement__isnull=False)
+                ),
+                name="absence_grant_free_makeup_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        fee_confirmed_at__isnull=True,
+                        fee_confirmed_by__isnull=True,
+                    )
+                    | models.Q(
+                        fee_confirmed_at__isnull=False,
+                        fee_confirmed_by__isnull=False,
+                    )
+                ),
+                name="absence_grant_fee_confirm_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        activated_at__isnull=True,
+                        makeup_entitlement__isnull=True,
+                    )
+                    | models.Q(
+                        activated_at__isnull=False,
+                        makeup_entitlement__isnull=False,
+                    )
+                ),
+                name="absence_grant_activation_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(
+                        action_type="paid_makeup",
+                        activated_at__isnull=False,
+                    )
+                    | models.Q(fee_confirmed_at__isnull=False)
+                ),
+                name="absence_grant_paid_fee_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        reversed_at__isnull=True,
+                        reversed_by__isnull=True,
+                        reversal_reason="",
+                    )
+                    | models.Q(
+                        reversed_at__isnull=False,
+                        reversal_reason__gt="",
+                    )
+                ),
+                name="absence_grant_reversal_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        models.Q(refund_required__isnull=True)
+                        & ~models.Q(
+                            action_type="paid_makeup",
+                            fee_confirmed_at__isnull=False,
+                            reversed_at__isnull=False,
+                        )
+                    )
+                    | models.Q(
+                        refund_required__isnull=False,
+                        action_type="paid_makeup",
+                        fee_confirmed_at__isnull=False,
+                        reversed_at__isnull=False,
+                    )
+                ),
+                name="absence_grant_refund_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["case", "created_at"],
+                name="absence_grant_case_created_ix",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.case_id} / {self.action_type}"
 
 
 class AttendanceCoverage(UUIDModel):

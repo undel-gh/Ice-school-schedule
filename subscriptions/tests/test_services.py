@@ -1480,6 +1480,7 @@ def test_process_subscription_lifecycle_is_idempotent(
         "expired": 0,
         "expired_with_unused": 0,
         "makeup_expired": 0,
+        "paid_authorization_expired": 0,
     }
     assert AuditEvent.objects.filter(
         event_type="SubscriptionActivated",

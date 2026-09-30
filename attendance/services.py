@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from accounts.models import Student
 from audit.services import record_event
 from core.permissions import (
     require_lesson_coach_or_permission,
@@ -22,6 +23,8 @@ from subscriptions.models import (
     MakeupEntitlement,
 )
 from subscriptions.services import (
+    _cancel_open_absence_compensation_cases,
+    _reverse_materialized_absence_compensation_cases,
     assign_attendance_coverage,
     reverse_attendance_coverage,
 )
@@ -339,6 +342,13 @@ def set_attendance(
         previous_status == Attendance.Status.ABSENT
         and status == Attendance.Status.PRESENT
     ):
+        _reverse_materialized_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=now,
+            reason="attendance_corrected_to_present",
+            correlation_id=correlation_id,
+        )
         _revoke_verified_medical_justifications_for_present_correction(
             attendance=attendance,
             actor=actor,
@@ -350,6 +360,12 @@ def set_attendance(
         attendance.updated_by = actor
         attendance.save(
             update_fields=["status", "updated_by", "updated_at"]
+        )
+        _cancel_open_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=now,
+            reason="attendance_corrected_to_present",
         )
 
         coverage = assign_attendance_coverage(
@@ -788,6 +804,19 @@ def verify_medical_absence(
             }
         )
 
+    _reverse_materialized_absence_compensation_cases(
+        attendance_id=attendance.id,
+        actor=actor,
+        at=reviewed_at,
+        reason="superseded_by_medical",
+    )
+    _cancel_open_absence_compensation_cases(
+        attendance_id=attendance.id,
+        actor=actor,
+        at=reviewed_at,
+        reason="superseded_by_medical",
+    )
+
     justification.status = AbsenceJustification.Status.VERIFIED
     justification.reviewed_at = reviewed_at
     justification.reviewed_by = actor
@@ -914,6 +943,19 @@ def revoke_medical_absence(
     _assert_medical_reviewer(actor)
     revoked_at = now or timezone.now()
 
+    justification_ref = AbsenceJustification.objects.only(
+        "lesson_id",
+        "student_id",
+    ).get(pk=justification_id)
+    attendance = (
+        Attendance.objects.select_for_update()
+        .filter(
+            lesson_id=justification_ref.lesson_id,
+            student_id=justification_ref.student_id,
+        )
+        .first()
+    )
+    Student.objects.select_for_update().get(pk=justification_ref.student_id)
     justification = AbsenceJustification.objects.select_for_update().get(
         pk=justification_id
     )
@@ -928,6 +970,15 @@ def revoke_medical_absence(
                     "Only a VERIFIED justification can be revoked."
                 )
             }
+        )
+
+    if attendance is not None:
+        _reverse_materialized_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=revoked_at,
+            reason="medical_justification_revoked",
+            source_justification_id=justification.id,
         )
 
     entitlements = list(
@@ -995,4 +1046,13 @@ def revoke_medical_absence(
             "reason": AbsenceJustification.RevocationReason.ADMINISTRATIVE,
         },
     )
+    if attendance is not None:
+        _cancel_open_absence_compensation_cases(
+            attendance_id=attendance.id,
+            actor=actor,
+            at=revoked_at,
+            reason="medical_justification_revoked",
+            source_justification_id=justification.id,
+        )
     return justification
+

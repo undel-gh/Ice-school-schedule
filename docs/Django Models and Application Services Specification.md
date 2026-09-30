@@ -1475,6 +1475,49 @@ CheckConstraint(condition=Q(visit_limit__gt=0), name="subplan_allowance_limit_gt
 CheckConstraint(condition=Q(validity_months=1), name="subscriptionplan_one_month")
 ```
 
+> **Current implementation note.** `validity_months=1` and
+> `subscriptionplan_one_month` describe the current foundation only. They are
+> scheduled for replacement by the target period-policy model below.
+
+## Target period-policy model
+
+The next subscription iteration must support:
+
+```python
+class PeriodPolicy(models.TextChoices):
+    CALENDAR_MONTH = "calendar_month"
+    FIRST_ATTENDANCE_28_DAYS = "first_attendance_28_days"
+    FIXED_28_DAYS = "fixed_28_days"
+```
+
+`SubscriptionPlan` stores the selected policy. `Subscription` snapshots it.
+
+For shared fixed periods introduce a school-level entity, working name
+`SubscriptionPeriod`:
+
+```python
+class SubscriptionPeriod(models.Model):
+    id = UUIDField(...)
+    policy = models.CharField(...)
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+    label = models.CharField(...)
+```
+
+For `FIXED_28_DAYS`, issued subscriptions reference one shared period.
+For `FIRST_ATTENDANCE_28_DAYS`, `valid_from/valid_until` cannot be required
+before activation; the first covered `Attendance=PRESENT` sets them
+atomically and permanently.
+
+For every activated 28-day subscription:
+
+```text
+valid_until = valid_from + 27 days
+```
+
+The schema migration must preserve existing Subscription history without
+recalculating dates.
+
 ---
 
 # 21. Subscription и SubscriptionAllowance
@@ -2941,3 +2984,430 @@ DRAFT может быть отменён через обычный `cancel_lesso
 оператору сначала сгенерировать occurrence шаблона, затем отменить его и тем
 самым явно принять занятие другого типа в этом временном слоте без публикации
 дня.
+
+
+---
+
+# 37. Absence-compensation policy configuration
+
+The typed/versioned policy configuration layer and
+`AbsenceCompensationCase` evaluation are implemented. Materialization of
+compensation actions into entitlements or billing operations remains a
+subsequent stage.
+
+
+
+Implemented configuration entities:
+
+```text
+AbsenceCompensationPolicy
+    code + version
+    absence_reason
+    justification_requirement
+    max_eligible_absences
+    limit_scope
+    effective_from / effective_until
+    is_active
+
+AbsenceCompensationPolicyAction
+    action_type
+    target_period_rule
+    requirement
+    validity_days
+    priority
+    is_active
+
+AbsenceCompensationPolicyWindow
+    source date window
+    explicit target date window
+    optional requirement override
+    priority
+    is_active
+```
+
+The selector layer provides:
+
+```python
+get_applicable_absence_policy(...)
+resolve_compensation_actions(...)
+```
+
+Ambiguous active policies are rejected instead of silently choosing one.
+When several seasonal windows match one action, priority resolves them;
+equal-priority matches are rejected as configuration error.
+
+The policy models are exposed in Django Admin as an interim configuration
+surface. Manager-facing server-rendered policy management remains required by
+the web-first product rule.
+
+Compensation is tied to a concrete missed Lesson / `Attendance=ABSENT`, not
+to an arbitrary positive allowance balance.
+
+The target model must support versioned policy parameters for:
+
+```text
+absence reason / justification requirement
+maximum eligible misses and counting scope
+compensation kind
+target-period rule
+fee requirement
+target Subscription requirement
+validity window
+effective policy interval
+seasonal exceptions
+```
+
+Working aggregate:
+
+```text
+AbsenceCompensationCase
+    student
+    source_lesson
+    attendance
+    source_subscription_allowance (optional)
+    absence_reason
+    policy version/snapshot
+    status
+    created_at
+    resolved_at
+```
+
+Possible results include:
+
+```text
+free makeup entitlement
+paid/deferred makeup entitlement
+billing recalculation reference
+no compensation
+```
+
+The current school policy is provisional and includes a configurable four-miss
+limit for unexcused absences plus May→June and June→August seasonal
+exceptions. These values must not be hard-coded.
+
+The original Subscription dates, Attendance history and ledger remain
+immutable. Any entitlement/recalculation must retain a traceable reference to
+its source compensation case.
+
+The existing medical `AbsenceJustification` / `MakeupEntitlement` flow
+must continue to work during migration toward the generalized mechanism.
+
+
+## AbsenceCompensationCase eligibility
+
+The case stores an evaluated eligibility result:
+
+```text
+ELIGIBLE
+LIMIT_EXCEEDED
+UNDETERMINED
+```
+
+For a policy with `max_eligible_absences = N`, the evaluator derives the
+source billing period from the historical `source_subscription_allowance`
+and counts OPEN compensation cases in deterministic Lesson order.
+
+The counting set always matches:
+
+```text
+student
++ absence_reason
++ policy_code_snapshot
++ source Subscription identity
+```
+
+The source period is identified by
+`source_subscription_allowance.subscription_id`, not by overlapping date
+ranges. The period dates are retained only as explanatory snapshot values.
+This prevents one absence from being counted in multiple overlapping billing
+periods when the student has different subscriptions.
+
+and is additionally narrowed according to `limit_scope_snapshot`:
+
+```text
+STUDENT_PERIOD
+CATEGORY_PERIOD
+LESSON_TYPE_PERIOD
+```
+
+The ordinal and source period are snapshotted on the case:
+
+```text
+eligible_absence_ordinal
+eligibility_period_from
+eligibility_period_until
+eligibility_evaluated_at
+```
+
+Rule:
+
+```text
+ordinal <= max_eligible_absences → ELIGIBLE
+ordinal >  max_eligible_absences → LIMIT_EXCEEDED
+```
+
+An unlimited policy (`max_eligible_absences = NULL`) is immediately
+`ELIGIBLE`.
+
+A limited policy without a resolvable source billing period is
+`UNDETERMINED`; the implementation must not silently substitute a calendar
+month for a future subscription-period model.
+
+Creation/cancellation serializes by Student and reevaluates that student's
+OPEN cases, so cancellation of an earlier case can release a limit slot for a
+later absence. Eligibility changes emit `AbsenceCompensationEvaluated`.
+
+### Materialization boundary
+
+Eligibility is intentionally dynamic **only before a compensation action is
+materialized**.
+
+The first materialization path is implemented for `FREE_MAKEUP`:
+
+```text
+OPEN + ELIGIBLE AbsenceCompensationCase
+    → AbsenceCompensationActionGrant(FREE_MAKEUP)
+    → MakeupEntitlement(reason=ABSENCE_COMPENSATION)
+    → case.status = MATERIALIZED
+```
+
+`AbsenceCompensationActionGrant` stores the exact action snapshot used for the
+grant and links it to the resulting entitlement. The pair
+`(case, action_type)` is unique, so repeated materialization is idempotent.
+
+A MATERIALIZED case keeps consuming one policy-limit slot but is no longer
+reevaluated. OPEN cases are reevaluated in the remaining quota. This prevents
+a later backdated absence from revoking an already granted right while also
+preventing the grant from freeing an extra limit slot.
+
+Currently implemented:
+
+```text
+FREE_MAKEUP
+    → MakeupEntitlement
+    → grant activated immediately
+
+PAID_MAKEUP
+    OPEN + ELIGIBLE case
+        → PaidFreezeAuthorized
+        → case = MATERIALIZED
+        → fee confirmation and/or target Subscription
+        → PaidFreezeActivated
+        → MakeupEntitlement
+
+MATERIALIZED → REVERSED when the source absence is invalidated
+```
+
+For PAID_MAKEUP, authorization freezes eligibility and reserves the policy
+limit slot but does not itself create a usable MakeupEntitlement. The grant
+stores:
+
+```text
+fee_confirmed_at / fee_confirmed_by
+target_subscription
+activated_at
+makeup_entitlement
+```
+
+Supported requirement combinations for PAID_MAKEUP are:
+
+```text
+FEE_REQUIRED
+FEE_AND_TARGET_SUBSCRIPTION_REQUIRED
+```
+
+A paid action without a fee requirement is rejected as invalid configuration.
+
+Target-period resolution:
+
+- CURRENT_PERIOD uses the source Subscription period;
+- EXPLICIT_TARGET_WINDOW uses the snapshotted window; when a target
+  Subscription is required, entitlement validity is the intersection of the
+  window and that Subscription;
+- NEXT_STUDENT_PERIOD requires an explicitly supplied target Subscription
+  before authorization. Until the subscription-period resolver exists, the
+  case stays OPEN and no paid grant is materialized without that concrete
+  target. The grant uses the target Subscription valid_from/valid_until.
+
+Manual payment confirmation is currently provided by
+`confirm_paid_makeup_fee(...)`. Future Billing integration may replace this
+manual confirmation without changing the grant/entitlement lifecycle.
+
+Paid reversal has explicit financial semantics. Once `fee_confirmed_at` is
+set, automatic source invalidation (attendance correction, medical
+supersession/revocation, etc.) must not silently reverse the paid grant.
+Instead it raises a validation error directing the manager to
+`reverse_absence_compensation_case(...)`. The error also includes the
+structured key `manager_action_required`, so the future trainer-facing web UI
+can render this as an escalation to a manager rather than a generic failure.
+
+For a paid grant with confirmed fee, explicit reversal must include
+`refund_required=True|False`. The decision is stored on the grant and copied
+into reversal audit payloads. `PaidFreezeRefundRequired` is emitted when the
+decision is true. The selector `get_reversed_paid_makeups(...)` supports
+reporting paid-but-reversed grants and filtering those requiring refund.
+
+Unpaid, non-activated PAID_MAKEUP authorizations are not allowed to reserve a
+limit slot forever. `process_subscription_lifecycle(...)` reverses them with
+reason `authorization_expired` after their authorization deadline:
+
+- CURRENT_PERIOD: source Subscription `valid_until`;
+- NEXT_STUDENT_PERIOD: target Subscription `valid_until`;
+- EXPLICIT_TARGET_WINDOW: snapshotted `target_until`.
+
+Paid pending grants are never expired automatically. During expiry processing,
+payment state is rechecked after the normal row locks are acquired; a grant
+that became paid concurrently is skipped rather than aborting the lifecycle
+batch.
+
+Both target and source Subscription dependencies are protected, but only while
+they still matter operationally. A target Subscription supplied at
+authorization is validated immediately against the target-period rule.
+Pending paid grants block cancellation of their source/target Subscription.
+After activation, cancellation is blocked only while the linked make-up is
+still usable: not cancelled, not expired as of the cancellation date, and not
+already consumed by active AttendanceCoverage. Used or expired make-ups remain
+historical records but do not permanently prevent Subscription cancellation.
+
+If a target Subscription is selected during authorization, activation cannot
+silently replace it with another Subscription. An unreversed PAID_MAKEUP grant
+also protects its target Subscription from ordinary cancellation; the grant
+must be explicitly reversed first. This keeps the prerequisite used for
+authorization auditable and stable.
+
+If Attendance is corrected from ABSENT to PRESENT, or a linked VERIFIED
+medical justification is revoked, a MATERIALIZED case is handled explicitly:
+
+- if its compensation MakeupEntitlement is unused, the entitlement is
+  cancelled, the action grant is marked reversed, and the case becomes
+  `REVERSED`;
+- if that entitlement is already used by active AttendanceCoverage, the source
+  correction/revocation is rejected until the coverage is reversed or rebound.
+
+A medical absence cannot receive both an active legacy
+`MEDICAL_VERIFIED` makeup and a new `ABSENCE_COMPENSATION` makeup for the
+same student/source lesson.
+
+The invariant is enforced in both directions:
+
+- compensation materialization rejects an already-active medical makeup;
+- medical verification supersedes an unused MATERIALIZED compensation case
+  with reason `superseded_by_medical`;
+- if that compensation makeup is already used by active AttendanceCoverage,
+  medical verification is rejected until the coverage is reversed/rebound;
+- an OPEN pre-medical compensation case for the same Attendance is cancelled
+  when the medical justification is verified.
+
+A partial database UniqueConstraint additionally guarantees at most one active
+makeup for `(student, source_lesson)` when reason is either
+`MEDICAL_VERIFIED` or `ABSENCE_COMPENSATION`.
+
+Administrators can explicitly reverse an erroneously materialized case through:
+
+```python
+reverse_absence_compensation_case(
+    case_id=...,
+    actor=...,
+    reason="...",
+    now=...,
+)
+```
+
+The service is idempotent for an already REVERSED case. It refuses to reverse
+a compensation makeup that is already used by active AttendanceCoverage.
+
+Intentionally not yet implemented:
+
+```text
+BILLING_RECALCULATION
+automatic NEXT_STUDENT_PERIOD resolution
+```
+
+The first future service that grants a makeup entitlement, paid freeze or
+billing recalculation from a case must, in the same transaction:
+
+1. lock the Student and AbsenceCompensationCase using the established lock
+   order;
+2. validate that the case is OPEN and ELIGIBLE;
+3. persist the exact eligibility/action snapshot used for the grant;
+4. mark that eligibility decision as materialized/frozen;
+5. create the entitlement or billing operation and correlated audit events.
+
+After materialization, later backdated cases or cancellations must not revoke
+or rewrite the already granted right automatically. The materialized case is
+historical evidence of the decision made at grant time. If the school needs to
+reverse an already granted right, that is an explicit compensated/reversal
+workflow, not ordinary eligibility reevaluation.
+
+The concrete lock fields and grant service are deliberately introduced together
+with the first action-materialization implementation, rather than exposing a
+partially enforced lock before any grant exists.
+
+
+### Source invalidation
+
+An OPEN case is automatically cancelled when its source ceases to represent an
+eligible absence:
+
+- `Attendance: ABSENT → PRESENT`;
+- a linked VERIFIED medical justification is revoked.
+
+Cancellation triggers reevaluation of the remaining OPEN cases for that
+student. This prevents a corrected attendance or revoked certificate from
+continuing to consume a limit slot.
+
+### Policy configuration errors
+
+Ambiguous active policies and equal-priority overlapping seasonal windows are
+reported as `ValidationError`, suitable for CLI/web presentation rather than
+uncaught `ValueError`.
+
+For `EXPLICIT_TARGET_WINDOW`, an action with no matching active window is not
+materialized in `actions_snapshot`.
+
+Admin validation rejects overlapping active policies for the same absence
+reason and overlapping same-priority windows. Once a policy version has been
+referenced by a compensation case, that policy and its actions/windows become
+read-only in Django Admin; changes require a new version.
+
+
+---
+
+# 38. Planned GroupPlaceHold model
+
+A paid one-period group-place reservation is a separate domain concept:
+
+```text
+GroupPlaceHold
+    student
+    group
+    period
+    status
+    created_at / created_by
+    cancelled_at / cancelled_by
+```
+
+It preserves the student's place in a TrainingGroup while the student skips
+one billing period. It grants no AttendanceCoverage and no ICE/HALL visits.
+
+The future Billing domain may attach payment data, but payment details are not
+required in the scheduling/subscriptions foundation.
+
+---
+
+# 39. Web-first application-service requirement
+
+Every normal manager/trainer action must have an authenticated server-rendered
+web flow calling the same application service as CLI/automation.
+
+Management commands are secondary/sysadmin interfaces. Human workflows must
+not remain CLI-only.
+
+Required manager web coverage includes schedule template management,
+generation-conflict resolution, `skip_template_occurrence`, lesson
+cancel/reschedule, memberships, subscription issuance/cancellation, period
+selection, carry-over/freeze, group place hold, one-time/makeup administration,
+medical review and relevant audit history.
+
+Pure background jobs may stay management-command/cron only, but their failures
+and conflicts must surface in manager-facing web UI.

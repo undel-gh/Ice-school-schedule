@@ -583,10 +583,6 @@ def skip_template_occurrence(
                 )
             }
         )
-    if occurrence_date < get_school_date(now):
-        raise ValidationError(
-            {"date": "Past template occurrences cannot be skipped."}
-        )
     if occurrence_date < template.valid_from or (
         template.valid_until is not None
         and occurrence_date > template.valid_until
@@ -622,6 +618,11 @@ def skip_template_occurrence(
                     f"{existing.id} with status {existing.status}."
                 )
             }
+        )
+
+    if occurrence_date < get_school_date(now):
+        raise ValidationError(
+            {"date": "Past template occurrences cannot be skipped."}
         )
 
     rsvp_minutes, decision_minutes = _validate_deadline_policy()

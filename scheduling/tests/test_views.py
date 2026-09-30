@@ -151,7 +151,17 @@ def test_guardian_cannot_select_inaccessible_student(client, web_context):
 
 @pytest.mark.django_db
 def test_guardian_rsvp_post_uses_service(client, web_context):
-    lesson = make_lesson(context=web_context)
+    lesson = make_lesson(
+        context=web_context,
+        starts_at=datetime(
+            2099,
+            9,
+            25,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
     LessonRosterEntry.objects.create(
         lesson=lesson,
         student=web_context["student"],
@@ -267,7 +277,17 @@ def test_coach_attendance_post_uses_service(client, web_context):
 
 @pytest.mark.django_db
 def test_student_schedule_renders_mobile_touch_controls(client, web_context):
-    lesson = make_lesson(context=web_context)
+    lesson = make_lesson(
+        context=web_context,
+        starts_at=datetime(
+            2099,
+            9,
+            25,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
     LessonRosterEntry.objects.create(
         lesson=lesson,
         student=web_context["student"],
@@ -279,8 +299,8 @@ def test_student_schedule_renders_mobile_touch_controls(client, web_context):
     response = client.get(
         reverse("scheduling:student_schedule"),
         {
-            "from": "2026-09-25",
-            "until": "2026-09-25",
+            "from": "2099-09-25",
+            "until": "2099-09-25",
         },
     )
 

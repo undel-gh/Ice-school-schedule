@@ -2546,3 +2546,60 @@ def test_generation_conflict_dedup_key_includes_conflicting_lesson(
         ).count()
         == 2
     )
+
+
+@pytest.mark.django_db
+def test_skip_template_occurrence_retry_remains_idempotent_after_date_passes(
+    school_context,
+    admin,
+):
+    coach, group, venue, lesson_type = school_context
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=3,
+        start_time=datetime(2026, 10, 29, 19, 30).time(),
+        duration_minutes=60,
+        valid_from=date(2026, 10, 1),
+        is_active=True,
+    )
+    occurrence_date = date(2026, 10, 29)
+
+    first = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=occurrence_date,
+        actor=admin,
+        now=datetime(
+            2026,
+            10,
+            20,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    second = skip_template_occurrence(
+        template_id=template.id,
+        occurrence_date=occurrence_date,
+        actor=admin,
+        now=datetime(
+            2026,
+            10,
+            30,
+            12,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+
+    assert second.id == first.id
+    assert AuditEvent.objects.filter(
+        event_type="ScheduleTemplateOccurrenceSkipped",
+        aggregate_id=template.id,
+    ).count() == 1
+    assert AuditEvent.objects.filter(
+        event_type="LessonCancelled",
+        aggregate_id=first.id,
+    ).count() == 1
