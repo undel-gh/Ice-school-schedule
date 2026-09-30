@@ -35,7 +35,9 @@ RIGHT_STATUS_LABELS = {
     "expired": "Истекло",
     "not_started": "Действует позже",
     "lesson_cancelled": "Занятие отменено",
+    "targeted": "Назначено на занятие",
     "target_cancelled": "Целевое занятие отменено",
+    "target_passed": "Целевое занятие прошло",
     "source_unavailable": "Нет доступного остатка",
 }
 
@@ -199,6 +201,7 @@ def _makeup_rights(
     *,
     student_id: UUID,
     as_of: date,
+    now: datetime,
 ) -> tuple[StudentMakeupRight, ...]:
     active_usage = AttendanceCoverage.objects.filter(
         makeup_entitlement_id=OuterRef("pk"),
@@ -251,15 +254,17 @@ def _makeup_rights(
         elif entitlement.valid_from > as_of:
             status = "not_started"
         elif (
-            entitlement.target_lesson_id is not None
-            and entitlement.target_lesson.status == Lesson.Status.CANCELLED
-        ):
-            status = "target_cancelled"
-        elif (
             source_subscription.cancelled_at is not None
             or source_balance <= 0
         ):
             status = "source_unavailable"
+        elif entitlement.target_lesson_id is not None:
+            if entitlement.target_lesson.status == Lesson.Status.CANCELLED:
+                status = "target_cancelled"
+            elif entitlement.target_lesson.ends_at < now:
+                status = "target_passed"
+            else:
+                status = "targeted"
         else:
             status = "available"
 
@@ -274,11 +279,14 @@ def _makeup_rights(
     priority = {
         "available": 0,
         "not_started": 1,
-        "used": 2,
-        "expired": 3,
-        "target_cancelled": 4,
-        "source_unavailable": 5,
-        "cancelled": 6,
+        "targeted": 1,
+        "not_started": 2,
+        "used": 3,
+        "expired": 4,
+        "target_passed": 5,
+        "target_cancelled": 6,
+        "source_unavailable": 7,
+        "cancelled": 8,
     }
     rows.sort(
         key=lambda row: (
@@ -308,6 +316,7 @@ def student_account_snapshot(
         makeup_rights=_makeup_rights(
             student_id=student_id,
             as_of=as_of,
+            now=now,
         ),
     )
 
