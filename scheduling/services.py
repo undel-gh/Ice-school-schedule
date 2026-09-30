@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 
@@ -1604,12 +1604,17 @@ def create_training_group(
         )
     if TrainingGroup.objects.filter(code=code).exists():
         raise ValidationError({"code": "A group with this code already exists."})
-    group = TrainingGroup.objects.create(
-        code=code,
-        name=name,
-        default_minimum_attendees=default_minimum_attendees,
-        is_active=is_active,
-    )
+    try:
+        group = TrainingGroup.objects.create(
+            code=code,
+            name=name,
+            default_minimum_attendees=default_minimum_attendees,
+            is_active=is_active,
+        )
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A group with this code already exists."}
+        ) from exc
     record_event(
         event_type="TrainingGroupCreated",
         aggregate_type="TrainingGroup",
@@ -1659,15 +1664,20 @@ def update_training_group(
     group.name = name
     group.default_minimum_attendees = default_minimum_attendees
     group.is_active = is_active
-    group.save(
-        update_fields=[
-            "code",
-            "name",
-            "default_minimum_attendees",
-            "is_active",
-            "updated_at",
-        ]
-    )
+    try:
+        group.save(
+            update_fields=[
+                "code",
+                "name",
+                "default_minimum_attendees",
+                "is_active",
+                "updated_at",
+            ]
+        )
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"code": "A group with this code already exists."}
+        ) from exc
     record_event(
         event_type="TrainingGroupChanged",
         aggregate_type="TrainingGroup",
