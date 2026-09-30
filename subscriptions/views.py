@@ -15,14 +15,21 @@ from accounts.models import Student
 from core.permissions import require_permission
 from core.time import school_date
 from subscriptions.forms import (
+    ManagerAllowanceAdjustmentForm,
     ManagerPlaceHoldCancelForm,
     ManagerPlaceHoldCreateForm,
+    ManagerSubscriptionCancelForm,
     ManagerSubscriptionIssueForm,
 )
-from subscriptions.models import GroupPlaceHold
-from subscriptions.selectors import manager_subscription_report
+from subscriptions.models import GroupPlaceHold, SubscriptionAllowance
+from subscriptions.selectors import (
+    manager_subscription_detail,
+    manager_subscription_report,
+)
 from subscriptions.services import (
+    adjust_allowance,
     cancel_group_place_hold,
+    cancel_subscription,
     confirm_group_place_hold_fee,
     create_group_place_hold,
     issue_subscription_for_period,
@@ -295,3 +302,96 @@ def manager_place_hold_cancel_view(
     else:
         messages.error(request, "Укажите причину отмены.")
     return redirect("subscriptions:manager_place_holds")
+
+
+
+@login_required
+def manager_subscription_detail_view(
+    request: HttpRequest,
+    *,
+    subscription_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.view_subscription",
+        "Subscription view permission is required.",
+    )
+    try:
+        detail = manager_subscription_detail(
+            subscription_id=subscription_id,
+            as_of=school_date(timezone.now()),
+        )
+    except StopIteration as exc:
+        raise Http404("Subscription not found.") from exc
+
+    return render(
+        request,
+        "subscriptions/manager_subscription_detail.html",
+        {
+            "detail": detail,
+            "adjustment_form": ManagerAllowanceAdjustmentForm(),
+            "cancel_form": ManagerSubscriptionCancelForm(),
+        },
+    )
+
+
+@login_required
+@require_POST
+def manager_allowance_adjust_view(
+    request: HttpRequest,
+    *,
+    allowance_id: UUID,
+) -> HttpResponse:
+    allowance = get_object_or_404(
+        SubscriptionAllowance,
+        pk=allowance_id,
+    )
+    form = ManagerAllowanceAdjustmentForm(request.POST)
+    if form.is_valid():
+        try:
+            adjust_allowance(
+                allowance_id=allowance.id,
+                delta=form.cleaned_data["delta"],
+                reason=form.cleaned_data["reason"],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            messages.error(request, " ".join(exc.messages))
+        else:
+            messages.success(request, "Остаток абонемента скорректирован.")
+    else:
+        messages.error(request, "Проверьте значение и причину корректировки.")
+    return redirect(
+        "subscriptions:manager_subscription_detail",
+        subscription_id=allowance.subscription_id,
+    )
+
+
+@login_required
+@require_POST
+def manager_subscription_cancel_view(
+    request: HttpRequest,
+    *,
+    subscription_id: UUID,
+) -> HttpResponse:
+    form = ManagerSubscriptionCancelForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, "Подтвердите отмену абонемента.")
+        return redirect(
+            "subscriptions:manager_subscription_detail",
+            subscription_id=subscription_id,
+        )
+    try:
+        subscription = cancel_subscription(
+            subscription_id=subscription_id,
+            actor=request.user,
+            at=timezone.now(),
+        )
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+    else:
+        messages.success(request, "Абонемент отменён.")
+    return redirect(
+        "subscriptions:manager_subscription_detail",
+        subscription_id=subscription_id,
+    )
