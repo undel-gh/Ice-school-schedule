@@ -732,6 +732,46 @@ def _audit_lesson(
 
 
 
+def coach_has_unmaterialized_future_occurrence(
+    *,
+    coach_id: UUID,
+    now: datetime,
+) -> bool:
+    """Return whether an active template can still create a future lesson.
+
+    A finite template whose remaining occurrences are already materialized
+    does not block coach deactivation: those Lesson rows can be reassigned
+    independently while the old template expires naturally.
+    """
+    today = get_school_date(now)
+    templates = (
+        ScheduleTemplate.objects.filter(
+            coach_id=coach_id,
+            is_active=True,
+        )
+        .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
+        .order_by("valid_from", "id")
+    )
+    for template in templates:
+        if template.valid_until is None:
+            return True
+
+        first_date = max(today, template.valid_from)
+        days_until_weekday = (template.weekday - first_date.weekday()) % 7
+        occurrence_date = first_date + timedelta(days=days_until_weekday)
+        while occurrence_date <= template.valid_until:
+            starts_at = make_school_aware(
+                datetime.combine(occurrence_date, template.start_time)
+            )
+            if starts_at >= now and not Lesson.objects.filter(
+                source_template=template,
+                starts_at=starts_at,
+            ).exists():
+                return True
+            occurrence_date += timedelta(days=7)
+    return False
+
+
 @transaction.atomic
 def generate_lessons(
     *,
@@ -760,11 +800,6 @@ def generate_lessons(
         raise ValidationError(
             {"group": "Inactive groups cannot generate lessons."}
         )
-    if not template.coach.is_active:
-        raise ValidationError(
-            {"coach": "Inactive coaches cannot generate lessons."}
-        )
-
     effective_from = max(from_date, template.valid_from)
     effective_until = until_date
     if template.valid_until is not None:
@@ -875,6 +910,17 @@ def generate_lessons(
                     )
             current += timedelta(days=1)
             continue
+
+        if not coach.is_active:
+            raise ValidationError(
+                {
+                    "coach": (
+                        "Inactive coaches cannot generate a new lesson. "
+                        "Reassign all materialized future lessons or version "
+                        "the template to an active coach."
+                    )
+                }
+            )
 
         lesson, created = Lesson.objects.get_or_create(
             source_template=template,
@@ -1464,6 +1510,10 @@ def reassign_lesson_coach(
     if not reason:
         raise ValidationError(
             {"reason": "Coach reassignment reason is required."}
+        )
+    if len(reason) > 500:
+        raise ValidationError(
+            {"reason": "Coach reassignment reason must be at most 500 characters."}
         )
 
     lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
