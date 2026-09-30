@@ -12,6 +12,7 @@ from attendance.models import Attendance
 from core.choices import SubscriptionCategory
 from core.time import make_school_aware
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from scheduling.services import cancel_lesson
 from subscriptions.models import (
     MakeupEntitlement,
     OneTimeEntitlement,
@@ -500,10 +501,11 @@ def test_targeted_makeup_status_reflects_target_lesson_state(
     assert statuses[right.id] == "targeted"
     assert "Назначено на занятие" in response.content.decode()
 
-    target_lesson.status = Lesson.Status.CANCELLED
-    target_lesson.cancellation_reason = Lesson.CancellationReason.ADMINISTRATIVE
-    target_lesson.save(
-        update_fields=["status", "cancellation_reason", "updated_at"]
+    cancel_lesson(
+        lesson_id=target_lesson.id,
+        actor=ctx["manager"],
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=fixed_now,
     )
     response = client.get(
         reverse("student_account:account"),
