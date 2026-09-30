@@ -11,6 +11,15 @@
   </p>
 </header>
 
+<div class="toolbar">
+  <a class="btn btn-primary" href="{% url 'subscriptions:manager_subscription_issue' %}">
+    Выдать абонемент
+  </a>
+  <a class="btn btn-secondary" href="{% url 'subscriptions:manager_place_holds' %}">
+    Сохранение места
+  </a>
+</div>
+
 <form class="filter-form" method="get">
   <div class="field">
     <label for="student">Ученик</label>
