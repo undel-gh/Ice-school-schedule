@@ -66,6 +66,11 @@ urlpatterns = [
         name="manager_policy_version",
     ),
     path(
+        "catalog/policies/<uuid:policy_id>/end/",
+        catalog_views.manager_policy_end,
+        name="manager_policy_end",
+    ),
+    path(
         "catalog/policies/<uuid:policy_id>/actions/new/",
         catalog_views.manager_policy_action_create,
         name="manager_policy_action_create",
