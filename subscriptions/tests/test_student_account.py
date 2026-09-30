@@ -273,7 +273,7 @@ def test_student_account_shows_balances_rights_and_coverage_history(
     assert snapshot.makeup_rights[0].status == "available"
 
     assert "Разовое право" in body
-    assert "Отработка" in body
+    assert "Отработки" in body
     assert "Абонемент · Лёд" in body
     assert "Отсутствовал" in body
 
