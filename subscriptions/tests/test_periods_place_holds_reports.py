@@ -816,3 +816,77 @@ def test_reversing_activation_coverage_returns_unused_rolling_period_to_pending(
     assert event.payload["reverted_coverage_id"] == str(coverage.id)
     assert event.payload["previous_starts_on"] == "2026-10-10"
     assert event.payload["previous_ends_on"] == "2026-11-06"
+
+
+@pytest.mark.django_db
+def test_reversing_activation_coverage_keeps_period_after_other_coverage(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-no-revert",
+        name="Rolling no revert",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-no-revert-plan", scheme=scheme, ice=3)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    first_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
+    )
+    second_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(2026, 10, 17, 15, tzinfo=dt_timezone.utc),
+    )
+    first_attendance = Attendance.objects.create(
+        lesson=first_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    second_attendance = Attendance.objects.create(
+        lesson=second_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=datetime(2026, 10, 17, 16, tzinfo=dt_timezone.utc),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    first_coverage = assign_attendance_coverage(
+        attendance_id=first_attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+    )
+    second_coverage = assign_attendance_coverage(
+        attendance_id=second_attendance.id,
+        actor=actor,
+        now=datetime(2026, 10, 17, 16, tzinfo=dt_timezone.utc),
+    )
+    assert first_coverage is not None
+    assert second_coverage is not None
+
+    reverse_attendance_coverage(
+        coverage_id=first_coverage.id,
+        actor=actor,
+        now=datetime(2026, 10, 17, 17, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert period.activation_lesson_id == first_lesson.id
+    assert subscription.valid_from == date(2026, 10, 10)
+    assert subscription.valid_until == date(2026, 11, 6)
+    assert AuditEvent.objects.filter(
+        event_type="SubscriptionPeriodActivationRevertSkipped",
+        aggregate_id=period.id,
+    ).exists()
