@@ -99,6 +99,11 @@ def manager_medical_verify(
     *,
     justification_id: UUID,
 ) -> HttpResponse:
+    get_object_or_404(
+        AbsenceJustification,
+        pk=justification_id,
+        type=AbsenceJustification.Type.MEDICAL,
+    )
     form = ManagerMedicalVerifyForm(request.POST)
     if form.is_valid():
         try:
@@ -127,6 +132,11 @@ def manager_medical_reject(
     *,
     justification_id: UUID,
 ) -> HttpResponse:
+    get_object_or_404(
+        AbsenceJustification,
+        pk=justification_id,
+        type=AbsenceJustification.Type.MEDICAL,
+    )
     try:
         reject_medical_absence(
             justification_id=justification_id,
@@ -150,6 +160,11 @@ def manager_medical_revoke(
     *,
     justification_id: UUID,
 ) -> HttpResponse:
+    get_object_or_404(
+        AbsenceJustification,
+        pk=justification_id,
+        type=AbsenceJustification.Type.MEDICAL,
+    )
     try:
         revoke_medical_absence(
             justification_id=justification_id,
