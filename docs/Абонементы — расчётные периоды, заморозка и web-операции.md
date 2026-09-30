@@ -215,7 +215,14 @@ RSVP, ABSENT и само наличие Lesson период не активир�
 Если coverage, который активировал rolling-период, позднее reverse из-за
 исправления Attendance или административной операции, активация может быть
 откачена. Откат выполняется только если после reversal у этого Subscription
-не осталось других active AttendanceCoverage. Тогда:
+не осталось других active AttendanceCoverage **и** записей, чья семантика уже
+зависит от дат активированного периода. К таким зависимостям относятся:
+
+- active MakeupEntitlement, использующий allowance этого Subscription как источник;
+- OPEN/MATERIALIZED AbsenceCompensationCase с source allowance этого Subscription;
+- unreversed AbsenceCompensationActionGrant, связанный с таким case.
+
+Только при отсутствии всех этих зависимостей:
 
 ```text
 SubscriptionPeriod ACTIVE
@@ -231,7 +238,14 @@ Subscription
 активации уже существует другое active coverage этого Subscription, период
 не сдвигается и не сбрасывается; записывается
 `SubscriptionPeriodActivationRevertSkipped` с причиной
-`active_coverages_remain`.
+`active_coverages_remain`. Если откат блокируют зависимые права/case/grant,
+используется причина `dependent_rights_exist`, а payload содержит флаги
+конкретных типов зависимостей. Это позволяет manager UI объяснить, почему
+исправление Attendance не вернуло rolling Subscription в PENDING.
+
+Для уменьшения риска взаимной блокировки activation и reversal используют
+совместимый порядок блокировок критических сущностей: SubscriptionPeriod
+блокируется до SubscriptionAllowance.
 
 Service API:
 
