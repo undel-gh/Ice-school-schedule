@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from accounts.models import Student
 from attendance.models import Attendance
+from core.presentation import localized_choices
 from core.time import (
     format_school_datetime,
     make_school_aware,
@@ -99,7 +100,10 @@ class ManagerCompensationCaseCreateForm(forms.Form):
         label="Пропуск",
     )
     absence_reason = forms.ChoiceField(
-        choices=AbsenceCompensationPolicy.AbsenceReason.choices,
+        choices=localized_choices(
+            "absence_reason",
+            AbsenceCompensationPolicy.AbsenceReason.choices,
+        ),
         label="Причина",
     )
     policy_code = forms.CharField(
@@ -201,7 +205,10 @@ class ManagerOneTimeEntitlementForm(forms.Form):
         label="Занятие",
     )
     entitlement_type = forms.ChoiceField(
-        choices=OneTimeEntitlement.Type.choices,
+        choices=localized_choices(
+            "one_time_entitlement",
+            OneTimeEntitlement.Type.choices,
+        ),
         label="Тип права",
     )
 
