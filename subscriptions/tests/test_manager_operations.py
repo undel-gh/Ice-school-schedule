@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -11,6 +12,11 @@ from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
 from core.choices import SubscriptionCategory
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from subscriptions.manager_forms import (
+    ManagerAdministrativeMakeupForm,
+    ManagerCompensationCaseCreateForm,
+    ManagerOneTimeEntitlementForm,
+)
 from subscriptions.models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
@@ -20,7 +26,10 @@ from subscriptions.models import (
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
-from subscriptions.services import issue_subscription
+from subscriptions.services import (
+    create_absence_compensation_case,
+    issue_subscription,
+)
 
 User = get_user_model()
 
@@ -58,6 +67,9 @@ def operations_context(db):
     )
     return {
         "manager": manager,
+        "coach": coach,
+        "group": group,
+        "venue": venue,
         "student": student,
         "lesson": lesson,
         "lesson_type": lesson_type,
@@ -317,3 +329,183 @@ def test_manager_runs_paid_makeup_workflow_with_refund_decision(
     assert case.status == AbsenceCompensationCase.Status.REVERSED
     assert grant.reversed_at is not None
     assert grant.refund_required is False
+
+
+def _make_operations_lesson(*, ctx, starts_at, status=Lesson.Status.COMPLETED):
+    return Lesson.objects.create(
+        group=ctx["group"],
+        lesson_type=ctx["lesson_type"],
+        coach=ctx["coach"],
+        venue=ctx["venue"],
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=status,
+    )
+
+
+@pytest.mark.django_db
+def test_manager_choice_labels_use_school_timezone(
+    operations_context,
+    settings,
+):
+    ctx = operations_context
+    settings.TIME_ZONE = "UTC"
+    settings.SCHOOL_TIME_ZONE = "Europe/Riga"
+
+    expected_time = ctx["lesson"].starts_at.astimezone(
+        ZoneInfo("Europe/Riga")
+    ).strftime("%d.%m.%Y %H:%M")
+    one_time_form = ManagerOneTimeEntitlementForm()
+    lesson_label = one_time_form.fields["lesson"].label_from_instance(
+        ctx["lesson"]
+    )
+    assert expected_time in lesson_label
+
+    attendance = Attendance.objects.create(
+        lesson=ctx["lesson"],
+        student=ctx["student"],
+        status=Attendance.Status.ABSENT,
+        marked_at=ctx["lesson"].ends_at,
+        marked_by=ctx["manager"],
+        updated_by=ctx["manager"],
+    )
+    compensation_form = ManagerCompensationCaseCreateForm()
+    attendance_label = compensation_form.fields[
+        "attendance"
+    ].label_from_instance(attendance)
+    assert expected_time in attendance_label
+
+
+@pytest.mark.django_db
+def test_manager_lesson_choices_are_limited_to_sixty_day_window(
+    operations_context,
+):
+    ctx = operations_context
+    old_lesson = _make_operations_lesson(
+        ctx=ctx,
+        starts_at=timezone.now() - timedelta(days=61),
+    )
+    future_lesson = _make_operations_lesson(
+        ctx=ctx,
+        starts_at=timezone.now() + timedelta(days=61),
+        status=Lesson.Status.DRAFT,
+    )
+
+    one_time_ids = set(
+        ManagerOneTimeEntitlementForm()
+        .fields["lesson"]
+        .queryset.values_list("id", flat=True)
+    )
+    admin_form = ManagerAdministrativeMakeupForm()
+    source_ids = set(
+        admin_form.fields["source_lesson"].queryset.values_list(
+            "id",
+            flat=True,
+        )
+    )
+    target_ids = set(
+        admin_form.fields["target_lesson"].queryset.values_list(
+            "id",
+            flat=True,
+        )
+    )
+
+    assert ctx["lesson"].id in one_time_ids
+    assert ctx["lesson"].id in source_ids
+    assert ctx["lesson"].id in target_ids
+    assert old_lesson.id not in one_time_ids | source_ids | target_ids
+    assert future_lesson.id not in one_time_ids | source_ids | target_ids
+
+
+@pytest.mark.django_db
+def test_compensation_case_choices_exclude_active_case_and_old_absence(
+    operations_context,
+):
+    ctx = operations_context
+    source_date = timezone.localdate(ctx["lesson"].starts_at)
+    plan = SubscriptionPlan.objects.create(
+        code="choice-filter-plan",
+        name="Choice filter plan",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    issue_subscription(
+        student_id=ctx["student"].id,
+        plan_id=plan.id,
+        valid_from=source_date - timedelta(days=10),
+        valid_until=source_date + timedelta(days=10),
+        actor=ctx["manager"],
+    )
+    policy = AbsenceCompensationPolicy.objects.create(
+        code="choice-filter-policy",
+        version=1,
+        name="Choice filter policy",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        effective_from=source_date - timedelta(days=30),
+    )
+    AbsenceCompensationPolicyAction.objects.create(
+        policy=policy,
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+    )
+
+    active_attendance = Attendance.objects.create(
+        lesson=ctx["lesson"],
+        student=ctx["student"],
+        status=Attendance.Status.ABSENT,
+        marked_at=ctx["lesson"].ends_at,
+        marked_by=ctx["manager"],
+        updated_by=ctx["manager"],
+    )
+    create_absence_compensation_case(
+        attendance_id=active_attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=ctx["manager"],
+        policy_code=policy.code,
+        now=timezone.now(),
+    )
+
+    fresh_lesson = _make_operations_lesson(
+        ctx=ctx,
+        starts_at=timezone.now() - timedelta(days=1),
+    )
+    fresh_attendance = Attendance.objects.create(
+        lesson=fresh_lesson,
+        student=ctx["student"],
+        status=Attendance.Status.ABSENT,
+        marked_at=fresh_lesson.ends_at,
+        marked_by=ctx["manager"],
+        updated_by=ctx["manager"],
+    )
+
+    old_lesson = _make_operations_lesson(
+        ctx=ctx,
+        starts_at=timezone.now() - timedelta(days=61),
+    )
+    old_attendance = Attendance.objects.create(
+        lesson=old_lesson,
+        student=ctx["student"],
+        status=Attendance.Status.ABSENT,
+        marked_at=old_lesson.ends_at,
+        marked_by=ctx["manager"],
+        updated_by=ctx["manager"],
+    )
+
+    choice_ids = set(
+        ManagerCompensationCaseCreateForm()
+        .fields["attendance"]
+        .queryset.values_list("id", flat=True)
+    )
+
+    assert fresh_attendance.id in choice_ids
+    assert active_attendance.id not in choice_ids
+    assert old_attendance.id not in choice_ids
