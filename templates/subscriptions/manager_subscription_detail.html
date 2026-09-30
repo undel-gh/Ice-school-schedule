@@ -27,6 +27,11 @@
         · ожидает первого занятия
       {% endif %}
     </p>
+    <p>
+      <a href="{% url 'audit_manager:events' %}?aggregate_type=SubscriptionPeriod&aggregate_id={{ detail.row.period.id }}">
+        Audit расчётного периода
+      </a>
+    </p>
   {% else %}
     <p class="muted">Исторический абонемент без SubscriptionPeriod.</p>
   {% endif %}
