@@ -547,6 +547,10 @@ def test_administrative_makeup_allowances_are_bounded_by_subscription_state(
     fixed_now = datetime(2026, 9, 30, 12, 30, tzinfo=dt_timezone.utc)
     monkeypatch.setattr(timezone, "now", lambda: fixed_now)
     today = school_date(timezone.now())
+    assert today == fixed_now.astimezone(
+        ZoneInfo(settings.SCHOOL_TIME_ZONE)
+    ).date()
+    assert today != fixed_now.date()
 
     scheme = SubscriptionPeriodScheme.objects.create(
         code="allowance-filter-rolling",
