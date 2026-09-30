@@ -452,3 +452,65 @@ def test_student_account_formats_lesson_time_in_school_timezone(
 
     assert response.status_code == 200
     assert "01.10.2026 00:30" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_targeted_makeup_status_reflects_target_lesson_state(
+    client,
+    account_context,
+    monkeypatch,
+):
+    ctx = account_context
+    fixed_now = make_school_aware(datetime(2026, 9, 30, 12, 0))
+    monkeypatch.setattr(timezone, "now", lambda: fixed_now)
+    ice_allowance = ctx["subscription"].allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    source_lesson = make_lesson(
+        ctx=ctx,
+        starts_at=make_school_aware(datetime(2026, 9, 15, 18, 0)),
+    )
+    target_lesson = make_lesson(
+        ctx=ctx,
+        starts_at=make_school_aware(datetime(2026, 10, 3, 18, 0)),
+        status=Lesson.Status.CONFIRMED,
+    )
+    right = MakeupEntitlement.objects.create(
+        student=ctx["student"],
+        source_lesson=source_lesson,
+        source_subscription_allowance=ice_allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
+        valid_from=date(2026, 9, 20),
+        valid_until=date(2026, 10, 10),
+        target_lesson=target_lesson,
+        created_by=ctx["manager"],
+    )
+    client.force_login(ctx["guardian"])
+
+    response = client.get(
+        reverse("student_account:account"),
+        {"student": str(ctx["student"].id)},
+    )
+
+    statuses = {
+        item.entitlement.id: item.status
+        for item in response.context["account"].makeup_rights
+    }
+    assert statuses[right.id] == "targeted"
+    assert "Назначено на занятие" in response.content.decode()
+
+    target_lesson.status = Lesson.Status.CANCELLED
+    target_lesson.cancellation_reason = Lesson.CancellationReason.ADMIN
+    target_lesson.save(
+        update_fields=["status", "cancellation_reason", "updated_at"]
+    )
+    response = client.get(
+        reverse("student_account:account"),
+        {"student": str(ctx["student"].id)},
+    )
+    statuses = {
+        item.entitlement.id: item.status
+        for item in response.context["account"].makeup_rights
+    }
+    assert statuses[right.id] == "target_cancelled"
