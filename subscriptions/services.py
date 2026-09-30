@@ -15,7 +15,7 @@ from audit.models import AuditEvent
 from audit.services import event_exists, record_event
 from core.permissions import require_permission
 from core.time import school_date
-from scheduling.models import Lesson
+from scheduling.models import Lesson, TrainingGroup
 
 from .balances import (
     ledger_balance,
@@ -28,11 +28,14 @@ from .models import (
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
     AttendanceCoverage,
+    GroupPlaceHold,
     MakeupEntitlement,
     OneTimeEntitlement,
     Subscription,
     SubscriptionAllowance,
     SubscriptionLedgerEntry,
+    SubscriptionPeriod,
+    SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
@@ -1732,6 +1735,367 @@ def cancel_absence_compensation_case(
         evaluated_at=at,
     )
     return case
+
+
+def resolve_subscription_period_window(
+    *,
+    scheme: SubscriptionPeriodScheme,
+    reference_date: date,
+    first_lesson_date: date | None = None,
+) -> tuple[date, date] | None:
+    if scheme.mode == SubscriptionPeriodScheme.Mode.CALENDAR_MONTH:
+        starts_on = reference_date.replace(day=1)
+        if starts_on.month == 12:
+            next_month = date(starts_on.year + 1, 1, 1)
+        else:
+            next_month = date(
+                starts_on.year,
+                starts_on.month + 1,
+                1,
+            )
+        return starts_on, next_month - timedelta(days=1)
+
+    if scheme.mode == SubscriptionPeriodScheme.Mode.FIXED_28_DAYS:
+        if scheme.fixed_anchor_date is None:
+            raise ValidationError(
+                {"scheme": "Fixed 28-day period scheme has no anchor date."}
+            )
+        period_index = (
+            (reference_date - scheme.fixed_anchor_date).days // 28
+        )
+        starts_on = scheme.fixed_anchor_date + timedelta(
+            days=period_index * 28
+        )
+        return starts_on, starts_on + timedelta(days=27)
+
+    if (
+        scheme.mode
+        == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+    ):
+        if first_lesson_date is None:
+            return None
+        return first_lesson_date, first_lesson_date + timedelta(days=27)
+
+    raise ValidationError({"scheme": "Unsupported subscription period mode."})
+
+
+@transaction.atomic
+def attach_subscription_period(
+    *,
+    subscription_id: UUID,
+    scheme_id: UUID,
+    reference_date: date,
+    actor: User,
+    now=None,
+) -> SubscriptionPeriod:
+    require_permission(
+        actor,
+        "subscriptions.change_subscription",
+        "Subscription change permission is required.",
+    )
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    existing = (
+        SubscriptionPeriod.objects.select_for_update()
+        .filter(subscription=subscription)
+        .first()
+    )
+    if existing is not None:
+        return existing
+
+    scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+        pk=scheme_id
+    )
+    if not scheme.is_active:
+        raise ValidationError(
+            {"scheme": "Inactive period scheme cannot be assigned."}
+        )
+
+    resolved = resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=reference_date,
+    )
+    values = {
+        "subscription": subscription,
+        "scheme": scheme,
+        "mode_snapshot": scheme.mode,
+        "fixed_anchor_snapshot": scheme.fixed_anchor_date,
+    }
+    if resolved is None:
+        period = SubscriptionPeriod.objects.create(**values)
+    else:
+        starts_on, ends_on = resolved
+        period = SubscriptionPeriod.objects.create(
+            **values,
+            state=SubscriptionPeriod.State.ACTIVE,
+            starts_on=starts_on,
+            ends_on=ends_on,
+            activated_at=now or timezone.now(),
+        )
+
+    _audit(
+        event_type="SubscriptionPeriodAttached",
+        aggregate_type="SubscriptionPeriod",
+        aggregate_id=period.id,
+        actor=actor,
+        payload={
+            "subscription_id": str(subscription.id),
+            "scheme_id": str(scheme.id),
+            "mode": scheme.mode,
+            "state": period.state,
+            "starts_on": (
+                period.starts_on.isoformat()
+                if period.starts_on is not None
+                else None
+            ),
+            "ends_on": (
+                period.ends_on.isoformat()
+                if period.ends_on is not None
+                else None
+            ),
+        },
+    )
+    return period
+
+
+@transaction.atomic
+def activate_rolling_subscription_period(
+    *,
+    subscription_id: UUID,
+    lesson_id: UUID,
+    actor: User | None,
+    now=None,
+) -> SubscriptionPeriod:
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    period = (
+        SubscriptionPeriod.objects.select_for_update()
+        .select_related("scheme")
+        .get(subscription=subscription)
+    )
+    if period.state == SubscriptionPeriod.State.ACTIVE:
+        return period
+    if (
+        period.mode_snapshot
+        != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+    ):
+        raise ValidationError(
+            {"period": "Only rolling 28-day periods require activation."}
+        )
+
+    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    lesson_date = school_date(lesson.starts_at)
+    starts_on, ends_on = resolve_subscription_period_window(
+        scheme=period.scheme,
+        reference_date=lesson_date,
+        first_lesson_date=lesson_date,
+    )
+
+    period.state = SubscriptionPeriod.State.ACTIVE
+    period.starts_on = starts_on
+    period.ends_on = ends_on
+    period.activation_lesson = lesson
+    period.activated_at = now or timezone.now()
+    period.save(
+        update_fields=[
+            "state",
+            "starts_on",
+            "ends_on",
+            "activation_lesson",
+            "activated_at",
+        ]
+    )
+    _audit(
+        event_type="SubscriptionPeriodActivated",
+        aggregate_type="SubscriptionPeriod",
+        aggregate_id=period.id,
+        actor=actor,
+        payload={
+            "subscription_id": str(subscription.id),
+            "lesson_id": str(lesson.id),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat(),
+        },
+    )
+    return period
+
+
+@transaction.atomic
+def create_group_place_hold(
+    *,
+    student_id: UUID,
+    group_id: UUID,
+    period_scheme_id: UUID,
+    period_from: date,
+    period_until: date,
+    actor: User,
+) -> GroupPlaceHold:
+    require_permission(
+        actor,
+        "subscriptions.add_groupplacehold",
+        "Group place hold permission is required.",
+    )
+    student = Student.objects.select_for_update().get(pk=student_id)
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
+        pk=period_scheme_id
+    )
+    if not scheme.is_active:
+        raise ValidationError(
+            {"period_scheme": "Inactive period scheme cannot be used."}
+        )
+
+    expected = resolve_subscription_period_window(
+        scheme=scheme,
+        reference_date=period_from,
+        first_lesson_date=(
+            period_from
+            if (
+                scheme.mode
+                == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+            )
+            else None
+        ),
+    )
+    if expected != (period_from, period_until):
+        raise ValidationError(
+            {
+                "period": (
+                    "Place hold dates must match one full billing period "
+                    "for the selected scheme."
+                )
+            }
+        )
+
+    hold, created = GroupPlaceHold.objects.get_or_create(
+        student=student,
+        group=group,
+        period_from=period_from,
+        defaults={
+            "period_scheme": scheme,
+            "period_until": period_until,
+            "created_by": actor,
+        },
+    )
+    if not created:
+        if (
+            hold.period_until != period_until
+            or hold.period_scheme_id != scheme.id
+        ):
+            raise ValidationError(
+                {"period": "A conflicting place hold already exists."}
+            )
+        return hold
+
+    _audit(
+        event_type="GroupPlaceHoldCreated",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={
+            "student_id": str(student.id),
+            "group_id": str(group.id),
+            "period_scheme_id": str(scheme.id),
+            "period_from": period_from.isoformat(),
+            "period_until": period_until.isoformat(),
+        },
+    )
+    return hold
+
+
+@transaction.atomic
+def confirm_group_place_hold_fee(
+    *,
+    hold_id: UUID,
+    actor: User,
+    now=None,
+) -> GroupPlaceHold:
+    require_permission(
+        actor,
+        "subscriptions.change_groupplacehold",
+        "Group place hold change permission is required.",
+    )
+    hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
+    if hold.status == GroupPlaceHold.Status.ACTIVE:
+        return hold
+    if hold.status != GroupPlaceHold.Status.PENDING_PAYMENT:
+        raise ValidationError(
+            {"hold": "Only a pending place hold can confirm payment."}
+        )
+
+    confirmed_at = now or timezone.now()
+    hold.status = GroupPlaceHold.Status.ACTIVE
+    hold.fee_confirmed_at = confirmed_at
+    hold.fee_confirmed_by = actor
+    hold.save(
+        update_fields=[
+            "status",
+            "fee_confirmed_at",
+            "fee_confirmed_by",
+        ]
+    )
+    _audit(
+        event_type="GroupPlaceHoldActivated",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={"fee_confirmed_at": confirmed_at.isoformat()},
+    )
+    return hold
+
+
+@transaction.atomic
+def cancel_group_place_hold(
+    *,
+    hold_id: UUID,
+    actor: User,
+    reason: str,
+    now=None,
+) -> GroupPlaceHold:
+    require_permission(
+        actor,
+        "subscriptions.change_groupplacehold",
+        "Group place hold change permission is required.",
+    )
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError(
+            {"reason": "Place hold cancellation reason is required."}
+        )
+    hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
+    if hold.status == GroupPlaceHold.Status.CANCELLED:
+        return hold
+    if hold.status == GroupPlaceHold.Status.EXPIRED:
+        raise ValidationError(
+            {"hold": "Expired place hold cannot be cancelled."}
+        )
+
+    cancelled_at = now or timezone.now()
+    hold.status = GroupPlaceHold.Status.CANCELLED
+    hold.cancelled_at = cancelled_at
+    hold.cancelled_by = actor
+    hold.cancellation_reason = reason
+    hold.save(
+        update_fields=[
+            "status",
+            "cancelled_at",
+            "cancelled_by",
+            "cancellation_reason",
+        ]
+    )
+    _audit(
+        event_type="GroupPlaceHoldCancelled",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={
+            "reason": reason,
+            "cancelled_at": cancelled_at.isoformat(),
+        },
+    )
+    return hold
 
 
 @transaction.atomic
