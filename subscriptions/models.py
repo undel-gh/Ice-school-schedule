@@ -6,13 +6,87 @@ from accounts.models import Student
 from attendance.models import AbsenceJustification, Attendance
 from core.choices import SubscriptionCategory
 from core.models import TimeStampedModel, UUIDModel
-from scheduling.models import Lesson
+from scheduling.models import Lesson, TrainingGroup
+
+
+class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
+    class Mode(models.TextChoices):
+        CALENDAR_MONTH = "calendar_month", "Calendar month"
+        ROLLING_28_FROM_FIRST_LESSON = (
+            "rolling_28_first_lesson",
+            "28 days from first lesson",
+        )
+        FIXED_28_DAYS = "fixed_28_days", "Fixed school-wide 28-day periods"
+
+    code = models.SlugField(max_length=64, unique=True)
+    name = models.CharField(max_length=128)
+    mode = models.CharField(max_length=32, choices=Mode.choices)
+    fixed_anchor_date = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        mode="fixed_28_days",
+                        fixed_anchor_date__isnull=False,
+                    )
+                    | (
+                        ~models.Q(mode="fixed_28_days")
+                        & models.Q(fixed_anchor_date__isnull=True)
+                    )
+                ),
+                name="subperiod_scheme_anchor_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["is_active", "mode", "name"],
+                name="subperiod_scheme_lookup_ix",
+            )
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        if (
+            self.mode == self.Mode.FIXED_28_DAYS
+            and self.fixed_anchor_date is None
+        ):
+            raise ValidationError(
+                {
+                    "fixed_anchor_date": (
+                        "Fixed 28-day period scheme requires an anchor date."
+                    )
+                }
+            )
+        if (
+            self.mode != self.Mode.FIXED_28_DAYS
+            and self.fixed_anchor_date is not None
+        ):
+            raise ValidationError(
+                {
+                    "fixed_anchor_date": (
+                        "Anchor date is only valid for FIXED_28_DAYS."
+                    )
+                }
+            )
+
+    def __str__(self) -> str:
+        return self.name
 
 
 class SubscriptionPlan(UUIDModel, TimeStampedModel):
     code = models.SlugField(max_length=64, unique=True)
     name = models.CharField(max_length=128)
     validity_months = models.PositiveSmallIntegerField(default=1)
+    period_scheme = models.ForeignKey(
+        SubscriptionPeriodScheme,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="plans",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -671,6 +745,218 @@ class Subscription(UUIDModel):
             models.Index(fields=["student", "valid_from", "valid_until"], name="subscription_student_dates_idx"),
             models.Index(fields=["student", "-valid_from"], name="subscription_history_ix"),
         ]
+
+
+class SubscriptionPeriod(UUIDModel):
+    class State(models.TextChoices):
+        PENDING = "pending", "Pending activation"
+        ACTIVE = "active", "Active"
+
+    subscription = models.OneToOneField(
+        Subscription,
+        on_delete=models.PROTECT,
+        related_name="billing_period",
+    )
+    scheme = models.ForeignKey(
+        SubscriptionPeriodScheme,
+        on_delete=models.PROTECT,
+        related_name="subscription_periods",
+    )
+    mode_snapshot = models.CharField(
+        max_length=32,
+        choices=SubscriptionPeriodScheme.Mode.choices,
+    )
+    fixed_anchor_snapshot = models.DateField(null=True, blank=True)
+    state = models.CharField(
+        max_length=16,
+        choices=State.choices,
+        default=State.PENDING,
+    )
+    starts_on = models.DateField(null=True, blank=True)
+    ends_on = models.DateField(null=True, blank=True)
+    activation_lesson = models.ForeignKey(
+        Lesson,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="activated_subscription_periods",
+    )
+    activated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        state="pending",
+                        starts_on__isnull=True,
+                        ends_on__isnull=True,
+                        activation_lesson__isnull=True,
+                        activated_at__isnull=True,
+                    )
+                    | models.Q(
+                        state="active",
+                        starts_on__isnull=False,
+                        ends_on__isnull=False,
+                        activated_at__isnull=False,
+                        ends_on__gte=models.F("starts_on"),
+                    )
+                ),
+                name="subperiod_state_dates_ck",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        mode_snapshot="fixed_28_days",
+                        fixed_anchor_snapshot__isnull=False,
+                    )
+                    | (
+                        ~models.Q(mode_snapshot="fixed_28_days")
+                        & models.Q(fixed_anchor_snapshot__isnull=True)
+                    )
+                ),
+                name="subperiod_anchor_snapshot_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["state", "starts_on", "ends_on"],
+                name="subperiod_state_dates_ix",
+            ),
+            models.Index(
+                fields=["scheme", "state"],
+                name="subperiod_scheme_state_ix",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        if self.starts_on is None:
+            return f"{self.subscription_id} / pending"
+        return (
+            f"{self.subscription_id} / "
+            f"{self.starts_on.isoformat()}–{self.ends_on.isoformat()}"
+        )
+
+
+class GroupPlaceHold(UUIDModel):
+    class Status(models.TextChoices):
+        PENDING_PAYMENT = "pending_payment", "Pending payment"
+        ACTIVE = "active", "Active"
+        CANCELLED = "cancelled", "Cancelled"
+        EXPIRED = "expired", "Expired"
+
+    student = models.ForeignKey(
+        Student,
+        on_delete=models.PROTECT,
+        related_name="group_place_holds",
+    )
+    group = models.ForeignKey(
+        TrainingGroup,
+        on_delete=models.PROTECT,
+        related_name="place_holds",
+    )
+    period_scheme = models.ForeignKey(
+        SubscriptionPeriodScheme,
+        on_delete=models.PROTECT,
+        related_name="group_place_holds",
+    )
+    period_from = models.DateField()
+    period_until = models.DateField()
+    status = models.CharField(
+        max_length=24,
+        choices=Status.choices,
+        default=Status.PENDING_PAYMENT,
+    )
+    fee_confirmed_at = models.DateTimeField(null=True, blank=True)
+    fee_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    cancellation_reason = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(period_until__gte=models.F("period_from")),
+                name="grouphold_period_dates_ck",
+            ),
+            models.UniqueConstraint(
+                fields=["student", "group", "period_from"],
+                name="grouphold_student_group_period_uq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status="pending_payment",
+                        fee_confirmed_at__isnull=True,
+                        fee_confirmed_by__isnull=True,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                    | models.Q(
+                        status="active",
+                        fee_confirmed_at__isnull=False,
+                        fee_confirmed_by__isnull=False,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                    | models.Q(
+                        status="cancelled",
+                        cancelled_at__isnull=False,
+                        cancellation_reason__gt="",
+                    )
+                    | models.Q(
+                        status="expired",
+                        fee_confirmed_at__isnull=False,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                ),
+                name="grouphold_status_ck",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["group", "status", "period_from", "period_until"],
+                name="grouphold_group_period_ix",
+            ),
+            models.Index(
+                fields=["student", "status", "period_from"],
+                name="grouphold_student_period_ix",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.student} / {self.group} / "
+            f"{self.period_from.isoformat()}–{self.period_until.isoformat()}"
+        )
 
 
 class SubscriptionAllowance(UUIDModel):
