@@ -14,6 +14,7 @@ from attendance.services import (
 )
 from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
+from core.time import make_school_aware, school_date
 from scheduling.models import (
     Lesson,
     LessonRosterEntry,
@@ -53,6 +54,16 @@ from subscriptions.services import (
 )
 
 User = get_user_model()
+
+
+def school_dt(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int = 0,
+) -> datetime:
+    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 @pytest.fixture
@@ -104,14 +115,7 @@ def make_absence(
     starts_at=None,
     lesson_type=None,
 ) -> Attendance:
-    starts_at = starts_at or datetime(
-        2026,
-        9,
-        20,
-        15,
-        0,
-        tzinfo=dt_timezone.utc,
-    )
+    starts_at = starts_at or school_dt(2026, 9, 20, 18, 0)
     lesson = Lesson.objects.create(
         group=context["group"],
         lesson_type=lesson_type or context["ice"],
@@ -944,7 +948,7 @@ def test_materialize_free_makeup_freezes_case_and_creates_grant(actor, context):
         entitlement.source_subscription_allowance.subscription_id
         == subscription.id
     )
-    assert entitlement.valid_from == attendance.lesson.starts_at.date()
+    assert entitlement.valid_from == school_date(attendance.lesson.starts_at)
     assert entitlement.valid_until == date(2026, 9, 30)
     assert AuditEvent.objects.filter(
         event_type="AbsenceCompensationMaterialized",
@@ -2986,24 +2990,24 @@ def test_paid_makeup_accepts_pending_rolling_target_subscription(actor, context)
         lesson_type=context["ice"],
         coach=context["coach"],
         venue=context["venue"],
-        starts_at=datetime(2026, 10, 5, 15, tzinfo=dt_timezone.utc),
-        ends_at=datetime(2026, 10, 5, 16, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 5, 18, 0),
+        ends_at=school_dt(2026, 10, 5, 19, 0),
         minimum_attendees=1,
-        rsvp_deadline=datetime(2026, 10, 5, 13, tzinfo=dt_timezone.utc),
-        decision_deadline=datetime(2026, 10, 5, 14, tzinfo=dt_timezone.utc),
+        rsvp_deadline=school_dt(2026, 10, 5, 16, 0),
+        decision_deadline=school_dt(2026, 10, 5, 17, 0),
         status=Lesson.Status.COMPLETED,
     )
     activate_rolling_subscription_period(
         subscription_id=target.id,
         lesson_id=first_target_lesson.id,
         actor=actor,
-        now=datetime(2026, 10, 5, 16, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 5, 19, 0),
     )
 
     activated = activate_paid_makeup_grant(
         grant_id=grant.id,
         actor=actor,
-        now=datetime(2026, 10, 5, 16, 30, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 5, 19, 30),
     )
     entitlement = activated.makeup_entitlement
     assert entitlement is not None
@@ -3128,32 +3132,32 @@ def test_rolling_activation_revert_is_blocked_by_active_compensation_case_and_gr
         lesson_type=context["ice"],
         coach=context["coach"],
         venue=context["venue"],
-        starts_at=datetime(2026, 10, 10, 15, tzinfo=dt_timezone.utc),
-        ends_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 10, 18, 0),
+        ends_at=school_dt(2026, 10, 10, 19, 0),
         minimum_attendees=1,
-        rsvp_deadline=datetime(2026, 10, 10, 13, tzinfo=dt_timezone.utc),
-        decision_deadline=datetime(2026, 10, 10, 14, tzinfo=dt_timezone.utc),
+        rsvp_deadline=school_dt(2026, 10, 10, 16, 0),
+        decision_deadline=school_dt(2026, 10, 10, 17, 0),
         status=Lesson.Status.COMPLETED,
     )
     activation_attendance = Attendance.objects.create(
         lesson=activation_lesson,
         student=context["student"],
         status=Attendance.Status.PRESENT,
-        marked_at=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        marked_at=school_dt(2026, 10, 10, 19, 0),
         marked_by=actor,
         updated_by=actor,
     )
     activation_coverage = assign_attendance_coverage(
         attendance_id=activation_attendance.id,
         actor=actor,
-        now=datetime(2026, 10, 10, 16, tzinfo=dt_timezone.utc),
+        now=school_dt(2026, 10, 10, 19, 0),
     )
     assert activation_coverage is not None
 
     absence = make_absence(
         context=context,
         actor=actor,
-        starts_at=datetime(2026, 10, 12, 15, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 12, 18, 0),
     )
     policy = make_policy(code="rolling-case-dependency-policy")
     add_paid_action(
