@@ -212,6 +212,27 @@ RSVP, ABSENT и само наличие Lesson период не активир�
 заранее купленный следующий абонемент не начинает свои 28 дней, пока текущее
 занятие может быть покрыто уже действующим абонементом.
 
+Если coverage, который активировал rolling-период, позднее reverse из-за
+исправления Attendance или административной операции, активация может быть
+откачена. Откат выполняется только если после reversal у этого Subscription
+не осталось других active AttendanceCoverage. Тогда:
+
+```text
+SubscriptionPeriod ACTIVE
+    → PENDING
+    → starts_on / ends_on = NULL
+    → activation_lesson / activated_at = NULL
+
+Subscription
+    → valid_from / valid_until = NULL
+```
+
+Создаётся audit-событие `SubscriptionPeriodActivationReverted`. Если после
+активации уже существует другое active coverage этого Subscription, период
+не сдвигается и не сбрасывается; записывается
+`SubscriptionPeriodActivationRevertSkipped` с причиной
+`active_coverages_remain`.
+
 Service API:
 
 ```python
@@ -579,8 +600,17 @@ Selector `get_reversed_paid_makeups(...)` даёт отчёт «оплачено
 ```text
 CURRENT_PERIOD          → source Subscription.valid_until
 NEXT_STUDENT_PERIOD     → target Subscription.valid_until
+                          или, для PENDING rolling target,
+                          конец 28-дневного окна от billing_period.reference_date
 EXPLICIT_TARGET_WINDOW  → target_until
 ```
+
+Для pending rolling target deadline вычисляется детерминированно до его
+фактической активации: `reference_date` считается возможным первым днём
+28-дневного окна, поэтому deadline равен его 28-му дню
+(`reference_date + 27 days`). Это не позволяет неоплаченной authorization
+бессрочно занимать eligibility slot и блокировать отмену связанных
+Subscription, даже если ученик так и не пришёл на первое занятие.
 
 Поэтому заморозка «на следующий период» не истекает в первый день этого
 периода: неоплаченная authorization остаётся действующей до конца выбранного
