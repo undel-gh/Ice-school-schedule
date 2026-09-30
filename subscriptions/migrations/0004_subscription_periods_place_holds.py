@@ -96,6 +96,7 @@ class Migration(migrations.Migration):
                     "fixed_anchor_snapshot",
                     models.DateField(blank=True, null=True),
                 ),
+                ("reference_date", models.DateField()),
                 (
                     "state",
                     models.CharField(
@@ -319,8 +320,9 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="groupplacehold",
             constraint=models.UniqueConstraint(
+                condition=~models.Q(status="cancelled"),
                 fields=("student", "group", "period_from"),
-                name="grouphold_student_group_period_uq",
+                name="grouphold_active_student_group_period_uq",
             ),
         ),
         migrations.AddConstraint(
