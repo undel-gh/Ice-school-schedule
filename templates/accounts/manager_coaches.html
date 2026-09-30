@@ -9,4 +9,5 @@
 {% if perms.accounts.change_coachprofile %}<a href="{% url 'accounts_manager:coach_edit' coach.id %}">Редактировать</a>{% endif %}
 {% if perms.audit.view_auditevent %} · <a href="{% url 'audit_manager:events' %}?aggregate_type=CoachProfile&aggregate_id={{ coach.id }}">Журнал</a>{% endif %}
 </article>{% empty %}<div class="empty-state">Тренеры не найдены.</div>{% endfor %}</div>
+{% include "shared/manager_pagination.html" %}
 {% endblock %}
