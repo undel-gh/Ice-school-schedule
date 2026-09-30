@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.models import CoachProfile, Student, StudentAccess
 from audit.models import AuditEvent
+from core.time import school_date
+from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
 
 User = get_user_model()
 
@@ -266,3 +271,141 @@ def test_scoped_student_manager_uses_operations_dashboard(client):
     assert dashboard.status_code == 200
     assert "Ученики и доступы" in body
     assert "Абонементы" not in body
+
+
+def _coach_schedule_refs(*, coach, suffix):
+    group = TrainingGroup.objects.create(
+        code=f"coach-group-{suffix}",
+        name=f"Coach group {suffix}",
+    )
+    venue = Venue.objects.create(
+        code=f"coach-venue-{suffix}",
+        name=f"Coach venue {suffix}",
+    )
+    lesson_type = LessonType.objects.create(
+        code=f"coach-ice-{suffix}",
+        name=f"Coach ice {suffix}",
+        subscription_category="ice",
+    )
+    return group, venue, lesson_type
+
+
+@pytest.mark.django_db
+def test_manager_cannot_deactivate_coach_with_active_template(client, manager):
+    user = User.objects.create_user(username="guard-coach-template", password="test")
+    coach = CoachProfile.objects.create(
+        user=user,
+        display_name="Guard coach",
+    )
+    group, venue, lesson_type = _coach_schedule_refs(
+        coach=coach,
+        suffix="template",
+    )
+    today = school_date(timezone.now())
+    ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        weekday=today.weekday(),
+        start_time=timezone.now().time().replace(tzinfo=None),
+        duration_minutes=60,
+        valid_from=today,
+        is_active=True,
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "accounts_manager:coach_edit",
+            kwargs={"coach_id": coach.id},
+        ),
+        {"display_name": coach.display_name, "is_active": ""},
+    )
+
+    assert response.status_code == 200
+    coach.refresh_from_db()
+    assert coach.is_active is True
+    assert "schedule template" in response.content.decode().lower()
+
+
+@pytest.mark.django_db
+def test_manager_cannot_deactivate_coach_with_future_lesson(client, manager):
+    user = User.objects.create_user(username="guard-coach-lesson", password="test")
+    coach = CoachProfile.objects.create(
+        user=user,
+        display_name="Guard lesson coach",
+    )
+    group, venue, lesson_type = _coach_schedule_refs(
+        coach=coach,
+        suffix="lesson",
+    )
+    starts_at = timezone.now() + timedelta(days=7)
+    Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "accounts_manager:coach_edit",
+            kwargs={"coach_id": coach.id},
+        ),
+        {"display_name": coach.display_name, "is_active": ""},
+    )
+
+    assert response.status_code == 200
+    coach.refresh_from_db()
+    assert coach.is_active is True
+    assert "future" in response.content.decode().lower()
+
+
+@pytest.mark.django_db
+def test_user_choice_does_not_expose_email(client, manager):
+    guardian = User.objects.create_user(
+        username="private-guardian",
+        password="test",
+        first_name="Private",
+        last_name="Guardian",
+        email="private@example.test",
+    )
+    student = Student.objects.create(display_name="Student")
+    client.force_login(manager)
+
+    response = client.get(
+        reverse(
+            "accounts_manager:student_access_create",
+            kwargs={"student_id": student.id},
+        )
+    )
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "Private Guardian" in body
+    assert "private@example.test" not in body
+
+
+@pytest.mark.django_db
+def test_student_list_is_paginated_without_silent_truncation(client, manager):
+    for index in range(55):
+        Student.objects.create(display_name=f"Page student {index:03d}")
+    client.force_login(manager)
+
+    first = client.get(reverse("accounts_manager:students"))
+    second = client.get(reverse("accounts_manager:students"), {"page": "2"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.context["page_obj"].paginator.count >= 55
+    assert len(first.context["students"]) == 50
+    assert len(second.context["students"]) >= 5
+    assert "Показано" in first.content.decode()
