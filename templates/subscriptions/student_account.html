@@ -83,7 +83,7 @@
   <article class="lesson-card">
     <div class="lesson-card__top">
       <div>
-        <h3>{{ right.entitlement.entitlement_type|manager_label:"one_time_type" }}</h3>
+        <h3>{{ right.entitlement.entitlement_type|manager_label:"one_time_entitlement" }}</h3>
         <p class="lesson-card__meta">
           {{ right.entitlement.category|manager_label:"subscription_category" }}
           · {{ right.entitlement.lesson.starts_at|school_datetime:"%d.%m.%Y %H:%M" }}
