@@ -1829,6 +1829,7 @@ def attach_subscription_period(
         "scheme": scheme,
         "mode_snapshot": scheme.mode,
         "fixed_anchor_snapshot": scheme.fixed_anchor_date,
+        "reference_date": reference_date,
     }
     if resolved is None:
         period = SubscriptionPeriod.objects.create(**values)
@@ -1895,6 +1896,15 @@ def activate_rolling_subscription_period(
 
     lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
     lesson_date = school_date(lesson.starts_at)
+    if lesson_date < period.reference_date:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Rolling subscription cannot be activated by a lesson "
+                    "before its reference date."
+                )
+            }
+        )
     starts_on, ends_on = resolve_subscription_period_window(
         scheme=period.scheme,
         reference_date=lesson_date,
@@ -2500,6 +2510,7 @@ def _activate_pending_rolling_subscription_for_attendance(
     category: str,
     lesson_date: date,
     actor: User | None,
+    now=None,
 ) -> bool:
     period_ids = list(
         SubscriptionPeriod.objects.filter(
@@ -2510,6 +2521,7 @@ def _activate_pending_rolling_subscription_for_attendance(
             subscription__student_id=attendance.student_id,
             subscription__cancelled_at__isnull=True,
             subscription__allowances__category=category,
+            reference_date__lte=lesson_date,
         )
         .order_by(
             "subscription__created_at",
@@ -2526,6 +2538,8 @@ def _activate_pending_rolling_subscription_for_attendance(
             .get(pk=period_id)
         )
         if period.state != SubscriptionPeriod.State.PENDING:
+            continue
+        if lesson_date < period.reference_date:
             continue
 
         allowance = (
@@ -2556,7 +2570,7 @@ def _activate_pending_rolling_subscription_for_attendance(
         period.starts_on = starts_on
         period.ends_on = ends_on
         period.activation_lesson_id = attendance.lesson_id
-        period.activated_at = timezone.now()
+        period.activated_at = now or timezone.now()
         period.save(
             update_fields=[
                 "state",
@@ -2696,6 +2710,7 @@ def assign_attendance_coverage(
     attendance_id: UUID,
     actor: User | None = None,
     correlation_id: UUID | None = None,
+    now=None,
 ) -> AttendanceCoverage | None:
     correlation_id = correlation_id or uuid4()
     attendance = (
@@ -2739,12 +2754,25 @@ def assign_attendance_coverage(
     if coverage is not None:
         return coverage
 
-    _activate_pending_rolling_subscription_for_attendance(
+    coverage = _try_ordinary_allowance_coverage(
         attendance=attendance,
         category=category,
         lesson_date=lesson_date,
         actor=actor,
+        correlation_id=correlation_id,
     )
+    if coverage is not None:
+        return coverage
+
+    activated = _activate_pending_rolling_subscription_for_attendance(
+        attendance=attendance,
+        category=category,
+        lesson_date=lesson_date,
+        actor=actor,
+        now=now,
+    )
+    if not activated:
+        return None
 
     return _try_ordinary_allowance_coverage(
         attendance=attendance,
