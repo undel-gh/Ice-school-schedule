@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Сохранить место в группе{% endblock %}
+
+{% block content %}
+<header class="page-header">
+  <h1>Сохранить место в группе</h1>
+  <p class="page-header__meta">
+    Услуга создаётся на один полный расчётный период выбранной модели.
+  </p>
+</header>
+
+<form class="auth-card" method="post">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  {% for field in form %}
+    <div class="field">
+      {{ field.label_tag }}
+      {{ field }}
+      {{ field.errors }}
+    </div>
+  {% endfor %}
+  <button class="btn-primary" type="submit">Создать сохранение места</button>
+</form>
+{% endblock %}
