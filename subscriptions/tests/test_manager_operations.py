@@ -509,3 +509,23 @@ def test_compensation_case_choices_exclude_active_case_and_old_absence(
     assert fresh_attendance.id in choice_ids
     assert active_attendance.id not in choice_ids
     assert old_attendance.id not in choice_ids
+
+
+@pytest.mark.django_db
+def test_manager_post_checks_permission_before_compensation_lookup(client):
+    import uuid
+
+    outsider = User.objects.create_user(
+        username="manager-compensation-outsider",
+        password="test",
+    )
+    client.force_login(outsider)
+
+    response = client.post(
+        reverse(
+            "subscriptions:manager_compensation_cancel",
+            kwargs={"case_id": uuid.uuid4()},
+        )
+    )
+
+    assert response.status_code == 403
