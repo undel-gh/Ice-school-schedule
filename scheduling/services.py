@@ -1573,3 +1573,112 @@ def complete_lesson(
         payload={"completed_at": now.isoformat()},
     )
     return lesson
+
+
+def _clean_group_text(value: str, *, field: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValidationError({field: "This field is required."})
+    return value
+
+
+@transaction.atomic
+def create_training_group(
+    *,
+    code: str,
+    name: str,
+    default_minimum_attendees: int,
+    is_active: bool,
+    actor: User,
+) -> TrainingGroup:
+    require_permission(
+        actor,
+        "scheduling.add_traininggroup",
+        "Training group creation permission is required.",
+    )
+    code = _clean_group_text(code, field="code")
+    name = _clean_group_text(name, field="name")
+    if default_minimum_attendees < 1:
+        raise ValidationError(
+            {"default_minimum_attendees": "Minimum attendees must be at least 1."}
+        )
+    if TrainingGroup.objects.filter(code=code).exists():
+        raise ValidationError({"code": "A group with this code already exists."})
+    group = TrainingGroup.objects.create(
+        code=code,
+        name=name,
+        default_minimum_attendees=default_minimum_attendees,
+        is_active=is_active,
+    )
+    record_event(
+        event_type="TrainingGroupCreated",
+        aggregate_type="TrainingGroup",
+        aggregate_id=group.id,
+        actor=actor,
+        payload={
+            "code": group.code,
+            "name": group.name,
+            "default_minimum_attendees": group.default_minimum_attendees,
+            "is_active": group.is_active,
+        },
+    )
+    return group
+
+
+@transaction.atomic
+def update_training_group(
+    *,
+    group_id: UUID,
+    code: str,
+    name: str,
+    default_minimum_attendees: int,
+    is_active: bool,
+    actor: User,
+) -> TrainingGroup:
+    require_permission(
+        actor,
+        "scheduling.change_traininggroup",
+        "Training group change permission is required.",
+    )
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    code = _clean_group_text(code, field="code")
+    name = _clean_group_text(name, field="name")
+    if default_minimum_attendees < 1:
+        raise ValidationError(
+            {"default_minimum_attendees": "Minimum attendees must be at least 1."}
+        )
+    if TrainingGroup.objects.filter(code=code).exclude(pk=group.id).exists():
+        raise ValidationError({"code": "A group with this code already exists."})
+    previous = {
+        "code": group.code,
+        "name": group.name,
+        "default_minimum_attendees": group.default_minimum_attendees,
+        "is_active": group.is_active,
+    }
+    group.code = code
+    group.name = name
+    group.default_minimum_attendees = default_minimum_attendees
+    group.is_active = is_active
+    group.save(
+        update_fields=[
+            "code",
+            "name",
+            "default_minimum_attendees",
+            "is_active",
+            "updated_at",
+        ]
+    )
+    record_event(
+        event_type="TrainingGroupChanged",
+        aggregate_type="TrainingGroup",
+        aggregate_id=group.id,
+        actor=actor,
+        payload={
+            "previous": previous,
+            "code": group.code,
+            "name": group.name,
+            "default_minimum_attendees": group.default_minimum_attendees,
+            "is_active": group.is_active,
+        },
+    )
+    return group
