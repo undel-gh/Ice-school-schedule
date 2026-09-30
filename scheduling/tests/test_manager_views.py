@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from accounts.models import CoachProfile
 from audit.models import AuditEvent
-from core.time import make_school_aware
+from core.time import make_school_aware, school_date
 from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
 
 User = get_user_model()
@@ -45,7 +45,7 @@ def manager_schedule_context(db):
 @pytest.mark.django_db
 def test_manager_creates_schedule_template_through_service(client, manager_schedule_context):
     ctx = manager_schedule_context
-    valid_from = timezone.localdate() + timedelta(days=14)
+    valid_from = school_date(timezone.now()) + timedelta(days=14)
     client.force_login(ctx["manager"])
 
     response = client.post(
@@ -78,7 +78,7 @@ def test_manager_creates_schedule_template_through_service(client, manager_sched
 @pytest.mark.django_db
 def test_manager_resolves_generation_conflict_with_skip(client, manager_schedule_context):
     ctx = manager_schedule_context
-    occurrence_date = timezone.localdate() + timedelta(days=21)
+    occurrence_date = school_date(timezone.now()) + timedelta(days=21)
     template = ScheduleTemplate.objects.create(
         group=ctx["group"],
         lesson_type=ctx["lesson_type"],
@@ -170,7 +170,7 @@ def test_manager_publishes_draft_lesson(client, manager_schedule_context):
 @pytest.mark.django_db
 def test_manager_versions_schedule_template(client, manager_schedule_context):
     ctx = manager_schedule_context
-    valid_from = timezone.localdate() + timedelta(days=14)
+    valid_from = school_date(timezone.now()) + timedelta(days=14)
     effective_from = valid_from + timedelta(days=7)
     template = ScheduleTemplate.objects.create(
         group=ctx["group"],
@@ -221,7 +221,7 @@ def test_generation_conflict_is_resolved_when_template_occurrence_materializes(
     manager_schedule_context,
 ):
     ctx = manager_schedule_context
-    occurrence_date = timezone.localdate() + timedelta(days=28)
+    occurrence_date = school_date(timezone.now()) + timedelta(days=28)
     template = ScheduleTemplate.objects.create(
         group=ctx["group"],
         lesson_type=ctx["lesson_type"],
