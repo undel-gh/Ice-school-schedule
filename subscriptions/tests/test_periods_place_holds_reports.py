@@ -25,6 +25,7 @@ from subscriptions.services import (
     confirm_group_place_hold_fee,
     create_group_place_hold,
     issue_subscription,
+    issue_subscription_for_period,
     resolve_subscription_period_window,
 )
 
@@ -333,3 +334,96 @@ def test_manager_subscription_report_separates_direct_and_makeup_visits(
     assert report.makeup_total == 1
     assert report.makeup_used == 1
     assert report.makeup_available == 0
+
+
+@pytest.mark.django_db
+def test_rolling_subscription_activates_on_first_ordinary_coverage(
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-auto",
+        name="Rolling auto",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(code="rolling-auto-plan", scheme=scheme, ice=2)
+
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 1),
+        actor=actor,
+        now=datetime(2026, 9, 1, 10, tzinfo=dt_timezone.utc),
+    )
+
+    subscription.refresh_from_db()
+    assert subscription.valid_from is None
+    assert subscription.valid_until is None
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.PENDING
+
+    first_lesson = make_lesson(
+        context=context,
+        starts_at=datetime(
+            2026,
+            9,
+            12,
+            15,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = Attendance.objects.create(
+        lesson=first_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_by=actor,
+    )
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+
+    subscription.refresh_from_db()
+    period.refresh_from_db()
+    assert coverage is not None
+    assert coverage.subscription_allowance.subscription_id == subscription.id
+    assert subscription.valid_from == date(2026, 9, 12)
+    assert subscription.valid_until == date(2026, 10, 9)
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert period.starts_on == date(2026, 9, 12)
+    assert period.ends_on == date(2026, 10, 9)
+    assert period.activation_lesson_id == first_lesson.id
+
+    row = manager_subscription_report(
+        as_of=date(2026, 9, 12),
+        student_id=student.id,
+    )[0]
+    assert row.subscription_state == "active"
+    assert row.allowances[0].consumed_visits == 1
+    assert row.allowances[0].remaining_visits == 1
+
+
+@pytest.mark.django_db
+def test_calendar_subscription_issue_uses_scheme_window(actor, student):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="calendar-issue",
+        name="Calendar issue",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = make_plan(code="calendar-issue-plan", scheme=scheme, ice=4)
+
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 19),
+        actor=actor,
+        now=datetime(2026, 9, 19, 10, tzinfo=dt_timezone.utc),
+    )
+
+    assert subscription.valid_from == date(2026, 9, 1)
+    assert subscription.valid_until == date(2026, 9, 30)
+    assert subscription.billing_period.state == SubscriptionPeriod.State.ACTIVE
+    assert subscription.billing_period.starts_on == date(2026, 9, 1)
+    assert subscription.billing_period.ends_on == date(2026, 9, 30)
