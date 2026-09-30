@@ -161,3 +161,51 @@ def test_manager_publishes_draft_lesson(client, manager_schedule_context):
     assert response.status_code == 302
     lesson.refresh_from_db()
     assert lesson.status == Lesson.Status.RSVP_OPEN
+
+
+@pytest.mark.django_db
+def test_manager_versions_schedule_template(client, manager_schedule_context):
+    ctx = manager_schedule_context
+    valid_from = timezone.localdate() + timedelta(days=14)
+    effective_from = valid_from + timedelta(days=7)
+    template = ScheduleTemplate.objects.create(
+        group=ctx["group"],
+        lesson_type=ctx["lesson_type"],
+        coach=ctx["coach"],
+        venue=ctx["venue"],
+        weekday=valid_from.weekday(),
+        start_time=time(18, 0),
+        duration_minutes=60,
+        valid_from=valid_from,
+        is_active=True,
+    )
+    client.force_login(ctx["manager"])
+
+    response = client.post(
+        reverse(
+            "scheduling_manager:template_version",
+            kwargs={"template_id": template.id},
+        ),
+        {
+            "group": str(ctx["group"].id),
+            "lesson_type": str(ctx["lesson_type"].id),
+            "coach": str(ctx["coach"].id),
+            "venue": str(ctx["venue"].id),
+            "weekday": str(effective_from.weekday()),
+            "start_time": "19:00",
+            "duration_minutes": "75",
+            "minimum_attendees_override": "2",
+            "effective_from": effective_from.isoformat(),
+        },
+    )
+
+    assert response.status_code == 302
+    template.refresh_from_db()
+    assert template.valid_until == effective_from - timedelta(days=1)
+    replacement = ScheduleTemplate.objects.exclude(pk=template.id).get(
+        group=ctx["group"]
+    )
+    assert replacement.valid_from == effective_from
+    assert replacement.start_time == time(19, 0)
+    assert replacement.duration_minutes == 75
+    assert replacement.minimum_attendees_override == 2
