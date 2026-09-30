@@ -101,7 +101,7 @@ class ManagerCompensationCaseCreateForm(forms.Form):
         label="Пропуск",
         help_text=(
             "Показываются пропуски за последние 60 дней и на 60 дней вперёд. "
-            "Более старые случаи пока оформляются через административный процесс."
+            "Случаи старше 60 дней пока недоступны в этой форме."
         ),
     )
     absence_reason = forms.ChoiceField(
