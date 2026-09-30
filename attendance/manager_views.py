@@ -12,7 +12,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from core.permissions import require_permission
-from core.presentation import validation_message
+from core.presentation import localized_choices, validation_message
 from core.time import school_date
 
 from .forms import ManagerMedicalVerifyForm
@@ -46,7 +46,10 @@ def manager_medical_absences(request: HttpRequest) -> HttpResponse:
         "attendance/manager_medical_absences.html",
         {
             "justifications": justifications[:300],
-            "statuses": AbsenceJustification.Status.choices,
+            "statuses": localized_choices(
+                "medical_status",
+                AbsenceJustification.Status.choices,
+            ),
             "selected_status": status or "",
         },
     )
