@@ -18,7 +18,7 @@ from core.permissions import (
 )
 from core.time import make_school_aware, school_date as get_school_date
 
-from accounts.models import Student
+from accounts.models import CoachProfile, Student
 from audit.services import event_exists_with_payload, record_event
 from .models import (
     GroupMembership,
@@ -89,7 +89,16 @@ def create_group_membership(
             {"ends_on": "Membership end date cannot precede start date."}
         )
 
-    Student.objects.select_for_update().get(pk=student_id)
+    student = Student.objects.select_for_update().get(pk=student_id)
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    if not student.is_active:
+        raise ValidationError(
+            {"student": "Inactive students cannot be added to a group."}
+        )
+    if not group.is_active:
+        raise ValidationError(
+            {"group": "Students cannot be added to an inactive group."}
+        )
     existing = list(
         GroupMembership.objects.select_for_update().filter(
             student_id=student_id,
@@ -245,6 +254,17 @@ def create_schedule_template(
             }
         )
 
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    coach = CoachProfile.objects.select_for_update().get(pk=coach_id)
+    if not group.is_active:
+        raise ValidationError(
+            {"group": "Inactive groups cannot be used by an active schedule template."}
+        )
+    if not coach.is_active:
+        raise ValidationError(
+            {"coach": "Inactive coaches cannot be used by an active schedule template."}
+        )
+
     template = ScheduleTemplate.objects.create(
         group_id=group_id,
         lesson_type_id=lesson_type_id,
@@ -370,6 +390,21 @@ def version_schedule_template(
                     "minimum_attendees_override must be at least 1."
                 )
             }
+        )
+
+    target_group = TrainingGroup.objects.select_for_update().get(
+        pk=new_values["group_id"]
+    )
+    target_coach = CoachProfile.objects.select_for_update().get(
+        pk=new_values["coach_id"]
+    )
+    if not target_group.is_active:
+        raise ValidationError(
+            {"group": "Inactive groups cannot be used by an active schedule template."}
+        )
+    if not target_coach.is_active:
+        raise ValidationError(
+            {"coach": "Inactive coaches cannot be used by an active schedule template."}
         )
 
     cutoff = make_school_aware(
@@ -570,10 +605,11 @@ def skip_template_occurrence(
     )
     template = (
         ScheduleTemplate.objects.select_for_update()
-        .select_related("group")
+        .select_related("group", "coach")
         .get(pk=template_id)
     )
     TrainingGroup.objects.select_for_update().get(pk=template.group_id)
+    CoachProfile.objects.select_for_update().get(pk=template.coach_id)
 
     if not template.is_active:
         raise ValidationError(
@@ -718,6 +754,14 @@ def generate_lessons(
     if not template.is_active:
         raise ValidationError(
             {"template": "Inactive schedule templates cannot generate lessons."}
+        )
+    if not template.group.is_active:
+        raise ValidationError(
+            {"group": "Inactive groups cannot generate lessons."}
+        )
+    if not template.coach.is_active:
+        raise ValidationError(
+            {"coach": "Inactive coaches cannot generate lessons."}
         )
 
     effective_from = max(from_date, template.valid_from)
@@ -1003,10 +1047,23 @@ def publish_lesson(
     actor: User | None,
     now: datetime,
 ) -> Lesson:
-    lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
+    lesson = (
+        Lesson.objects.select_for_update()
+        .select_related("group", "coach")
+        .get(pk=lesson_id)
+    )
     if lesson.status != Lesson.Status.DRAFT:
         raise ValidationError(
             {"lesson": "Only a DRAFT lesson can be published."}
+        )
+
+    if not lesson.group.is_active:
+        raise ValidationError(
+            {"group": "Lessons for an inactive group cannot be published."}
+        )
+    if not lesson.coach.is_active:
+        raise ValidationError(
+            {"coach": "Lessons assigned to an inactive coach cannot be published."}
         )
 
     lesson_date = get_school_date(lesson.starts_at)
@@ -1133,6 +1190,11 @@ def set_lesson_response(
         actor=actor,
         student_id=student_id,
     )
+    student = Student.objects.select_for_update().get(pk=student_id)
+    if not student.is_active:
+        raise ValidationError(
+            {"student": "Inactive students cannot submit RSVP responses."}
+        )
 
     try:
         LessonRosterEntry.objects.select_for_update().get(
@@ -1660,6 +1722,40 @@ def update_training_group(
         "default_minimum_attendees": group.default_minimum_attendees,
         "is_active": group.is_active,
     }
+    if group.is_active and not is_active:
+        now = timezone.now()
+        today = get_school_date(now)
+        has_active_template = (
+            ScheduleTemplate.objects.select_for_update()
+            .filter(group=group, is_active=True)
+            .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
+            .exists()
+        )
+        if has_active_template:
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "The group cannot be deactivated while it has an active "
+                        "current or future schedule template. End or version the "
+                        "template first."
+                    )
+                }
+            )
+        has_future_lesson = (
+            Lesson.objects.select_for_update()
+            .filter(group=group, starts_at__gte=now)
+            .exclude(status=Lesson.Status.CANCELLED)
+            .exists()
+        )
+        if has_future_lesson:
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "The group cannot be deactivated while it has future "
+                        "non-cancelled lessons. Cancel or reschedule them first."
+                    )
+                }
+            )
     group.code = code
     group.name = name
     group.default_minimum_attendees = default_minimum_attendees
