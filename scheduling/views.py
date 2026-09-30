@@ -85,6 +85,8 @@ def home(request: HttpRequest) -> HttpResponse:
         coach = None
     if coach is not None and coach.is_active:
         return redirect("scheduling:coach_schedule")
+    if request.user.has_perm("subscriptions.view_subscription"):
+        return redirect("subscriptions:manager_subscription_report")
     if request.user.is_staff:
         return redirect("admin:index")
     raise PermissionDenied("No active school role is assigned.")
