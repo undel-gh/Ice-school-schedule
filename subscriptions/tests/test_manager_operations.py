@@ -205,3 +205,115 @@ def test_manager_grants_administrative_makeup(client, operations_context):
         source_lesson=ctx["lesson"],
         reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_manager_runs_paid_makeup_workflow_with_refund_decision(
+    client,
+    operations_context,
+):
+    ctx = operations_context
+    source_date = timezone.localdate(ctx["lesson"].starts_at)
+    plan = SubscriptionPlan.objects.create(
+        code="paid-web-plan",
+        name="Paid web plan",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    issue_subscription(
+        student_id=ctx["student"].id,
+        plan_id=plan.id,
+        valid_from=source_date - timedelta(days=5),
+        valid_until=source_date + timedelta(days=5),
+        actor=ctx["manager"],
+    )
+    policy = AbsenceCompensationPolicy.objects.create(
+        code="paid-web-policy",
+        version=1,
+        name="Paid web policy",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        effective_from=source_date - timedelta(days=30),
+    )
+    AbsenceCompensationPolicyAction.objects.create(
+        policy=policy,
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP,
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.FEE_REQUIRED,
+    )
+    attendance = Attendance.objects.create(
+        lesson=ctx["lesson"],
+        student=ctx["student"],
+        status=Attendance.Status.ABSENT,
+        marked_at=ctx["lesson"].ends_at,
+        marked_by=ctx["manager"],
+        updated_by=ctx["manager"],
+    )
+    client.force_login(ctx["manager"])
+
+    created = client.post(
+        reverse("subscriptions:manager_compensation_case_create"),
+        {
+            "attendance": str(attendance.id),
+            "absence_reason": AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+            "policy_code": policy.code,
+        },
+    )
+    assert created.status_code == 302
+    case = AbsenceCompensationCase.objects.get(attendance=attendance)
+
+    authorized = client.post(
+        reverse(
+            "subscriptions:manager_compensation_authorize_paid",
+            kwargs={"case_id": case.id},
+        ),
+        {"target_subscription": "", "fee_confirmed": ""},
+    )
+    assert authorized.status_code == 302
+    grant = case.action_grants.get(
+        action_type=AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+    )
+    assert grant.fee_confirmed_at is None
+
+    confirmed = client.post(
+        reverse(
+            "subscriptions:manager_compensation_confirm_fee",
+            kwargs={"grant_id": grant.id},
+        )
+    )
+    assert confirmed.status_code == 302
+    grant.refresh_from_db()
+    assert grant.fee_confirmed_at is not None
+
+    activated = client.post(
+        reverse(
+            "subscriptions:manager_compensation_activate_paid",
+            kwargs={"grant_id": grant.id},
+        ),
+        {"target_subscription": ""},
+    )
+    assert activated.status_code == 302
+    grant.refresh_from_db()
+    assert grant.activated_at is not None
+    assert grant.makeup_entitlement is not None
+
+    reversed_response = client.post(
+        reverse(
+            "subscriptions:manager_compensation_reverse",
+            kwargs={"case_id": case.id},
+        ),
+        {
+            "reason": "manager correction",
+            "refund_required": "no",
+        },
+    )
+    assert reversed_response.status_code == 302
+    case.refresh_from_db()
+    grant.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.REVERSED
+    assert grant.reversed_at is not None
+    assert grant.refund_required is False
