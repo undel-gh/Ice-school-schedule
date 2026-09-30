@@ -9,7 +9,7 @@ from django.core.management.base import CommandError
 
 from accounts.models import CoachProfile, Student
 from audit.models import AuditEvent
-from core.time import make_school_aware
+from core.testing import school_dt
 from scheduling.models import (
     GroupMembership,
     Lesson,
@@ -51,16 +51,6 @@ def ops_context(db, django_user_model):
         subscription_category="ice",
     )
     return actor, coach, group, venue, lesson_type
-
-
-def school_dt(
-    year: int,
-    month: int,
-    day: int,
-    hour: int,
-    minute: int = 0,
-) -> datetime:
-    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 def make_lesson(*, ops_context, status, starts_at):
