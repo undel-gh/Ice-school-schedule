@@ -209,3 +209,62 @@ def test_manager_versions_schedule_template(client, manager_schedule_context):
     assert replacement.start_time == time(19, 0)
     assert replacement.duration_minutes == 75
     assert replacement.minimum_attendees_override == 2
+
+
+@pytest.mark.django_db
+def test_generation_conflict_is_resolved_when_template_occurrence_materializes(
+    client,
+    manager_schedule_context,
+):
+    ctx = manager_schedule_context
+    occurrence_date = timezone.localdate() + timedelta(days=28)
+    template = ScheduleTemplate.objects.create(
+        group=ctx["group"],
+        lesson_type=ctx["lesson_type"],
+        coach=ctx["coach"],
+        venue=ctx["venue"],
+        weekday=occurrence_date.weekday(),
+        start_time=time(18, 0),
+        duration_minutes=60,
+        valid_from=occurrence_date,
+        valid_until=occurrence_date,
+        is_active=True,
+    )
+    starts_at = timezone.make_aware(
+        datetime.combine(occurrence_date, time(18, 0))
+    )
+    occurrence = Lesson.objects.create(
+        source_template=template,
+        group=ctx["group"],
+        lesson_type=ctx["lesson_type"],
+        coach=ctx["coach"],
+        venue=ctx["venue"],
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    event = AuditEvent.objects.create(
+        event_type="LessonGenerationConflict",
+        actor=ctx["manager"],
+        aggregate_type="ScheduleTemplate",
+        aggregate_id=template.id,
+        payload={
+            "conflicting_lesson_id": str(occurrence.id),
+            "expected_starts_at": starts_at.isoformat(),
+            "expected_ends_at": (starts_at + timedelta(hours=1)).isoformat(),
+        },
+    )
+    client.force_login(ctx["manager"])
+
+    response = client.get(reverse("scheduling_manager:conflicts"))
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert "решён" in body
+    assert reverse(
+        "scheduling_manager:conflict_skip",
+        kwargs={"event_id": event.id},
+    ) not in body
