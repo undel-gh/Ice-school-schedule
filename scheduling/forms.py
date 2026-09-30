@@ -5,6 +5,7 @@ from datetime import datetime
 from django import forms
 from django.core.exceptions import ValidationError
 
+from core.presentation import localized_choices
 from core.time import make_school_aware, school_timezone
 
 from accounts.models import CoachProfile
@@ -83,7 +84,13 @@ class ManagerScheduleTemplateVersionForm(ManagerScheduleTemplateForm):
 
 
 class ManagerLessonCancelForm(forms.Form):
-    reason = forms.ChoiceField(choices=Lesson.CancellationReason.choices, label="Причина")
+    reason = forms.ChoiceField(
+        choices=localized_choices(
+            "lesson_cancellation_reason",
+            Lesson.CancellationReason.choices,
+        ),
+        label="Причина",
+    )
 
 
 class ManagerLessonRescheduleForm(forms.Form):
@@ -103,4 +110,10 @@ class ManagerLessonRescheduleForm(forms.Form):
         ),
         input_formats=["%Y-%m-%dT%H:%M"],
     )
-    reason = forms.ChoiceField(choices=Lesson.CancellationReason.choices, label="Причина")
+    reason = forms.ChoiceField(
+        choices=localized_choices(
+            "lesson_cancellation_reason",
+            Lesson.CancellationReason.choices,
+        ),
+        label="Причина",
+    )
