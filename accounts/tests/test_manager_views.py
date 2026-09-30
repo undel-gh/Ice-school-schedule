@@ -176,3 +176,66 @@ def test_student_list_searches_display_name(client, manager):
     assert response.status_code == 200
     assert "Мария" in body
     assert "Пётр" not in body
+
+
+@pytest.mark.django_db
+def test_manager_can_edit_access_when_linked_user_is_inactive(client, manager):
+    student = Student.objects.create(display_name="Ученик")
+    user = User.objects.create_user(
+        username="inactive-guardian",
+        password="test",
+        is_active=False,
+    )
+    access = StudentAccess.objects.create(
+        student=student,
+        user=user,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "accounts_manager:student_access_edit",
+            kwargs={"access_id": access.id},
+        ),
+        {
+            "role": StudentAccess.Role.GUARDIAN,
+            "is_active": "",
+        },
+    )
+
+    assert response.status_code == 302
+    access.refresh_from_db()
+    assert access.is_active is False
+
+
+@pytest.mark.django_db
+def test_manager_can_edit_coach_when_linked_user_is_inactive(client, manager):
+    user = User.objects.create_user(
+        username="inactive-coach-user",
+        password="test",
+        is_active=False,
+    )
+    coach = CoachProfile.objects.create(
+        user=user,
+        display_name="Тренер",
+        is_active=True,
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "accounts_manager:coach_edit",
+            kwargs={"coach_id": coach.id},
+        ),
+        {
+            "display_name": "Бывший тренер",
+            "is_active": "",
+        },
+    )
+
+    assert response.status_code == 302
+    coach.refresh_from_db()
+    assert coach.display_name == "Бывший тренер"
+    assert coach.is_active is False
