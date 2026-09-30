@@ -1078,3 +1078,30 @@ one-time entitlement и administrative makeup ограничен окном ±60
 presentation helper. POST endpoints сначала проверяют требуемые permissions и
 только затем выполняют lookup объекта, поэтому существование UUID не меняет
 403 на 404 для пользователя без соответствующего права.
+
+
+# 13. Реализованный school administration UI
+
+Штатное администрирование основных сущностей школы доступно через manager web
+и не требует Django Admin или management commands.
+
+Реализованы:
+
+- Student: список, поиск, создание, изменение display name и активности;
+- StudentAccess: привязка существующего User к Student с ролью SELF/GUARDIAN,
+  отключение и повторная активация через изменение существующей записи;
+- CoachProfile: создание профиля для существующего User, изменение имени и
+  активности;
+- TrainingGroup: список, поиск, создание и изменение code/name,
+  default minimum attendees и активности;
+- GroupMembership: общий список текущих/будущих/исторических интервалов,
+  создание membership и изменение его starts_on/ends_on.
+
+StudentAccess и CoachProfile не перепривязываются к другому User после
+создания. GroupMembership не меняет Student/TrainingGroup после создания:
+перевод ученика в другую группу моделируется завершением старого интервала и
+созданием нового. Исторические записи не удаляются.
+
+Все записи выполняются через application services и создают AuditEvent.
+Существующие проверки пересечения GroupMembership остаются источником истины
+для web и CLI.
