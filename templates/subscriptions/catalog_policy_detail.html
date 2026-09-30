@@ -1,12 +1,13 @@
+{% load manager_labels %}
 {% extends "base.html" %}
 {% block title %}{{ policy.name }} v{{ policy.version }}{% endblock %}
 {% block content %}
-<header class="page-header"><h1>{{ policy.name }} · v{{ policy.version }}</h1><p class="page-header__meta">{{ policy.code }} · {{ policy.get_absence_reason_display }}</p></header>
+<header class="page-header"><h1>{{ policy.name }} · v{{ policy.version }}</h1><p class="page-header__meta">{{ policy.code }} · {{ policy.absence_reason|manager_label:"absence_reason" }}</p></header>
 <article class="report-card">
 <div class="lesson-card__top"><h2>Версия политики</h2>{% if policy.is_active %}<span class="badge badge--covered">активна</span>{% else %}<span class="badge badge--cancelled">неактивна</span>{% endif %}</div>
 <p>Период: {{ policy.effective_from|date:"d.m.Y" }}—{% if policy.effective_until %}{{ policy.effective_until|date:"d.m.Y" }}{% else %}∞{% endif %}</p>
-<p>Подтверждение: {{ policy.get_justification_requirement_display }}</p>
-<p>Лимит: {% if policy.max_eligible_absences %}{{ policy.max_eligible_absences }}{% else %}без ограничения{% endif %} · {{ policy.get_limit_scope_display }}</p>
+<p>Подтверждение: {{ policy.justification_requirement|manager_label:"policy_justification" }}</p>
+<p>Лимит: {% if policy.max_eligible_absences %}{{ policy.max_eligible_absences }}{% else %}без ограничения{% endif %} · {{ policy.limit_scope|manager_label:"policy_limit_scope" }}</p>
 {% if referenced %}<p><strong>Версия уже использована.</strong> Её поля, actions и windows неизменяемы.</p>{% endif %}
 <div class="action-row manager-actions">
 {% if not referenced and perms.subscriptions.change_absencecompensationpolicy %}<a class="btn btn-secondary" href="{% url 'subscriptions:manager_policy_edit' policy.id %}">Редактировать</a>{% endif %}
@@ -19,15 +20,15 @@
 <div class="card-list">
 {% for action in actions %}
 <article class="lesson-card">
-<div class="lesson-card__top"><div><h3>{{ action.get_action_type_display }}</h3><p class="lesson-card__meta">priority {{ action.priority }}</p></div>{% if action.is_active %}<span class="badge badge--covered">активно</span>{% else %}<span class="badge badge--cancelled">неактивно</span>{% endif %}</div>
-<p>{{ action.get_target_period_rule_display }} · {{ action.get_requirement_display }}{% if action.validity_days %} · {{ action.validity_days }} дней{% endif %}</p>
+<div class="lesson-card__top"><div><h3>{{ action.action_type|manager_label:"policy_action_type" }}</h3><p class="lesson-card__meta">priority {{ action.priority }}</p></div>{% if action.is_active %}<span class="badge badge--covered">активно</span>{% else %}<span class="badge badge--cancelled">неактивно</span>{% endif %}</div>
+<p>{{ action.target_period_rule|manager_label:"policy_target_period" }} · {{ action.requirement|manager_label:"policy_requirement" }}{% if action.validity_days %} · {{ action.validity_days }} дней{% endif %}</p>
 {% if not referenced and perms.subscriptions.change_absencecompensationpolicyaction %}<a href="{% url 'subscriptions:manager_policy_action_edit' action.id %}">Редактировать действие</a>{% endif %}
 {% if not referenced and perms.subscriptions.add_absencecompensationpolicywindow %} · <a href="{% url 'subscriptions:manager_policy_window_create' action.id %}">Добавить окно</a>{% endif %}
 {% for window in action.windows.all %}
 <div class="report-card">
 <strong>{{ window.name }}</strong> · priority {{ window.priority }}{% if not window.is_active %} · неактивно{% endif %}
 <p>Источник: {{ window.source_from|date:"d.m.Y" }}—{{ window.source_until|date:"d.m.Y" }} · цель: {{ window.target_from|date:"d.m.Y" }}—{{ window.target_until|date:"d.m.Y" }}</p>
-{% if window.requirement_override %}<p>Условие окна: {{ window.get_requirement_override_display }}</p>{% endif %}
+{% if window.requirement_override %}<p>Условие окна: {{ window.requirement_override|manager_label:"policy_requirement" }}</p>{% endif %}
 {% if not referenced and perms.subscriptions.change_absencecompensationpolicywindow %}<a href="{% url 'subscriptions:manager_policy_window_edit' window.id %}">Редактировать окно</a>{% endif %}
 </div>
 {% empty %}<p class="lesson-card__meta">Сезонных окон нет.</p>{% endfor %}
