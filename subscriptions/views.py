@@ -21,7 +21,11 @@ from subscriptions.forms import (
     ManagerSubscriptionCancelForm,
     ManagerSubscriptionIssueForm,
 )
-from subscriptions.models import GroupPlaceHold, SubscriptionAllowance
+from subscriptions.models import (
+    GroupPlaceHold,
+    Subscription,
+    SubscriptionAllowance,
+)
 from subscriptions.selectors import (
     manager_subscription_detail,
     manager_subscription_report,
@@ -321,7 +325,7 @@ def manager_subscription_detail_view(
             subscription_id=subscription_id,
             as_of=school_date(timezone.now()),
         )
-    except StopIteration as exc:
+    except (Subscription.DoesNotExist, StopIteration) as exc:
         raise Http404("Subscription not found.") from exc
 
     return render(
