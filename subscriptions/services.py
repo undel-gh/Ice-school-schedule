@@ -2192,8 +2192,12 @@ def issue_subscription(
             "student_id": str(student.id),
             "plan_id": str(plan.id),
             "plan_code": subscription.plan_code_snapshot,
-            "valid_from": valid_from.isoformat(),
-            "valid_until": valid_until.isoformat(),
+            "valid_from": (
+                valid_from.isoformat() if valid_from is not None else None
+            ),
+            "valid_until": (
+                valid_until.isoformat() if valid_until is not None else None
+            ),
             "allowances": issued,
         },
     )
