@@ -14,6 +14,7 @@ from django.views.decorators.http import require_POST
 
 from audit.models import AuditEvent
 from core.permissions import require_permission
+from core.presentation import validation_message
 from core.time import make_school_aware, school_date
 from ice_school.workflows import reschedule_lesson_with_entitlements
 
@@ -34,16 +35,6 @@ from .services import (
 )
 
 MAX_MANAGER_RANGE_DAYS = 366
-
-
-def _validation_message(exc: ValidationError) -> str:
-    if hasattr(exc, "message_dict"):
-        return " ".join(
-            message
-            for messages_ in exc.message_dict.values()
-            for message in messages_
-        )
-    return " ".join(exc.messages)
 
 
 def _parse_date(value: str | None, *, default: date) -> date:
@@ -96,7 +87,7 @@ def manager_schedule_template_create(request: HttpRequest) -> HttpResponse:
                 actor=request.user,
             )
         except ValidationError as exc:
-            form.add_error(None, _validation_message(exc))
+            form.add_error(None, validation_message(exc))
         else:
             messages.success(request, "Шаблон расписания создан.")
             return redirect(
@@ -186,7 +177,7 @@ def manager_schedule_template_version(
                 ],
             )
         except ValidationError as exc:
-            form.add_error(None, _validation_message(exc))
+            form.add_error(None, validation_message(exc))
         else:
             messages.success(request, "Создана новая версия шаблона.")
             return redirect(
@@ -313,7 +304,7 @@ def manager_skip_generation_conflict(
     except (KeyError, TypeError, ValueError):
         messages.error(request, "Audit-событие конфликта повреждено.")
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Регулярное занятие явно пропущено.")
     return redirect("scheduling_manager:conflicts")
@@ -414,7 +405,7 @@ def manager_publish_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResp
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Занятие опубликовано.")
     return redirect("scheduling_manager:lesson_detail", lesson_id=lesson_id)
@@ -431,7 +422,7 @@ def manager_confirm_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpResp
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Занятие подтверждено.")
     return redirect("scheduling_manager:lesson_detail", lesson_id=lesson_id)
@@ -451,7 +442,7 @@ def manager_cancel_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpRespo
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            messages.error(request, _validation_message(exc))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Занятие отменено.")
     else:
@@ -475,7 +466,7 @@ def manager_reschedule_lesson(request: HttpRequest, *, lesson_id: UUID) -> HttpR
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            messages.error(request, _validation_message(exc))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Занятие перенесено.")
             return redirect(
