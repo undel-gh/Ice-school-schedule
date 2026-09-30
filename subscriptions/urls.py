@@ -16,6 +16,21 @@ urlpatterns = [
         name="manager_subscription_issue",
     ),
     path(
+        "subscriptions/<uuid:subscription_id>/",
+        views.manager_subscription_detail_view,
+        name="manager_subscription_detail",
+    ),
+    path(
+        "subscriptions/<uuid:subscription_id>/cancel/",
+        views.manager_subscription_cancel_view,
+        name="manager_subscription_cancel",
+    ),
+    path(
+        "allowances/<uuid:allowance_id>/adjust/",
+        views.manager_allowance_adjust_view,
+        name="manager_allowance_adjust",
+    ),
+    path(
         "place-holds/",
         views.manager_place_holds_view,
         name="manager_place_holds",
