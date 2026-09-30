@@ -321,3 +321,24 @@ def test_manager_subscription_detail_missing_returns_404(client):
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_manager_subscription_report_rejects_excessive_date_range(client):
+    manager = User.objects.create_user(
+        username="report-range-manager",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+    client.force_login(manager)
+
+    response = client.get(
+        reverse("subscriptions:manager_subscription_report"),
+        {
+            "from": "2026-01-01",
+            "until": "2027-01-03",
+        },
+    )
+
+    assert response.status_code == 404
