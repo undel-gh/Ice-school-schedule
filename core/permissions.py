@@ -3,6 +3,43 @@ from __future__ import annotations
 from django.core.exceptions import PermissionDenied
 
 
+MANAGER_OPERATION_PERMISSIONS = (
+    "subscriptions.view_subscription",
+    "subscriptions.view_absencecompensationcase",
+    "subscriptions.add_absencecompensationcase",
+    "subscriptions.change_absencecompensationcase",
+    "subscriptions.view_onetimeentitlement",
+    "subscriptions.add_onetimeentitlement",
+    "subscriptions.change_onetimeentitlement",
+    "subscriptions.add_makeupentitlement",
+    "subscriptions.add_absencecompensationactiongrant",
+    "subscriptions.change_absencecompensationactiongrant",
+    "scheduling.view_scheduletemplate",
+    "scheduling.add_scheduletemplate",
+    "scheduling.change_scheduletemplate",
+    "scheduling.view_lesson",
+    "scheduling.change_lesson",
+    "attendance.view_absencejustification",
+    "attendance.change_absencejustification",
+    "audit.view_auditevent",
+)
+
+
+def has_manager_operations_access(actor) -> bool:
+    if actor is None or not getattr(actor, "is_authenticated", False):
+        return False
+    return actor.is_superuser or any(
+        actor.has_perm(permission)
+        for permission in MANAGER_OPERATION_PERMISSIONS
+    )
+
+
+def require_manager_operations_access(actor) -> None:
+    if has_manager_operations_access(actor):
+        return
+    raise PermissionDenied("Manager operations permission is required.")
+
+
 def require_permission(actor, permission: str, message: str) -> None:
     if actor is not None and (
         actor.is_superuser or actor.has_perm(permission)

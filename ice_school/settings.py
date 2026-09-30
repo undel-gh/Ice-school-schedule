@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "axes",
+    "core",
     "accounts",
     "scheduling",
     "attendance",
@@ -76,6 +77,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "core.context_processors.manager_operations",
             ],
         },
     },
@@ -131,7 +133,8 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 AUTH_USER_MODEL = "accounts.User"
 LANGUAGE_CODE = "ru-ru"
-SCHOOL_TIME_ZONE = os.environ.get("SCHOOL_TIME_ZONE", "Europe/Riga")
+_default_time_zone = os.environ.get("DJANGO_TIME_ZONE", "UTC")
+SCHOOL_TIME_ZONE = os.environ.get("SCHOOL_TIME_ZONE", _default_time_zone)
 TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", SCHOOL_TIME_ZONE)
 USE_I18N = True
 USE_TZ = True

@@ -1,0 +1,30 @@
+{% load manager_labels %}
+{% extends "base.html" %}
+{% block title %}Медицинское основание{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>{{ justification.student.display_name }}</h1>
+  <p class="page-header__meta">{{ justification.lesson.starts_at|date:"d.m.Y H:i" }} · {{ justification.lesson.lesson_type.name }} · {{ justification.lesson.group.name }}</p>
+</header>
+<article class="report-card">
+  <div class="lesson-card__top"><h2>Основание</h2><span class="badge">{{ justification.status|manager_label:"medical_status" }}</span></div>
+  <p>Заявлено: {{ justification.declared_at|date:"d.m.Y H:i" }}</p>
+  {% if justification.reviewed_at %}<p>Рассмотрено: {{ justification.reviewed_at|date:"d.m.Y H:i" }}{% if justification.reviewed_by %} · {{ justification.reviewed_by.username }}{% endif %}</p>{% endif %}
+  {% if justification.revoked_at %}<p>Отозвано: {{ justification.revoked_at|date:"d.m.Y H:i" }}</p>{% endif %}
+  {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceJustification&aggregate_id={{ justification.id }}">Журнал действий</a></p>{% endif %}
+</article>
+{% if justification.status == "pending" %}
+<section class="manager-operation-grid">
+  <form class="report-card manager-form" method="post" action="{% url 'attendance_manager:medical_verify' justification.id %}">
+    {% csrf_token %}<h2>Подтвердить</h2>{{ verify_form.as_p }}<button class="btn-primary" type="submit">Подтвердить</button>
+  </form>
+  <form class="report-card" method="post" action="{% url 'attendance_manager:medical_reject' justification.id %}" onsubmit="return confirm('Отклонить медицинское основание?');">
+    {% csrf_token %}<h2>Отклонить</h2><button class="btn-absent" type="submit">Отклонить</button>
+  </form>
+</section>
+{% elif justification.status == "verified" %}
+<form class="report-card" method="post" action="{% url 'attendance_manager:medical_revoke' justification.id %}" onsubmit="return confirm('Отозвать подтверждённое основание?');">
+  {% csrf_token %}<h2>Отзыв</h2><p>Если выданная отработка уже использована, операция будет заблокирована.</p><button class="btn-absent" type="submit">Отозвать</button>
+</form>
+{% endif %}
+{% endblock %}

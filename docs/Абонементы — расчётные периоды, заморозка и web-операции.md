@@ -941,3 +941,140 @@ Manager subscription report является read-model и не должен в�
 
 Pending Subscription с `valid_from = NULL` сортируются явно первыми через
 `NULLS FIRST`, чтобы порядок не зависел от PostgreSQL/SQLite.
+
+
+# 12. Реализованный manager operations UI
+
+Manager-facing операции собраны вокруг единой точки входа:
+
+```text
+/manager/operations/
+```
+
+После входа пользователь с manager-доступом попадает на этот dashboard вместо
+частного subscription report. Presentation layer не содержит отдельной
+доменной логики: POST actions вызывают те же application services, что CLI,
+automation и ранее реализованные web endpoints.
+
+## 12.1. Schedule templates и generation conflicts
+
+Доступны:
+
+```text
+/manager/scheduling/templates/
+/manager/scheduling/conflicts/
+/manager/scheduling/lessons/
+```
+
+Web поддерживает:
+
+- создание ScheduleTemplate через `create_schedule_template(...)`;
+- versioning через `version_schedule_template(...)`;
+- просмотр `LessonGenerationConflict` из audit;
+- переход к конфликтующему Lesson;
+- explicit `skip_template_occurrence(...)` с подтверждением;
+- просмотр Lesson;
+- publish / confirm / cancel;
+- reschedule через `reschedule_lesson_with_entitlements(...)`, а не через
+  low-level `reschedule_lesson(...)`.
+
+Статус resolution generation conflict определяется по наличию
+template-owned CANCELLED occurrence. Проверка выполняется пакетно, без
+N+1-запроса на каждый audit event.
+
+## 12.2. Compensation и entitlement operations
+
+Manager UI поддерживает:
+
+- список и карточку AbsenceCompensationCase;
+- создание case из Attendance=ABSENT;
+- FREE_MAKEUP materialization;
+- PAID_MAKEUP authorization;
+- выбор target Subscription;
+- подтверждение оплаты;
+- activation paid grant;
+- explicit reversal с обязательной фиксацией refund decision, когда этого
+  требует service;
+- cancellation OPEN case;
+- выдачу и отмену OneTimeEntitlement;
+- выдачу административного MakeupEntitlement через
+  `grant_administrative_makeup(...)`.
+
+UI не повторяет eligibility, fee, target-period, balance или
+double-compensation rules. Все эти проверки остаются в service layer.
+
+## 12.3. Medical review
+
+Раздел:
+
+```text
+/manager/attendance/medical/
+```
+
+показывает MEDICAL AbsenceJustification и позволяет менеджеру выполнять:
+
+- `verify_medical_absence(...)`;
+- `reject_medical_absence(...)`;
+- `revoke_medical_absence(...)`.
+
+Использованная medical makeup по-прежнему блокирует revoke на уровне service;
+UI показывает бизнес-ошибку менеджеру.
+
+## 12.4. Audit trail
+
+Раздел:
+
+```text
+/manager/audit/
+```
+
+поддерживает фильтры по:
+
+- event_type;
+- aggregate_type;
+- aggregate_id;
+- correlation_id.
+
+Карточки ScheduleTemplate, Lesson, compensation case/grant,
+OneTimeEntitlement, medical justification и SubscriptionPeriod содержат
+прямые ссылки на релевантный audit trail.
+
+В частности, карточка Subscription показывает audit его
+`SubscriptionPeriod`, поэтому
+`SubscriptionPeriodActivationRevertSkipped` с причинами
+`active_coverages_remain` и `dependent_rights_exist` виден менеджеру без
+ручного поиска в Django Admin.
+
+
+
+## 12.5. Ограничения manager choice fields и часовой пояс
+
+Поля выбора занятия в manager operations используют школьный часовой пояс
+`SCHOOL_TIME_ZONE`, а не timezone хранения в БД. Подписи Attendance и Lesson
+форматируются через общий `format_school_datetime(...)`.
+
+Чтобы формы не деградировали при накоплении истории, выбор Lesson в операциях
+one-time entitlement и administrative makeup ограничен окном ±60 школьных
+дней от текущей даты. Список Attendance для создания compensation case
+ограничен тем же окном и дополнительно исключает пропуски, для которых уже
+существует `OPEN` или `MATERIALIZED AbsenceCompensationCase`.
+
+Следующий UX-этап при росте объёма данных — searchable/autocomplete выбор с
+фильтром по ученику; текущий bounded queryset является защитой MVP от списков
+на тысячи строк.
+
+`datetime-local` в форме переноса Lesson разбирается непосредственно в
+`SCHOOL_TIME_ZONE`. Поэтому корректность не зависит от совпадения
+`TIME_ZONE` и `SCHOOL_TIME_ZONE`.
+
+## 12.6. Общая presentation-инфраструктура
+
+Набор permissions, дающих доступ к manager operations, определён один раз в
+`core.permissions`. Home redirect и context processor используют один и тот
+же helper, а базовый шаблон получает готовый
+`manager_operations_available`.
+
+Форматирование `ValidationError` для web messages вынесено в общий
+presentation helper. POST endpoints сначала проверяют требуемые permissions и
+только затем выполняют lookup объекта, поэтому существование UUID не меняет
+403 на 404 для пользователя без соответствующего права.

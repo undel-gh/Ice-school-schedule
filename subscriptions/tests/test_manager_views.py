@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.urls import reverse
 
 from accounts.models import Student
@@ -97,7 +98,7 @@ def test_manager_subscription_report_renders_subscription_summary(client):
 
 
 @pytest.mark.django_db
-def test_home_routes_manager_to_report(client):
+def test_home_routes_manager_to_operations(client):
     manager = User.objects.create_user(
         username="manager-home",
         password="test",
@@ -109,9 +110,7 @@ def test_home_routes_manager_to_report(client):
     response = client.get(reverse("scheduling:home"))
 
     assert response.status_code == 302
-    assert response.url == reverse(
-        "subscriptions:manager_subscription_report"
-    )
+    assert response.url == reverse("subscriptions:manager_operations")
 
 
 @pytest.mark.django_db
@@ -271,7 +270,7 @@ def test_manager_subscription_detail_adjusts_and_cancels(client):
     assert detail.status_code == 200
     assert "Detail student" in body
     assert "Detail 4 ICE" in body
-    assert "Ledger" in body
+    assert "История списаний и начислений" in body
 
     adjusted = client.post(
         reverse(
@@ -342,3 +341,29 @@ def test_manager_subscription_report_rejects_excessive_date_range(client):
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_scoped_schedule_manager_uses_operations_dashboard(client):
+    manager = User.objects.create_user(
+        username="scoped-schedule-manager",
+        password="test",
+        is_staff=True,
+    )
+    manager.user_permissions.add(
+        Permission.objects.get(
+            content_type__app_label="scheduling",
+            codename="view_lesson",
+        )
+    )
+    client.force_login(manager)
+
+    home = client.get(reverse("scheduling:home"))
+    assert home.status_code == 302
+    assert home.url == reverse("subscriptions:manager_operations")
+
+    dashboard = client.get(reverse("subscriptions:manager_operations"))
+    body = dashboard.content.decode()
+    assert dashboard.status_code == 200
+    assert "Занятия" in body
+    assert "Абонементы" not in body

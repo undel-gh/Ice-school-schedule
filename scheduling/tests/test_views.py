@@ -6,6 +6,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
+from core.testing import school_dt
 from accounts.models import CoachProfile, Student, StudentAccess
 from attendance.models import Attendance
 from scheduling.models import (
@@ -85,14 +86,7 @@ def make_lesson(
     status=Lesson.Status.RSVP_OPEN,
     starts_at=None,
 ):
-    starts_at = starts_at or datetime(
-        2026,
-        9,
-        25,
-        15,
-        0,
-        tzinfo=dt_timezone.utc,
-    )
+    starts_at = starts_at or school_dt(2026, 9, 25, 18, 0)
     return Lesson.objects.create(
         group=context["group"],
         lesson_type=context["lesson_type"],
@@ -153,14 +147,7 @@ def test_guardian_cannot_select_inaccessible_student(client, web_context):
 def test_guardian_rsvp_post_uses_service(client, web_context):
     lesson = make_lesson(
         context=web_context,
-        starts_at=datetime(
-            2099,
-            9,
-            25,
-            15,
-            0,
-            tzinfo=dt_timezone.utc,
-        ),
+        starts_at=school_dt(2099, 9, 25, 18, 0),
     )
     LessonRosterEntry.objects.create(
         lesson=lesson,
@@ -279,14 +266,7 @@ def test_coach_attendance_post_uses_service(client, web_context):
 def test_student_schedule_renders_mobile_touch_controls(client, web_context):
     lesson = make_lesson(
         context=web_context,
-        starts_at=datetime(
-            2099,
-            9,
-            25,
-            15,
-            0,
-            tzinfo=dt_timezone.utc,
-        ),
+        starts_at=school_dt(2099, 9, 25, 18, 0),
     )
     LessonRosterEntry.objects.create(
         lesson=lesson,

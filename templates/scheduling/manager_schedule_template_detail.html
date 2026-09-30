@@ -1,0 +1,32 @@
+{% load manager_labels %}
+{% extends "base.html" %}
+{% block title %}Шаблон расписания{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>{{ template.group.name }} · {{ template.lesson_type.name }}</h1>
+  <p class="page-header__meta">{{ template.coach.display_name }} · {{ template.venue.name }} · {{ template.start_time|time:"H:i" }}</p>
+</header>
+<div class="action-row manager-actions">
+  <a class="btn btn-secondary" href="{% url 'scheduling_manager:templates' %}">К списку</a>
+  {% if perms.scheduling.change_scheduletemplate %}
+    <a class="btn btn-primary" href="{% url 'scheduling_manager:template_version' template.id %}">Новая версия</a>
+  {% endif %}
+</div>
+<article class="report-card">
+  <h2>Параметры</h2>
+  <p>день недели: {{ template.weekday }} · длительность {{ template.duration_minutes }} мин.</p>
+  <p>{{ template.valid_from|date:"d.m.Y" }}—{% if template.valid_until %}{{ template.valid_until|date:"d.m.Y" }}{% else %}∞{% endif %}</p>
+  {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=ScheduleTemplate&aggregate_id={{ template.id }}">Журнал действий</a></p>{% endif %}
+</article>
+<h2 class="section-title">Последние занятия</h2>
+<div class="card-list">
+{% for lesson in lessons %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <strong>{{ lesson.starts_at|date:"d.m.Y H:i" }}</strong><span class="badge">{{ lesson.status|manager_label:"lesson_status" }}</span>
+    </div>
+    <p><a href="{% url 'scheduling_manager:lesson_detail' lesson.id %}">Открыть занятие</a></p>
+  </article>
+{% empty %}<div class="empty-state">Занятия ещё не сгенерированы.</div>{% endfor %}
+</div>
+{% endblock %}

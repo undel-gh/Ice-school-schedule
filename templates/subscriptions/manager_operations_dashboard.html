@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Операции менеджера{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Операции менеджера</h1>
+  <p class="page-header__meta">Расписание, права, компенсации и аудит</p>
+</header>
+<div class="manager-operation-grid">
+  {% if perms.scheduling.view_scheduletemplate %}
+  <a class="report-card manager-nav-card" href="{% url 'scheduling_manager:templates' %}"><h2>Шаблоны расписания</h2><p>Создание и версии регулярного расписания.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'scheduling_manager:conflicts' %}"><h2>Конфликты генерации</h2><p>Просмотр конфликтов и явный пропуск регулярного занятия.</p></a>
+  {% endif %}
+  {% if perms.scheduling.view_lesson %}
+  <a class="report-card manager-nav-card" href="{% url 'scheduling_manager:lessons' %}"><h2>Занятия</h2><p>Публикация, подтверждение, отмена и перенос.</p></a>
+  {% endif %}
+  {% if perms.subscriptions.view_absencecompensationcase %}
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_compensation_cases' %}"><h2>Компенсации</h2><p>Бесплатные и платные отработки, оплата, активация и отмена.</p></a>
+  {% endif %}
+  {% if perms.attendance.view_absencejustification %}
+  <a class="report-card manager-nav-card" href="{% url 'attendance_manager:medical' %}"><h2>Медицинские основания</h2><p>Подтверждение, отклонение и отзыв.</p></a>
+  {% endif %}
+  {% if perms.subscriptions.view_onetimeentitlement %}
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_one_time_entitlements' %}"><h2>Разовые права</h2><p>Разовые, пробные, индивидуальные и мини-групповые права.</p></a>
+  {% endif %}
+  {% if perms.subscriptions.add_makeupentitlement %}
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_administrative_makeup_create' %}"><h2>Административная отработка</h2><p>Ручная отработка на основе лимита действующего абонемента.</p></a>
+  {% endif %}
+  {% if perms.subscriptions.view_subscription %}
+  <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_subscription_report' %}"><h2>Абонементы</h2><p>Расчётные периоды, остатки и сохранение места.</p></a>
+  {% endif %}
+  {% if perms.audit.view_auditevent %}
+  <a class="report-card manager-nav-card" href="{% url 'audit_manager:events' %}"><h2>Журнал действий</h2><p>История доменных событий и связанных операций.</p></a>
+  {% endif %}
+</div>
+{% endblock %}

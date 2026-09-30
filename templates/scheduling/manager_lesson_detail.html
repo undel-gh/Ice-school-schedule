@@ -1,0 +1,37 @@
+{% load manager_labels %}
+{% extends "base.html" %}
+{% block title %}Занятие{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>{{ lesson.group.name }} · {{ lesson.lesson_type.name }}</h1>
+  <p class="page-header__meta">{{ lesson.starts_at|date:"d.m.Y H:i" }}–{{ lesson.ends_at|date:"H:i" }} · {{ lesson.coach.display_name }} · {{ lesson.venue.name }}</p>
+</header>
+<article class="report-card">
+  <div class="lesson-card__top"><h2>Статус</h2><span class="badge">{{ lesson.status|manager_label:"lesson_status" }}</span></div>
+  {% if lesson.source_template %}<p><a href="{% url 'scheduling_manager:template_detail' lesson.source_template.id %}">Исходный шаблон</a></p>{% endif %}
+  {% if lesson.replacement_lesson %}<p>Замещающее занятие: <a href="{% url 'scheduling_manager:lesson_detail' lesson.replacement_lesson.id %}">{{ lesson.replacement_lesson.starts_at|date:"d.m.Y H:i" }}</a></p>{% endif %}
+  {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=Lesson&aggregate_id={{ lesson.id }}">Журнал действий</a></p>{% endif %}
+</article>
+{% if perms.scheduling.change_lesson %}
+<section class="manager-operation-grid">
+  {% if lesson.status == "draft" %}
+    <form class="report-card" method="post" action="{% url 'scheduling_manager:lesson_publish' lesson.id %}">
+      {% csrf_token %}<h2>Публикация</h2><button class="btn-primary" type="submit">Опубликовать</button>
+    </form>
+  {% endif %}
+  {% if lesson.status == "rsvp_open" %}
+    <form class="report-card" method="post" action="{% url 'scheduling_manager:lesson_confirm' lesson.id %}">
+      {% csrf_token %}<h2>Подтверждение</h2><button class="btn-primary" type="submit">Подтвердить</button>
+    </form>
+  {% endif %}
+  {% if lesson.status == "draft" or lesson.status == "rsvp_open" or lesson.status == "confirmed" %}
+    <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_cancel' lesson.id %}">
+      {% csrf_token %}<h2>Отмена</h2>{{ cancel_form.as_p }}<button class="btn-absent" type="submit">Отменить</button>
+    </form>
+    <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_reschedule' lesson.id %}">
+      {% csrf_token %}<h2>Перенос</h2>{{ reschedule_form.as_p }}<button class="btn-secondary" type="submit">Перенести</button>
+    </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

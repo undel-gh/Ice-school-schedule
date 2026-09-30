@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Конфликты генерации{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Конфликты генерации</h1>
+  <p class="page-header__meta">Зафиксированные LessonGenerationConflict</p>
+</header>
+<div class="card-list">
+{% for row in rows %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <h2>{% if row.template %}{{ row.template.group.name }} · {{ row.template.lesson_type.name }}{% else %}Удалённый шаблон{% endif %}</h2>
+        <p class="lesson-card__meta">{% if row.expected_starts_at %}{{ row.expected_starts_at|date:"d.m.Y H:i" }}{% endif %}</p>
+      </div>
+      {% if row.resolved %}<span class="badge badge--covered">решён</span>{% else %}<span class="badge badge--unknown">требует решения</span>{% endif %}
+    </div>
+    {% if row.conflicting_lesson %}
+      <p>Конфликтует с <a href="{% url 'scheduling_manager:lesson_detail' row.conflicting_lesson.id %}">{{ row.conflicting_lesson.lesson_type.name }} · {{ row.conflicting_lesson.starts_at|date:"d.m H:i" }}</a>.</p>
+    {% endif %}
+    {% if not row.resolved and row.template %}
+      <form method="post" action="{% url 'scheduling_manager:conflict_skip' row.event.id %}" onsubmit="return confirm('Пропустить это регулярное занятие?');">
+        {% csrf_token %}
+        <button class="btn-secondary" type="submit">Пропустить регулярное занятие</button>
+      </form>
+    {% endif %}
+  </article>
+{% empty %}<div class="empty-state">Конфликтов нет.</div>{% endfor %}
+</div>
+{% endblock %}

@@ -11,7 +11,10 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 
-from core.permissions import require_lesson_coach_or_permission
+from core.permissions import (
+    has_manager_operations_access,
+    require_lesson_coach_or_permission,
+)
 from core.time import school_date as get_school_date
 from django.views.decorators.http import require_POST
 
@@ -85,8 +88,8 @@ def home(request: HttpRequest) -> HttpResponse:
         coach = None
     if coach is not None and coach.is_active:
         return redirect("scheduling:coach_schedule")
-    if request.user.has_perm("subscriptions.view_subscription"):
-        return redirect("subscriptions:manager_subscription_report")
+    if has_manager_operations_access(request.user):
+        return redirect("subscriptions:manager_operations")
     if request.user.is_staff:
         return redirect("admin:index")
     raise PermissionDenied("No active school role is assigned.")

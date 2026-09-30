@@ -1,0 +1,21 @@
+{% load manager_labels %}
+{% extends "base.html" %}
+{% block title %}Медицинские основания{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Медицинские основания</h1></header>
+<form class="filter-form" method="get">
+  <div class="field"><label for="status">Статус</label><select id="status" name="status"><option value="">Все</option>{% for value,label in statuses %}<option value="{{ value }}" {% if value == selected_status %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+  <button class="btn-secondary" type="submit">Показать</button>
+</form>
+<div class="card-list">
+{% for item in justifications %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div><h2><a href="{% url 'attendance_manager:medical_detail' item.id %}">{{ item.student.display_name }}</a></h2><p class="lesson-card__meta">{{ item.lesson.starts_at|date:"d.m.Y H:i" }} · {{ item.lesson.lesson_type.name }}</p></div>
+      <span class="badge">{{ item.status|manager_label:"medical_status" }}</span>
+    </div>
+    <p class="lesson-card__meta">Заявлено {{ item.declared_at|date:"d.m.Y H:i" }}</p>
+  </article>
+{% empty %}<div class="empty-state">Медицинских оснований нет.</div>{% endfor %}
+</div>
+{% endblock %}

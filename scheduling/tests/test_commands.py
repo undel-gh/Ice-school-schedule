@@ -9,6 +9,7 @@ from django.core.management.base import CommandError
 
 from accounts.models import CoachProfile, Student
 from audit.models import AuditEvent
+from core.testing import school_dt
 from scheduling.models import (
     GroupMembership,
     Lesson,
@@ -357,9 +358,7 @@ def test_generate_lessons_command_fails_on_cross_type_conflict(
         valid_from=date(2026, 10, 1),
         is_active=True,
     )
-    conflict_start = datetime(
-        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
-    )
+    conflict_start = school_dt(2026, 10, 29, 19, 0)
     Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
@@ -452,9 +451,7 @@ def test_skip_template_occurrence_command_resolves_generation_conflict(
         valid_from=date(2099, 10, 1),
         is_active=True,
     )
-    conflict_start = datetime(
-        2099, 10, 29, 17, 0, tzinfo=dt_timezone.utc
-    )
+    conflict_start = school_dt(2099, 10, 29, 19, 0)
     Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
