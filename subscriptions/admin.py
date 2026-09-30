@@ -9,11 +9,14 @@ from .models import (
     AbsenceCompensationPolicyAction,
     AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
+    GroupPlaceHold,
     MakeupEntitlement,
     OneTimeEntitlement,
     Subscription,
     SubscriptionAllowance,
     SubscriptionLedgerEntry,
+    SubscriptionPeriod,
+    SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
@@ -171,8 +174,52 @@ class AbsenceCompensationPolicyWindowAdmin(admin.ModelAdmin):
             return False
         return super().has_delete_permission(request, obj)
 
+@admin.register(SubscriptionPeriodScheme)
+class SubscriptionPeriodSchemeAdmin(admin.ModelAdmin):
+    list_display = (
+        "code",
+        "name",
+        "mode",
+        "fixed_anchor_date",
+        "is_active",
+    )
+    list_filter = ("mode", "is_active")
+    search_fields = ("code", "name")
+
+
 admin.site.register(SubscriptionPlan)
 admin.site.register(SubscriptionPlanAllowance)
+
+
+@admin.register(SubscriptionPeriod)
+class SubscriptionPeriodAdmin(ReadOnlyAdmin):
+    list_display = (
+        "subscription",
+        "scheme",
+        "mode_snapshot",
+        "state",
+        "starts_on",
+        "ends_on",
+        "activation_lesson",
+    )
+    list_filter = ("mode_snapshot", "state")
+
+
+@admin.register(GroupPlaceHold)
+class GroupPlaceHoldAdmin(ReadOnlyAdmin):
+    list_display = (
+        "student",
+        "group",
+        "period_scheme",
+        "period_from",
+        "period_until",
+        "status",
+        "fee_confirmed_at",
+    )
+    list_filter = ("status", "period_scheme")
+    search_fields = ("student__display_name", "group__name")
+
+
 
 
 @admin.register(Subscription)
