@@ -23,12 +23,15 @@ from subscriptions.models import (
     AbsenceCompensationPolicyAction,
     MakeupEntitlement,
     OneTimeEntitlement,
+    SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
 from subscriptions.services import (
+    cancel_subscription,
     create_absence_compensation_case,
     issue_subscription,
+    issue_subscription_for_period,
 )
 
 User = get_user_model()
@@ -529,3 +532,100 @@ def test_manager_post_checks_permission_before_compensation_lookup(client):
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_administrative_makeup_allowances_are_bounded_by_subscription_state(
+    operations_context,
+):
+    ctx = operations_context
+    today = timezone.localdate()
+
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="allowance-filter-rolling",
+        name="Allowance filter rolling",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    pending_plan = SubscriptionPlan.objects.create(
+        code="allowance-filter-pending-plan",
+        name="Pending plan",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=pending_plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+
+    regular_plan = SubscriptionPlan.objects.create(
+        code="allowance-filter-regular-plan",
+        name="Regular plan",
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=regular_plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+
+    def issue_for(label, *, valid_from, valid_until):
+        student = Student.objects.create(display_name=label)
+        return issue_subscription(
+            student_id=student.id,
+            plan_id=regular_plan.id,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            actor=ctx["manager"],
+        )
+
+    active = issue_for(
+        "Active allowance",
+        valid_from=today - timedelta(days=10),
+        valid_until=today + timedelta(days=10),
+    )
+    recent = issue_for(
+        "Recent allowance",
+        valid_from=today - timedelta(days=30),
+        valid_until=today - timedelta(days=1),
+    )
+    old = issue_for(
+        "Old allowance",
+        valid_from=today - timedelta(days=120),
+        valid_until=today - timedelta(days=61),
+    )
+    future = issue_for(
+        "Future allowance",
+        valid_from=today + timedelta(days=1),
+        valid_until=today + timedelta(days=30),
+    )
+    cancelled = issue_for(
+        "Cancelled allowance",
+        valid_from=today - timedelta(days=5),
+        valid_until=today + timedelta(days=5),
+    )
+    cancel_subscription(
+        subscription_id=cancelled.id,
+        actor=ctx["manager"],
+        at=timezone.now(),
+    )
+
+    pending_student = Student.objects.create(display_name="Pending allowance")
+    pending = issue_subscription_for_period(
+        student_id=pending_student.id,
+        plan_id=pending_plan.id,
+        reference_date=today,
+        actor=ctx["manager"],
+        now=timezone.now(),
+    )
+
+    choice_ids = set(
+        ManagerAdministrativeMakeupForm()
+        .fields["source_subscription_allowance"]
+        .queryset.values_list("subscription_id", flat=True)
+    )
+
+    assert active.id in choice_ids
+    assert recent.id in choice_ids
+    assert pending.id in choice_ids
+    assert old.id not in choice_ids
+    assert future.id not in choice_ids
+    assert cancelled.id not in choice_ids
