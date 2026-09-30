@@ -152,6 +152,11 @@ def manager_compensation_case_detail(
         pk=case_id,
     )
     grants = tuple(case.action_grants.all())
+    action_types = {
+        item.get("action_type")
+        for item in case.actions_snapshot
+        if isinstance(item, dict)
+    }
     return render(
         request,
         "subscriptions/manager_compensation_case_detail.html",
@@ -170,6 +175,14 @@ def manager_compensation_case_detail(
             ),
             "paid_action_type": (
                 AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+            ),
+            "can_materialize_free": (
+                AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP
+                in action_types
+            ),
+            "can_authorize_paid": (
+                AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP
+                in action_types
             ),
         },
     )
