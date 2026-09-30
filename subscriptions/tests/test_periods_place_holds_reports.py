@@ -382,9 +382,17 @@ def test_rolling_subscription_activates_on_first_ordinary_coverage(
         marked_by=actor,
     )
 
+    activation_time = datetime(
+        2026,
+        9,
+        12,
+        16,
+        tzinfo=dt_timezone.utc,
+    )
     coverage = assign_attendance_coverage(
         attendance_id=attendance.id,
         actor=actor,
+        now=activation_time,
     )
 
     subscription.refresh_from_db()
@@ -397,6 +405,7 @@ def test_rolling_subscription_activates_on_first_ordinary_coverage(
     assert period.starts_on == date(2026, 9, 12)
     assert period.ends_on == date(2026, 10, 9)
     assert period.activation_lesson_id == first_lesson.id
+    assert period.activated_at == activation_time
 
     row = manager_subscription_report(
         as_of=date(2026, 9, 12),
