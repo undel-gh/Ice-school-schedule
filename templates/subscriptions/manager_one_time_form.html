@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Выдать разовое право{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Выдать разовое право</h1></header>
+<form class="report-card manager-form" method="post">
+  {% csrf_token %}{{ form.non_field_errors }}
+  {% for field in form %}<div class="field">{{ field.label_tag }}{{ field }}{% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}</div>{% endfor %}
+  <button class="btn-primary" type="submit">Выдать</button>
+</form>
+{% endblock %}
