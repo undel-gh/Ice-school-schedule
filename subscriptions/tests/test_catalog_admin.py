@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
+import threading
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
+from django.db import close_old_connections, connection, connections
 from django.urls import reverse
 from django.utils import timezone
 
@@ -26,8 +29,10 @@ from subscriptions.models import (
 )
 from subscriptions.selectors import get_applicable_absence_policy
 from subscriptions.services import (
+    create_absence_compensation_policy,
     create_absence_compensation_policy_action,
     issue_subscription_for_period,
+    update_subscription_period_scheme,
 )
 
 
@@ -82,7 +87,7 @@ def test_fixed_period_scheme_requires_anchor_in_manager_ui(client, manager):
 
 
 @pytest.mark.django_db
-def test_fixed_anchor_change_only_affects_future_period_snapshots(
+def test_referenced_fixed_anchor_cannot_change(
     client,
     manager,
 ):
@@ -104,21 +109,8 @@ def test_fixed_anchor_change_only_affects_future_period_snapshots(
         category=SubscriptionCategory.ICE,
         visit_limit=8,
     )
-    first_student = Student.objects.create(display_name="Anchor first")
-    second_student = Student.objects.create(display_name="Anchor second")
-    reference_date = date(2026, 10, 20)
-
-    first = issue_subscription_for_period(
-        student_id=first_student.id,
-        plan_id=plan.id,
-        reference_date=reference_date,
-        actor=manager,
-        now=make_school_aware(datetime(2026, 10, 20, 9, 0)),
-    )
-    first_period = first.billing_period
-    assert first_period.fixed_anchor_snapshot == first_anchor
-
     client.force_login(manager)
+
     response = client.post(
         reverse(
             "subscriptions:manager_period_scheme_edit",
@@ -132,19 +124,92 @@ def test_fixed_anchor_change_only_affects_future_period_snapshots(
             "is_active": "on",
         },
     )
-    assert response.status_code == 302
 
-    first_period.refresh_from_db()
-    assert first_period.fixed_anchor_snapshot == first_anchor
+    assert response.status_code == 200
+    scheme.refresh_from_db()
+    assert scheme.fixed_anchor_date == first_anchor
+    assert "Referenced period schemes" in response.content.decode()
 
-    second = issue_subscription_for_period(
-        student_id=second_student.id,
-        plan_id=plan.id,
-        reference_date=reference_date,
-        actor=manager,
-        now=make_school_aware(datetime(2026, 10, 20, 10, 0)),
+
+@pytest.mark.django_db
+def test_active_plan_blocks_period_scheme_deactivation(manager):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="active-plan-scheme",
+        name="Active plan scheme",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
     )
-    assert second.billing_period.fixed_anchor_snapshot == second_anchor
+    SubscriptionPlan.objects.create(
+        code="active-scheme-plan",
+        name="Active scheme plan",
+        period_scheme=scheme,
+        is_active=True,
+    )
+
+    with pytest.raises(ValidationError, match="active subscription plans"):
+        update_subscription_period_scheme(
+            scheme_id=scheme.id,
+            code=scheme.code,
+            name=scheme.name,
+            mode=scheme.mode,
+            fixed_anchor_date=None,
+            is_active=False,
+            actor=manager,
+        )
+
+    scheme.refresh_from_db()
+    assert scheme.is_active is True
+
+
+@pytest.mark.django_db
+def test_referenced_period_scheme_mode_is_immutable_after_plan_moves(
+    manager,
+):
+    original = SubscriptionPeriodScheme.objects.create(
+        code="original-period-scheme",
+        name="Original scheme",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    replacement_scheme = SubscriptionPeriodScheme.objects.create(
+        code="replacement-period-scheme",
+        name="Replacement scheme",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="period-history-plan",
+        name="Period history plan",
+        period_scheme=original,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    student = Student.objects.create(display_name="Period history student")
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=manager,
+        now=make_school_aware(datetime(2026, 10, 1, 9, 0)),
+    )
+    plan.period_scheme = replacement_scheme
+    plan.save(update_fields=["period_scheme"])
+
+    assert subscription.billing_period.scheme_id == original.id
+    assert not SubscriptionPlan.objects.filter(
+        period_scheme=original
+    ).exists()
+
+    with pytest.raises(ValidationError, match="Referenced period schemes"):
+        update_subscription_period_scheme(
+            scheme_id=original.id,
+            code=original.code,
+            name=original.name,
+            mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+            fixed_anchor_date=None,
+            is_active=True,
+            actor=manager,
+        )
 
 
 @pytest.mark.django_db
@@ -492,3 +557,127 @@ def test_catalog_permission_grants_manager_dashboard_access(client):
     body = dashboard.content.decode()
     assert dashboard.status_code == 200
     assert "Каталог и правила" in body
+
+
+@pytest.mark.django_db
+def test_manager_can_end_referenced_policy_without_new_version(
+    client,
+    manager,
+    monkeypatch,
+):
+    policy = AbsenceCompensationPolicy.objects.create(
+        code="ending-policy",
+        version=1,
+        name="Ending policy",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.OTHER,
+        justification_requirement=(
+            AbsenceCompensationPolicy.JustificationRequirement.NONE
+        ),
+        max_eligible_absences=None,
+        limit_scope=AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD,
+        effective_from=date(2026, 1, 1),
+        is_active=True,
+    )
+    _reference_policy(policy=policy, manager=manager)
+    fixed_now = make_school_aware(datetime(2026, 10, 1, 12, 0))
+    monkeypatch.setattr(timezone, "now", lambda: fixed_now)
+    inactive_from = date(2026, 10, 15)
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "subscriptions:manager_policy_end",
+            kwargs={"policy_id": policy.id},
+        ),
+        {"inactive_from": inactive_from.isoformat()},
+    )
+
+    assert response.status_code == 302
+    policy.refresh_from_db()
+    assert policy.effective_until == inactive_from - timedelta(days=1)
+    assert AbsenceCompensationPolicy.objects.filter(
+        code=policy.code
+    ).count() == 1
+    assert get_applicable_absence_policy(
+        absence_reason=policy.absence_reason,
+        source_date=inactive_from - timedelta(days=1),
+    ) == policy
+    assert get_applicable_absence_policy(
+        absence_reason=policy.absence_reason,
+        source_date=inactive_from,
+    ) is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_overlapping_policy_creation_is_serialized(manager):
+    if connection.vendor != "postgresql":
+        pytest.skip("Policy advisory-lock test requires PostgreSQL.")
+
+    barrier = threading.Barrier(2)
+
+    def worker(code):
+        close_old_connections()
+        try:
+            barrier.wait(timeout=5)
+            try:
+                policy = create_absence_compensation_policy(
+                    code=code,
+                    name=code,
+                    absence_reason=(
+                        AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED
+                    ),
+                    justification_requirement=(
+                        AbsenceCompensationPolicy.JustificationRequirement.NONE
+                    ),
+                    max_eligible_absences=4,
+                    limit_scope=(
+                        AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD
+                    ),
+                    effective_from=date(2027, 1, 1),
+                    effective_until=None,
+                    is_active=True,
+                    actor=manager,
+                )
+            except ValidationError:
+                return "rejected"
+            return str(policy.id)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(worker, ["parallel-a", "parallel-b"]))
+
+    assert sum(result == "rejected" for result in results) == 1
+    assert AbsenceCompensationPolicy.objects.filter(
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        is_active=True,
+        effective_from=date(2027, 1, 1),
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_plan_allowance_validation_tracks_subscription_category_values(
+    manager,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="category-values",
+        name="Category values",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    from subscriptions.services import create_subscription_plan
+
+    plan = create_subscription_plan(
+        code="all-current-categories",
+        name="All current categories",
+        period_scheme_id=scheme.id,
+        is_active=True,
+        allowances={
+            category: index + 1
+            for index, category in enumerate(SubscriptionCategory.values)
+        },
+        actor=manager,
+    )
+
+    assert set(
+        plan.allowances.values_list("category", flat=True)
+    ) == set(SubscriptionCategory.values)
