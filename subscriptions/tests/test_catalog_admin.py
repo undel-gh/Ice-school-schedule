@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
 from django.urls import reverse
 from django.utils import timezone
@@ -23,6 +24,7 @@ from subscriptions.models import (
     SubscriptionPlan,
     SubscriptionPlanAllowance,
 )
+from subscriptions.selectors import get_applicable_absence_policy
 from subscriptions.services import (
     create_absence_compensation_policy_action,
     issue_subscription_for_period,
@@ -443,6 +445,15 @@ def test_referenced_policy_versions_instead_of_mutating(
     assert copied_action.windows.count() == 1
     assert copied_action.windows.get().name == "June to August"
 
+    assert get_applicable_absence_policy(
+        absence_reason=policy.absence_reason,
+        source_date=effective_from - timedelta(days=1),
+    ) == policy
+    assert get_applicable_absence_policy(
+        absence_reason=policy.absence_reason,
+        source_date=effective_from,
+    ) == replacement
+
     with pytest.raises(ValidationError, match="referenced"):
         create_absence_compensation_policy_action(
             policy_id=policy.id,
@@ -456,3 +467,28 @@ def test_referenced_policy_versions_instead_of_mutating(
             is_active=True,
             actor=manager,
         )
+
+
+@pytest.mark.django_db
+def test_catalog_permission_grants_manager_dashboard_access(client):
+    user = User.objects.create_user(
+        username="catalog-viewer",
+        password="test",
+        is_staff=True,
+    )
+    user.user_permissions.add(
+        Permission.objects.get(
+            content_type__app_label="subscriptions",
+            codename="view_subscriptionplan",
+        )
+    )
+    client.force_login(user)
+
+    home = client.get(reverse("scheduling:home"))
+    assert home.status_code == 302
+    assert home.url == reverse("subscriptions:manager_operations")
+
+    dashboard = client.get(reverse("subscriptions:manager_operations"))
+    body = dashboard.content.decode()
+    assert dashboard.status_code == 200
+    assert "Каталог и правила" in body
