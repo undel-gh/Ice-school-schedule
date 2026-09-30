@@ -25,6 +25,9 @@
     </form>
   {% endif %}
   {% if lesson.status == "draft" or lesson.status == "rsvp_open" or lesson.status == "confirmed" %}
+    <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_reassign_coach' lesson.id %}">
+      {% csrf_token %}<h2>Замена тренера</h2>{{ coach_reassign_form.as_p }}<button class="btn-secondary" type="submit">Заменить тренера</button>
+    </form>
     <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_cancel' lesson.id %}">
       {% csrf_token %}<h2>Отмена</h2>{{ cancel_form.as_p }}<button class="btn-absent" type="submit">Отменить</button>
     </form>
