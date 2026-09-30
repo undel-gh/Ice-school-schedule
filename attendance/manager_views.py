@@ -12,6 +12,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from core.permissions import require_permission
+from core.presentation import validation_message
 from core.time import school_date
 
 from .forms import ManagerMedicalVerifyForm
@@ -21,16 +22,6 @@ from .services import (
     revoke_medical_absence,
     verify_medical_absence,
 )
-
-
-def _validation_message(exc: ValidationError) -> str:
-    if hasattr(exc, "message_dict"):
-        return " ".join(
-            message
-            for messages_ in exc.message_dict.values()
-            for message in messages_
-        )
-    return " ".join(exc.messages)
 
 
 @login_required
@@ -114,7 +105,7 @@ def manager_medical_verify(
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            messages.error(request, _validation_message(exc))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Медицинское основание подтверждено.")
     else:
@@ -144,7 +135,7 @@ def manager_medical_reject(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Медицинское основание отклонено.")
     return redirect(
@@ -172,7 +163,7 @@ def manager_medical_revoke(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, _validation_message(exc))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Подтверждённое медицинское основание отозвано.")
     return redirect(
