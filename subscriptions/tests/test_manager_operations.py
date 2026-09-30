@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone as dt_timezone
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
