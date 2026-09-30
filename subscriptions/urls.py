@@ -56,6 +56,11 @@ urlpatterns = [
         name="manager_compensation_cancel",
     ),
     path(
+        "makeups/administrative/new/",
+        manager_operations.manager_administrative_makeup_create,
+        name="manager_administrative_makeup_create",
+    ),
+    path(
         "one-time/",
         manager_operations.manager_one_time_entitlements,
         name="manager_one_time_entitlements",
