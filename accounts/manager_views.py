@@ -5,6 +5,7 @@ from uuid import UUID
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 
@@ -34,10 +35,15 @@ def manager_students(request: HttpRequest) -> HttpResponse:
     students = Student.objects.order_by("-is_active", "display_name", "id")
     if query:
         students = students.filter(display_name__icontains=query)
+    page_obj = Paginator(students, 50).get_page(request.GET.get("page"))
     return render(
         request,
         "accounts/manager_students.html",
-        {"students": students[:300], "query": query},
+        {
+            "students": page_obj.object_list,
+            "page_obj": page_obj,
+            "query": query,
+        },
     )
 
 
@@ -228,10 +234,15 @@ def manager_coaches(request: HttpRequest) -> HttpResponse:
     )
     if query:
         coaches = coaches.filter(display_name__icontains=query)
+    page_obj = Paginator(coaches, 50).get_page(request.GET.get("page"))
     return render(
         request,
         "accounts/manager_coaches.html",
-        {"coaches": coaches[:300], "query": query},
+        {
+            "coaches": page_obj.object_list,
+            "page_obj": page_obj,
+            "query": query,
+        },
     )
 
 
