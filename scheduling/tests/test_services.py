@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.utils import timezone
 
+from core.time import make_school_aware, school_date, school_timezone
 from ice_school.workflows import reschedule_lesson_with_entitlements
 
 from accounts.models import CoachProfile
@@ -16,6 +17,16 @@ from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from scheduling.services import complete_lesson
 
 User = get_user_model()
+
+
+def school_dt(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int = 0,
+) -> datetime:
+    return make_school_aware(datetime(year, month, day, hour, minute))
 
 
 @pytest.fixture
@@ -1354,11 +1365,13 @@ def test_version_schedule_template_cancels_future_drafts_and_avoids_duplicates(
     assert replacement.valid_from == date(2026, 9, 28)
     assert replacement.start_time.hour == 19
 
-    assert not Lesson.objects.filter(
-        source_template=template,
-        status=Lesson.Status.DRAFT,
-        starts_at__date__gte=date(2026, 9, 28),
-    ).exists()
+    assert not any(
+        school_date(item.starts_at) >= date(2026, 9, 28)
+        for item in Lesson.objects.filter(
+            source_template=template,
+            status=Lesson.Status.DRAFT,
+        )
+    )
     assert Lesson.objects.filter(
         source_template=template,
         status=Lesson.Status.CANCELLED,
@@ -1375,7 +1388,10 @@ def test_version_schedule_template_cancels_future_drafts_and_avoids_duplicates(
         status=Lesson.Status.DRAFT,
     )
     assert active_future.exists()
-    assert all(item.starts_at.hour == 16 for item in active_future)
+    assert all(
+        item.starts_at.astimezone(school_timezone()).hour == 19
+        for item in active_future
+    )
 
 
 @pytest.mark.django_db
@@ -1454,7 +1470,7 @@ def test_version_schedule_template_keeps_old_version_generating_until_cutoff(
         actor=admin,
     )
     old_dates = {
-        item.starts_at.date()
+        school_date(item.starts_at)
         for item in Lesson.objects.filter(
             source_template=template,
             status=Lesson.Status.DRAFT,
@@ -1499,11 +1515,11 @@ def test_version_schedule_template_rejects_booked_draft(
         lesson_type=lesson_type,
         coach=coach,
         venue=venue,
-        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
-        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 5, 18, 0),
+        ends_at=school_dt(2026, 10, 5, 19, 0),
         minimum_attendees=1,
-        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
-        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        rsvp_deadline=school_dt(2026, 10, 5, 15, 0),
+        decision_deadline=school_dt(2026, 10, 5, 16, 0),
         status=Lesson.Status.DRAFT,
     )
     LessonEnrollment.objects.create(
@@ -1549,11 +1565,11 @@ def test_version_schedule_template_rejects_published_lesson(
         lesson_type=lesson_type,
         coach=coach,
         venue=venue,
-        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
-        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 5, 18, 0),
+        ends_at=school_dt(2026, 10, 5, 19, 0),
         minimum_attendees=1,
-        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
-        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        rsvp_deadline=school_dt(2026, 10, 5, 15, 0),
+        decision_deadline=school_dt(2026, 10, 5, 16, 0),
         status=Lesson.Status.RSVP_OPEN,
         published_at=datetime(2026, 9, 23, 7, 0, tzinfo=dt_timezone.utc),
     )
@@ -1593,11 +1609,11 @@ def test_version_schedule_template_rejects_draft_with_one_time_entitlement(
         lesson_type=lesson_type,
         coach=coach,
         venue=venue,
-        starts_at=datetime(2026, 10, 5, 15, 0, tzinfo=dt_timezone.utc),
-        ends_at=datetime(2026, 10, 5, 16, 0, tzinfo=dt_timezone.utc),
+        starts_at=school_dt(2026, 10, 5, 18, 0),
+        ends_at=school_dt(2026, 10, 5, 19, 0),
         minimum_attendees=1,
-        rsvp_deadline=datetime(2026, 10, 5, 12, 0, tzinfo=dt_timezone.utc),
-        decision_deadline=datetime(2026, 10, 5, 13, 0, tzinfo=dt_timezone.utc),
+        rsvp_deadline=school_dt(2026, 10, 5, 15, 0),
+        decision_deadline=school_dt(2026, 10, 5, 16, 0),
         status=Lesson.Status.DRAFT,
     )
     OneTimeEntitlement.objects.create(
@@ -1834,9 +1850,7 @@ def test_generate_lessons_treats_overlapping_group_lesson_as_occupied(
         valid_from=date(2026, 10, 1),
         is_active=True,
     )
-    existing_start = datetime(
-        2026, 10, 20, 15, 45, tzinfo=dt_timezone.utc
-    )
+    existing_start = school_dt(2026, 10, 20, 18, 45)
     existing = Lesson.objects.create(
         group=group,
         lesson_type=lesson_type,
@@ -1889,9 +1903,7 @@ def test_generate_lessons_reports_cross_type_overlap_conflict(
         valid_from=date(2026, 10, 1),
         is_active=True,
     )
-    conflict_start = datetime(
-        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
-    )
+    conflict_start = school_dt(2026, 10, 29, 19, 0)
     ice_lesson = Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
@@ -1948,9 +1960,7 @@ def test_generate_lessons_respects_cancelled_own_slot_over_cross_type_overlap(
         valid_from=date(2026, 10, 1),
         is_active=True,
     )
-    starts_at = datetime(
-        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
-    )
+    starts_at = school_dt(2026, 10, 29, 19, 30)
     cancelled = Lesson.objects.create(
         source_template=template,
         group=group,
@@ -1967,9 +1977,7 @@ def test_generate_lessons_respects_cancelled_own_slot_over_cross_type_overlap(
         cancelled_by=admin,
         cancellation_reason=Lesson.CancellationReason.ADMINISTRATIVE,
     )
-    ice_start = datetime(
-        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
-    )
+    ice_start = school_dt(2026, 10, 29, 19, 0)
     Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
@@ -2030,9 +2038,7 @@ def test_skip_template_occurrence_resolves_cross_type_generation_conflict(
         valid_from=date(2026, 10, 1),
         is_active=True,
     )
-    ice_start = datetime(
-        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
-    )
+    ice_start = school_dt(2026, 10, 29, 19, 0)
     ice_lesson = Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
@@ -2284,9 +2290,7 @@ def test_generation_conflict_audit_is_idempotent_per_template_slot(
         valid_from=date(2026, 10, 1),
         is_active=True,
     )
-    ice_start = datetime(
-        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
-    )
+    ice_start = school_dt(2026, 10, 29, 19, 0)
     Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
@@ -2332,9 +2336,7 @@ def test_cancel_lesson_allows_draft(
     admin,
 ):
     coach, group, venue, lesson_type = school_context
-    starts_at = datetime(
-        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
-    )
+    starts_at = school_dt(2026, 10, 29, 19, 30)
     lesson = Lesson.objects.create(
         group=group,
         lesson_type=lesson_type,
@@ -2371,9 +2373,7 @@ def test_cancel_lesson_rejects_booked_draft_enrollment(
     admin,
 ):
     coach, group, venue, lesson_type = school_context
-    starts_at = datetime(
-        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
-    )
+    starts_at = school_dt(2026, 10, 29, 19, 30)
     lesson = Lesson.objects.create(
         group=group,
         lesson_type=lesson_type,
@@ -2412,9 +2412,7 @@ def test_cancel_lesson_rejects_draft_with_one_time_entitlement(
     admin,
 ):
     coach, group, venue, lesson_type = school_context
-    starts_at = datetime(
-        2026, 10, 29, 17, 30, tzinfo=dt_timezone.utc
-    )
+    starts_at = school_dt(2026, 10, 29, 19, 30)
     lesson = Lesson.objects.create(
         group=group,
         lesson_type=lesson_type,
@@ -2468,9 +2466,7 @@ def test_generation_conflict_dedup_key_includes_conflicting_lesson(
         valid_from=date(2026, 10, 1),
         is_active=True,
     )
-    first_start = datetime(
-        2026, 10, 29, 17, 0, tzinfo=dt_timezone.utc
-    )
+    first_start = school_dt(2026, 10, 29, 19, 0)
     first_conflict = Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
@@ -2513,9 +2509,7 @@ def test_generation_conflict_dedup_key_includes_conflicting_lesson(
         ]
     )
 
-    second_start = datetime(
-        2026, 10, 29, 17, 10, tzinfo=dt_timezone.utc
-    )
+    second_start = school_dt(2026, 10, 29, 19, 10)
     second_conflict = Lesson.objects.create(
         group=group,
         lesson_type=ice_type,
