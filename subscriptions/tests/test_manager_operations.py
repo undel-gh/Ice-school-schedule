@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -11,6 +11,7 @@ from django.utils import timezone
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
 from core.choices import SubscriptionCategory
+from core.time import school_date
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.manager_forms import (
     ManagerAdministrativeMakeupForm,
@@ -112,7 +113,7 @@ def test_manager_grants_and_cancels_one_time_entitlement(client, operations_cont
 @pytest.mark.django_db
 def test_manager_creates_and_materializes_free_compensation(client, operations_context):
     ctx = operations_context
-    source_date = timezone.localdate(ctx["lesson"].starts_at)
+    source_date = school_date(ctx["lesson"].starts_at)
     plan = SubscriptionPlan.objects.create(
         code="operations-plan",
         name="Operations plan",
@@ -182,7 +183,7 @@ def test_manager_creates_and_materializes_free_compensation(client, operations_c
 @pytest.mark.django_db
 def test_manager_grants_administrative_makeup(client, operations_context):
     ctx = operations_context
-    source_date = timezone.localdate(ctx["lesson"].starts_at)
+    source_date = school_date(ctx["lesson"].starts_at)
     plan = SubscriptionPlan.objects.create(
         code="admin-makeup-plan",
         name="Administrative makeup plan",
@@ -228,7 +229,7 @@ def test_manager_runs_paid_makeup_workflow_with_refund_decision(
     operations_context,
 ):
     ctx = operations_context
-    source_date = timezone.localdate(ctx["lesson"].starts_at)
+    source_date = school_date(ctx["lesson"].starts_at)
     plan = SubscriptionPlan.objects.create(
         code="paid-web-plan",
         name="Paid web plan",
@@ -428,7 +429,7 @@ def test_compensation_case_choices_exclude_active_case_and_old_absence(
     operations_context,
 ):
     ctx = operations_context
-    source_date = timezone.localdate(ctx["lesson"].starts_at)
+    source_date = school_date(ctx["lesson"].starts_at)
     plan = SubscriptionPlan.objects.create(
         code="choice-filter-plan",
         name="Choice filter plan",
@@ -537,9 +538,15 @@ def test_manager_post_checks_permission_before_compensation_lookup(client):
 @pytest.mark.django_db
 def test_administrative_makeup_allowances_are_bounded_by_subscription_state(
     operations_context,
+    monkeypatch,
+    settings,
 ):
     ctx = operations_context
-    today = timezone.localdate()
+    settings.TIME_ZONE = "UTC"
+    settings.SCHOOL_TIME_ZONE = "Pacific/Auckland"
+    fixed_now = datetime(2026, 9, 30, 12, 30, tzinfo=dt_timezone.utc)
+    monkeypatch.setattr(timezone, "now", lambda: fixed_now)
+    today = school_date(timezone.now())
 
     scheme = SubscriptionPeriodScheme.objects.create(
         code="allowance-filter-rolling",
