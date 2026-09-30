@@ -416,3 +416,39 @@ def test_student_navigation_links_account_from_schedule(
     assert response.status_code == 200
     assert reverse("student_account:account") in body
     assert "Абонемент" in body
+
+
+@pytest.mark.django_db
+def test_student_account_formats_lesson_time_in_school_timezone(
+    client,
+    account_context,
+    settings,
+    monkeypatch,
+):
+    ctx = account_context
+    settings.TIME_ZONE = "UTC"
+    settings.SCHOOL_TIME_ZONE = "Asia/Tokyo"
+    fixed_now = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(timezone, "now", lambda: fixed_now)
+
+    lesson = make_lesson(
+        ctx=ctx,
+        starts_at=datetime(2026, 9, 30, 15, 30, tzinfo=timezone.utc),
+        status=Lesson.Status.CONFIRMED,
+    )
+    OneTimeEntitlement.objects.create(
+        student=ctx["student"],
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=ctx["manager"],
+    )
+    client.force_login(ctx["guardian"])
+
+    response = client.get(
+        reverse("student_account:account"),
+        {"student": str(ctx["student"].id)},
+    )
+
+    assert response.status_code == 200
+    assert "01.10.2026 00:30" in response.content.decode()
