@@ -71,6 +71,40 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
                     )
                 }
             )
+        if self.pk:
+            previous = SubscriptionPeriodScheme.objects.filter(
+                pk=self.pk
+            ).first()
+            if previous is not None:
+                referenced = (
+                    self.plans.exists()
+                    or self.subscription_periods.exists()
+                )
+                if referenced and (
+                    previous.mode != self.mode
+                    or previous.fixed_anchor_date != self.fixed_anchor_date
+                ):
+                    raise ValidationError(
+                        {
+                            "mode": (
+                                "Referenced period schemes cannot change mode "
+                                "or fixed anchor."
+                            )
+                        }
+                    )
+                if (
+                    previous.is_active
+                    and not self.is_active
+                    and self.plans.filter(is_active=True).exists()
+                ):
+                    raise ValidationError(
+                        {
+                            "is_active": (
+                                "Active subscription plans still use this "
+                                "period scheme."
+                            )
+                        }
+                    )
 
     def __str__(self) -> str:
         return self.name
