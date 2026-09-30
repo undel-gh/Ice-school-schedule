@@ -65,7 +65,7 @@
         <div class="account-balance">
           <span>{{ balance.allowance.category|manager_label:"subscription_category" }}</span>
           <strong>{{ balance.balance }}</strong>
-          <small>из {{ balance.allowance.visit_limit_snapshot }}</small>
+          <small>остаток · базовый лимит {{ balance.allowance.visit_limit_snapshot }}</small>
         </div>
       {% empty %}
         <div class="muted">Лимиты не настроены.</div>
