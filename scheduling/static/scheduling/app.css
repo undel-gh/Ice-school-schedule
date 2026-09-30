@@ -85,8 +85,12 @@ input:focus-visible {
   padding: 0.7rem max(1rem, env(safe-area-inset-left));
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+}
+
+.site-nav__home {
+  margin-right: auto;
 }
 
 .site-nav__home {
@@ -580,5 +584,55 @@ input[type="datetime-local"] {
 
   .audit-filter {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+
+.account-primary-actions {
+  grid-template-columns: minmax(0, 220px);
+}
+
+.account-balance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.account-balance {
+  background: var(--surface-muted);
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.account-balance span,
+.account-balance small {
+  display: block;
+  color: var(--muted);
+}
+
+.account-balance strong {
+  display: inline-block;
+  margin-right: 0.25rem;
+  font-size: 1.5rem;
+}
+
+.account-pagination {
+  align-items: center;
+}
+
+.account-pagination__state {
+  align-self: center;
+  text-align: center;
+  color: var(--muted);
+}
+
+@media (min-width: 720px) {
+  .account-student-filter {
+    grid-template-columns: minmax(240px, 1fr) auto;
+  }
+
+  .account-balance-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
