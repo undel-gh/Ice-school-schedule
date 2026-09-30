@@ -347,6 +347,10 @@ def manager_policy_detail(
             "policy": policy,
             "actions": actions,
             "referenced": policy.compensation_cases.exists(),
+            "is_latest": not AbsenceCompensationPolicy.objects.filter(
+                code=policy.code,
+                version__gt=policy.version,
+            ).exists(),
         },
     )
 
@@ -363,6 +367,15 @@ def manager_policy_edit(
         "Compensation policy change permission is required.",
     )
     policy = get_object_or_404(AbsenceCompensationPolicy, pk=policy_id)
+    if policy.compensation_cases.exists():
+        messages.error(
+            request,
+            "Использованная версия неизменяема. Создайте новую версию.",
+        )
+        return redirect(
+            "subscriptions:manager_policy_detail",
+            policy_id=policy.id,
+        )
     initial = {
         "code": policy.code,
         "name": policy.name,
@@ -433,6 +446,15 @@ def manager_policy_version(
         "Compensation policy creation permission is required.",
     )
     policy = get_object_or_404(AbsenceCompensationPolicy, pk=policy_id)
+    if AbsenceCompensationPolicy.objects.filter(
+        code=policy.code,
+        version__gt=policy.version,
+    ).exists():
+        messages.error(request, "Версионировать можно только последнюю версию.")
+        return redirect(
+            "subscriptions:manager_policy_detail",
+            policy_id=policy.id,
+        )
     form = ManagerCompensationPolicyVersionForm(
         request.POST or None,
         initial={
@@ -491,6 +513,12 @@ def manager_policy_action_create(
         "Compensation policy action creation permission is required.",
     )
     policy = get_object_or_404(AbsenceCompensationPolicy, pk=policy_id)
+    if policy.compensation_cases.exists():
+        messages.error(request, "Использованная версия политики неизменяема.")
+        return redirect(
+            "subscriptions:manager_policy_detail",
+            policy_id=policy.id,
+        )
     form = ManagerCompensationPolicyActionForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         try:
@@ -534,6 +562,12 @@ def manager_policy_action_edit(
         AbsenceCompensationPolicyAction.objects.select_related("policy"),
         pk=action_id,
     )
+    if action.policy.compensation_cases.exists():
+        messages.error(request, "Использованная версия политики неизменяема.")
+        return redirect(
+            "subscriptions:manager_policy_detail",
+            policy_id=action.policy_id,
+        )
     form = ManagerCompensationPolicyActionForm(
         request.POST or None,
         initial={
@@ -587,6 +621,12 @@ def manager_policy_window_create(
         AbsenceCompensationPolicyAction.objects.select_related("policy"),
         pk=action_id,
     )
+    if action.policy.compensation_cases.exists():
+        messages.error(request, "Использованная версия политики неизменяема.")
+        return redirect(
+            "subscriptions:manager_policy_detail",
+            policy_id=action.policy_id,
+        )
     form = ManagerCompensationPolicyWindowForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         try:
@@ -636,6 +676,12 @@ def manager_policy_window_edit(
         ),
         pk=window_id,
     )
+    if window.policy_action.policy.compensation_cases.exists():
+        messages.error(request, "Использованная версия политики неизменяема.")
+        return redirect(
+            "subscriptions:manager_policy_detail",
+            policy_id=window.policy_action.policy_id,
+        )
     form = ManagerCompensationPolicyWindowForm(
         request.POST or None,
         initial={
