@@ -1,3 +1,4 @@
+{% load manager_labels %}
 {% extends "base.html" %}
 {% block title %}Компенсационный случай{% endblock %}
 {% block content %}
@@ -6,8 +7,8 @@
   <p class="page-header__meta">{{ case.source_lesson.starts_at|date:"d.m.Y H:i" }} · {{ case.source_lesson.lesson_type.name }}</p>
 </header>
 <article class="report-card">
-  <div class="lesson-card__top"><h2>Случай</h2><span class="badge">{{ case.get_status_display }}</span></div>
-  <p>Причина: {{ case.get_absence_reason_display }} · право на компенсацию: {{ case.get_eligibility_status_display }}</p>
+  <div class="lesson-card__top"><h2>Случай</h2><span class="badge">{{ case.status|manager_label:"compensation_status" }}</span></div>
+  <p>Причина: {{ case.absence_reason|manager_label:"absence_reason" }} · право на компенсацию: {{ case.eligibility_status|manager_label:"compensation_eligibility" }}</p>
   {% if case.eligible_absence_ordinal %}<p>Порядковый номер: {{ case.eligible_absence_ordinal }}</p>{% endif %}
   {% if case.eligibility_period_from %}<p>Период оценки права: {{ case.eligibility_period_from|date:"d.m.Y" }}—{{ case.eligibility_period_until|date:"d.m.Y" }}</p>{% endif %}
   <p>Правило: {{ case.policy_name_snapshot }} v{{ case.policy_version_snapshot }}</p>
