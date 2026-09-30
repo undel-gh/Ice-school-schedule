@@ -34,11 +34,16 @@ class StudentAccessForm(forms.Form):
 
     def __init__(self, *args, student=None, access=None, **kwargs):
         super().__init__(*args, **kwargs)
-        queryset = User.objects.filter(is_active=True).order_by("username", "id")
-        if access is None and student is not None:
-            queryset = queryset.exclude(
-                student_accesses__student=student
+        if access is not None:
+            queryset = User.objects.filter(pk=access.user_id)
+        else:
+            queryset = User.objects.filter(is_active=True).order_by(
+                "username", "id"
             )
+            if student is not None:
+                queryset = queryset.exclude(
+                    student_accesses__student=student
+                )
         self.fields["user"].queryset = queryset
         if access is not None:
             self.fields["user"].initial = access.user_id
@@ -52,9 +57,13 @@ class CoachProfileForm(forms.Form):
 
     def __init__(self, *args, coach=None, **kwargs):
         super().__init__(*args, **kwargs)
-        queryset = User.objects.filter(is_active=True).order_by("username", "id")
-        if coach is None:
-            queryset = queryset.filter(coach_profile__isnull=True)
+        if coach is not None:
+            queryset = User.objects.filter(pk=coach.user_id)
+        else:
+            queryset = User.objects.filter(
+                is_active=True,
+                coach_profile__isnull=True,
+            ).order_by("username", "id")
         self.fields["user"].queryset = queryset
         if coach is not None:
             self.fields["user"].initial = coach.user_id
