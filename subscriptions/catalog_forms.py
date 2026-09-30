@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django import forms
+from django.db.models import Q
 
 from core.choices import SubscriptionCategory
 
@@ -141,7 +142,7 @@ class ManagerSubscriptionPlanForm(forms.Form):
         queryset = SubscriptionPeriodScheme.objects.filter(is_active=True)
         if current_scheme_id is not None:
             queryset = SubscriptionPeriodScheme.objects.filter(
-                models_q_active_or_id(current_scheme_id)
+                Q(is_active=True) | Q(pk=current_scheme_id)
             )
         self.fields["period_scheme"].queryset = queryset.order_by(
             "-is_active", "name", "id"
@@ -165,12 +166,6 @@ class ManagerSubscriptionPlanForm(forms.Form):
             SubscriptionCategory.ICE: self.cleaned_data.get("ice_visit_limit"),
             SubscriptionCategory.HALL: self.cleaned_data.get("hall_visit_limit"),
         }
-
-
-def models_q_active_or_id(current_id):
-    from django.db.models import Q
-
-    return Q(is_active=True) | Q(pk=current_id)
 
 
 class ManagerCompensationPolicyForm(forms.Form):
