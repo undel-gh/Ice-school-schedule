@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}Сохранение места{% endblock %}
+
+{% block content %}
+<header class="page-header">
+  <h1>Сохранение места</h1>
+  <p class="page-header__meta">
+    Платные сохранения места в группах на расчётный период.
+  </p>
+</header>
+
+<p>
+  <a class="btn btn-primary" href="{% url 'subscriptions:manager_place_hold_create' %}">
+    Создать
+  </a>
+</p>
+
+{% if holds %}
+  <div class="card-list">
+    {% for hold in holds %}
+      <article class="lesson-card">
+        <div class="lesson-card__top">
+          <div>
+            <h2>{{ hold.student.display_name }}</h2>
+            <p class="lesson-card__meta">
+              {{ hold.group.name }} ·
+              {{ hold.period_from|date:"d.m.Y" }}—{{ hold.period_until|date:"d.m.Y" }}
+            </p>
+          </div>
+          <span class="badge">{{ hold.get_status_display }}</span>
+        </div>
+
+        <p class="lesson-card__meta">
+          {{ hold.period_scheme.name }}
+          {% if hold.fee_confirmed_at %}
+            · оплата подтверждена {{ hold.fee_confirmed_at|date:"d.m.Y H:i" }}
+          {% endif %}
+        </p>
+
+        {% if hold.status == "pending_payment" %}
+          <div class="action-row">
+            <form method="post" action="{% url 'subscriptions:manager_place_hold_confirm' hold.id %}">
+              {% csrf_token %}
+              <button class="btn-present" type="submit">Подтвердить оплату</button>
+            </form>
+            <form method="post" action="{% url 'subscriptions:manager_place_hold_cancel' hold.id %}">
+              {% csrf_token %}
+              <input
+                type="text"
+                name="reason"
+                required
+                placeholder="Причина отмены"
+                aria-label="Причина отмены"
+              >
+              <button class="btn-absent" type="submit">Отменить</button>
+            </form>
+          </div>
+        {% elif hold.status == "active" %}
+          <form method="post" action="{% url 'subscriptions:manager_place_hold_cancel' hold.id %}">
+            {% csrf_token %}
+            <div class="field">
+              <label for="reason-{{ hold.id }}">Причина отмены</label>
+              <input id="reason-{{ hold.id }}" type="text" name="reason" required>
+            </div>
+            <button class="btn-absent" type="submit">Отменить услугу</button>
+          </form>
+        {% endif %}
+      </article>
+    {% endfor %}
+  </div>
+{% else %}
+  <p class="empty-state">Сохранений места пока нет.</p>
+{% endif %}
+{% endblock %}
