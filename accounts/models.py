@@ -9,6 +9,11 @@ from core.models import TimeStampedModel, UUIDModel
 class User(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(blank=True)
+    display_name = models.CharField(max_length=100, blank=True, default="")
+
+    @property
+    def display_label(self) -> str:
+        return self.display_name.strip() or self.get_full_name().strip() or self.username
 
 
 class ExternalIdentity(UUIDModel):
@@ -61,6 +66,7 @@ class AccountInvitation(UUIDModel):
         default="",
     )
     coach_display_name = models.CharField(max_length=100, blank=True, default="")
+    account_display_name = models.CharField(max_length=100)
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(
@@ -96,20 +102,23 @@ class AccountInvitation(UUIDModel):
         constraints = [
             models.CheckConstraint(
                 condition=(
-                    models.Q(
-                        kind="student_access",
-                        student__isnull=False,
-                        student_access_role__in=["self", "guardian"],
-                        coach_display_name="",
-                    )
-                    | (
+                    (
                         models.Q(
-                            kind="coach",
-                            student__isnull=True,
-                            student_access_role="",
+                            kind="student_access",
+                            student__isnull=False,
+                            student_access_role__in=["self", "guardian"],
+                            coach_display_name="",
                         )
-                        & ~models.Q(coach_display_name="")
+                        | (
+                            models.Q(
+                                kind="coach",
+                                student__isnull=True,
+                                student_access_role="",
+                            )
+                            & ~models.Q(coach_display_name="")
+                        )
                     )
+                    & ~models.Q(account_display_name="")
                 ),
                 name="account_invite_target_ck",
             ),
