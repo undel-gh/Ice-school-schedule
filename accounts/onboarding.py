@@ -211,10 +211,45 @@ def _accept_invitation_locked(
                 role=invitation.student_access_role,
                 is_active=True,
             )
+            record_event(
+                event_type="StudentAccessCreated",
+                aggregate_type="StudentAccess",
+                aggregate_id=access.id,
+                actor=user,
+                payload={
+                    "user_id": str(user.id),
+                    "student_id": str(student.id),
+                    "role": access.role,
+                    "is_active": access.is_active,
+                    "source": "account_invitation",
+                },
+            )
         else:
+            previous = {
+                "role": access.role,
+                "is_active": access.is_active,
+            }
             access.role = invitation.student_access_role
             access.is_active = True
-            access.save(update_fields=["role", "is_active"])
+            if (
+                previous["role"] != access.role
+                or previous["is_active"] != access.is_active
+            ):
+                access.save(update_fields=["role", "is_active"])
+                record_event(
+                    event_type="StudentAccessChanged",
+                    aggregate_type="StudentAccess",
+                    aggregate_id=access.id,
+                    actor=user,
+                    payload={
+                        "user_id": str(user.id),
+                        "student_id": str(student.id),
+                        "previous": previous,
+                        "role": access.role,
+                        "is_active": access.is_active,
+                        "source": "account_invitation",
+                    },
+                )
         target_id = access.id
         target_type = "StudentAccess"
     else:
@@ -226,6 +261,18 @@ def _accept_invitation_locked(
             user=user,
             display_name=invitation.coach_display_name,
             is_active=True,
+        )
+        record_event(
+            event_type="CoachProfileCreated",
+            aggregate_type="CoachProfile",
+            aggregate_id=coach.id,
+            actor=user,
+            payload={
+                "user_id": str(user.id),
+                "display_name": coach.display_name,
+                "is_active": coach.is_active,
+                "source": "account_invitation",
+            },
         )
         target_id = coach.id
         target_type = "CoachProfile"
@@ -269,7 +316,7 @@ def authenticate_external_identity(
     )
 
     if identity is not None:
-        user = identity.user
+        user = User.objects.select_for_update().get(pk=identity.user_id)
         if not user.is_active:
             raise ValidationError({"user": "This account is inactive."})
         if invitation_id is not None:
@@ -308,7 +355,7 @@ def authenticate_external_identity(
     )
     created_identity = False
     if identity is not None:
-        user = identity.user
+        user = User.objects.select_for_update().get(pk=identity.user_id)
         if not user.is_active:
             raise ValidationError({"user": "This account is inactive."})
     else:
@@ -330,7 +377,7 @@ def authenticate_external_identity(
                 .select_related("user")
                 .get(provider=provider, provider_subject=subject)
             )
-            user = identity.user
+            user = User.objects.select_for_update().get(pk=identity.user_id)
             if not user.is_active:
                 raise ValidationError({"user": "This account is inactive."})
 
