@@ -46,6 +46,7 @@ class AccountInvitation(UUIDModel):
     class Kind(models.TextChoices):
         STUDENT_ACCESS = "student_access", "Student access"
         COACH = "coach", "Coach"
+        RECOVERY = "recovery", "Account recovery"
 
     kind = models.CharField(max_length=24, choices=Kind.choices)
     token_hash = models.CharField(max_length=64, unique=True)
@@ -66,6 +67,13 @@ class AccountInvitation(UUIDModel):
         default="",
     )
     coach_display_name = models.CharField(max_length=100, blank=True, default="")
+    recovery_user = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="recovery_account_invitations",
+    )
     account_display_name = models.CharField(max_length=100)
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
@@ -108,14 +116,23 @@ class AccountInvitation(UUIDModel):
                             student__isnull=False,
                             student_access_role__in=["self", "guardian"],
                             coach_display_name="",
+                            recovery_user__isnull=True,
                         )
                         | (
                             models.Q(
                                 kind="coach",
                                 student__isnull=True,
                                 student_access_role="",
+                                recovery_user__isnull=True,
                             )
                             & ~models.Q(coach_display_name="")
+                        )
+                        | models.Q(
+                            kind="recovery",
+                            student__isnull=True,
+                            student_access_role="",
+                            coach_display_name="",
+                            recovery_user__isnull=False,
                         )
                     )
                     & ~models.Q(account_display_name="")
