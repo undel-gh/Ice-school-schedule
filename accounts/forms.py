@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from django import forms
+from django.conf import settings
 from django.contrib.auth import get_user_model
 
-from .models import CoachProfile, Student, StudentAccess
+from .models import AccountInvitation, CoachProfile, Student, StudentAccess
 
 User = get_user_model()
 
@@ -65,3 +66,65 @@ class CoachProfileForm(forms.Form):
         if coach is not None:
             self.fields["user"].initial = coach.user_id
             self.fields["user"].disabled = True
+
+
+
+class AccountInvitationForm(forms.Form):
+    kind = forms.ChoiceField(
+        label="Кому доступ",
+        choices=(
+            (AccountInvitation.Kind.STUDENT_ACCESS, "Ученик / родитель"),
+            (AccountInvitation.Kind.COACH, "Тренер"),
+        ),
+    )
+    student = forms.ModelChoiceField(
+        queryset=Student.objects.none(),
+        label="Ученик",
+        required=False,
+    )
+    student_access_role = forms.ChoiceField(
+        label="Роль доступа",
+        required=False,
+        choices=(
+            ("", "—"),
+            (StudentAccess.Role.SELF, "Сам ученик"),
+            (StudentAccess.Role.GUARDIAN, "Родитель / представитель"),
+        ),
+    )
+    coach_display_name = forms.CharField(
+        label="Имя тренера",
+        max_length=100,
+        required=False,
+    )
+    expires_in_hours = forms.IntegerField(
+        label="Срок действия ссылки, часов",
+        min_value=1,
+        max_value=24 * 30,
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["student"].queryset = Student.objects.filter(
+            is_active=True
+        ).order_by("display_name", "id")
+        self.fields["expires_in_hours"].initial = getattr(
+            settings,
+            "ACCOUNT_INVITATION_TTL_HOURS",
+            168,
+        )
+
+    def clean(self):
+        cleaned = super().clean()
+        kind = cleaned.get("kind")
+        if kind == AccountInvitation.Kind.STUDENT_ACCESS:
+            if cleaned.get("student") is None:
+                self.add_error("student", "Выберите ученика.")
+            if cleaned.get("student_access_role") not in StudentAccess.Role.values:
+                self.add_error("student_access_role", "Выберите роль доступа.")
+            cleaned["coach_display_name"] = ""
+        elif kind == AccountInvitation.Kind.COACH:
+            if not (cleaned.get("coach_display_name") or "").strip():
+                self.add_error("coach_display_name", "Укажите имя тренера.")
+            cleaned["student"] = None
+            cleaned["student_access_role"] = ""
+        return cleaned
