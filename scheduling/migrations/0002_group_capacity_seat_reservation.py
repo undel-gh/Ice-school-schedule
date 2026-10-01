@@ -25,6 +25,17 @@ class Migration(migrations.Migration):
                 name="training_group_capacity_gte_1",
             ),
         ),
+        migrations.AddConstraint(
+            model_name="traininggroup",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    ("capacity__isnull", True),
+                    ("capacity__gte", models.F("default_minimum_attendees")),
+                    _connector="OR",
+                ),
+                name="training_group_capacity_gte_minimum",
+            ),
+        ),
         migrations.CreateModel(
             name="GroupSeatReservation",
             fields=[
