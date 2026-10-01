@@ -141,6 +141,9 @@ def invitation_landing(request, *, token: str):
         {
             "invitation": invitation,
             "providers": configured_providers(),
+            "invitation_requires_signed_out": (
+                invitation.kind == AccountInvitation.Kind.RECOVERY
+            ),
             "signed_in_external_auth_allowed": (
                 external_auth_allowed(request.user)
                 if request.user.is_authenticated
@@ -158,6 +161,17 @@ def invitation_external_login(request, *, provider: str):
     try:
         invitation_id = UUID(raw_invitation_id)
         invitation = AccountInvitation.objects.get(pk=invitation_id)
+        if (
+            invitation.kind == AccountInvitation.Kind.RECOVERY
+            and request.user.is_authenticated
+        ):
+            raise ValidationError(
+                {
+                    "invitation": (
+                        "Sign out before accepting an account recovery invitation."
+                    )
+                }
+            )
         if request.user.is_authenticated and not external_auth_allowed(request.user):
             raise ValidationError(
                 {
