@@ -355,6 +355,11 @@ class TrainingGroup(models.Model):
         default=1,
     )
 
+    capacity = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -369,6 +374,16 @@ models.CheckConstraint(
     name="group_min_attendees_gte_1",
 )
 ```
+
+```python
+models.CheckConstraint(
+    condition=models.Q(capacity__isnull=True) | models.Q(capacity__gte=1),
+    name="training_group_capacity_gte_1",
+)
+```
+
+`capacity = NULL` means that the system does not enforce a hard cap for that
+legacy/configuration state.
 
 ## Index
 
@@ -3373,25 +3388,50 @@ read-only in Django Admin; changes require a new version.
 
 ---
 
-# 38. Planned GroupPlaceHold model
+# 38. GroupPlaceHold and capacity semantics
 
-A paid one-period group-place reservation is a separate domain concept:
+A paid one-period group-place reservation is a separate domain concept.
+It does not grant AttendanceCoverage or ICE/HALL visits.
 
 ```text
 GroupPlaceHold
     student
     group
-    period
+    period_scheme
+    period_from / period_until
     status
-    created_at / created_by
+    seat_reservation -> GroupSeatReservation
+    fee confirmation metadata
+    cancellation metadata
+```
+
+Scheduling owns the generic seat claim:
+
+```text
+GroupSeatReservation
+    student
+    group
+    starts_on / ends_on
     cancelled_at / cancelled_by
 ```
 
-It preserves the student's place in a TrainingGroup while the student skips
-one billing period. It grants no AttendanceCoverage and no ICE/HALL visits.
+A non-cancelled seat reservation and an active GroupMembership are combined by
+student identity when calculating occupancy. Therefore one student with both
+records consumes one seat.
 
-The future Billing domain may attach payment data, but payment details are not
-required in the scheduling/subscriptions foundation.
+A GroupPlaceHold can be created only when an existing membership for the same
+student/group covers the full hold period. Confirmation of payment atomically
+materializes the GroupSeatReservation. The TrainingGroup row is the
+serialization lock for capacity-changing writers.
+
+During the reservation interval, `publish_lesson(...)` excludes that student
+from membership-derived roster entries. The underlying membership remains
+intact. After the reservation interval the membership automatically becomes
+roster-eligible again without rewriting historical membership intervals.
+
+Cancelling the hold cancels its reservation. Expiry keeps the reservation as
+history; its date interval is no longer active.
+
 
 ---
 
