@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Приглашения{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Приглашения</h1>
+  <p class="page-header__meta">Одноразовые ссылки для создания или привязки внешнего аккаунта.</p>
+</header>
+<div class="toolbar">
+  <a class="btn btn-primary" href="{% url 'accounts_manager:invitation_create' %}">Создать приглашение</a>
+</div>
+<div class="card-list">
+{% for invitation in invitations %}
+  <article class="report-card">
+    <div class="lesson-card__top">
+      <strong>
+        {% if invitation.kind == "student_access" %}
+          {{ invitation.student.display_name }} · {{ invitation.get_student_access_role_display }}
+        {% else %}
+          Тренер · {{ invitation.coach_display_name }}
+        {% endif %}
+      </strong>
+      {% if invitation.accepted_at %}
+        <span class="badge badge--covered">использовано</span>
+      {% elif invitation.revoked_at %}
+        <span class="badge badge--cancelled">отозвано</span>
+      {% elif invitation.expires_at <= now %}
+        <span class="badge badge--cancelled">истекло</span>
+      {% else %}
+        <span class="badge">активно</span>
+      {% endif %}
+    </div>
+    <p>Создано {{ invitation.created_at|date:"d.m.Y H:i" }} · действует до {{ invitation.expires_at|date:"d.m.Y H:i" }}</p>
+    {% if invitation.accepted_by %}<p>Принято пользователем {{ invitation.accepted_by.username }}</p>{% endif %}
+    {% if not invitation.accepted_at and not invitation.revoked_at and invitation.expires_at > now %}
+      <form method="post" action="{% url 'accounts_manager:invitation_revoke' invitation.id %}">
+        {% csrf_token %}
+        <button class="btn-absent" type="submit">Отозвать</button>
+      </form>
+    {% endif %}
+  </article>
+{% empty %}
+  <p class="empty-state">Приглашений пока нет.</p>
+{% endfor %}
+</div>
+{% endblock %}
