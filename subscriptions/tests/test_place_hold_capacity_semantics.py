@@ -25,6 +25,7 @@ from scheduling.services import (
     add_lesson_enrollment,
     create_group_membership,
     publish_lesson,
+    update_group_membership,
 )
 from subscriptions.models import GroupPlaceHold, SubscriptionPeriodScheme
 from subscriptions.services import (
@@ -281,6 +282,41 @@ def test_direct_membership_create_cannot_bypass_place_hold_restore(
         now=timezone.now(),
     )
     assert restored.restored_membership.starts_on == return_on
+
+
+@pytest.mark.django_db
+def test_membership_update_cannot_bypass_active_place_hold(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, _ = _hold_window()
+    group = TrainingGroup.objects.create(
+        code="hold-no-update-bypass",
+        name="Hold no update bypass",
+        capacity=2,
+    )
+    holder, original = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Holder",
+    )
+    _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
+        actor=hold_manager,
+    )
+
+    original.refresh_from_db()
+    assert original.ends_on == period_from - timedelta(days=1)
+
+    with pytest.raises(ValidationError, match="restore flow"):
+        update_group_membership(
+            membership_id=original.id,
+            starts_on=original.starts_on,
+            ends_on=None,
+            actor=hold_manager,
+        )
 
 
 @pytest.mark.django_db
