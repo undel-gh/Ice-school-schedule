@@ -814,3 +814,43 @@ def unlink_external_identity(
             "sessions_invalidated": sessions_invalidated,
         },
     )
+
+
+
+@transaction.atomic
+def deactivate_external_user_for_recovery(
+    *,
+    user_id: UUID,
+    actor: User,
+) -> User:
+    require_permission(
+        actor,
+        "accounts.change_externalidentity",
+        "External identity change permission is required.",
+    )
+    user = User.objects.select_for_update().get(pk=user_id)
+    if not external_auth_role_allowed(user):
+        raise ValidationError(
+            {
+                "user": (
+                    "Staff and manager accounts cannot use external account recovery."
+                )
+            }
+        )
+    if not ExternalIdentity.objects.filter(user=user).exists():
+        raise ValidationError(
+            {"user": "This account has no external identity to recover."}
+        )
+    if not user.is_active:
+        return user
+
+    user.is_active = False
+    user.save(update_fields=["is_active"])
+    record_event(
+        event_type="ExternalAccountDeactivatedForRecovery",
+        aggregate_type="User",
+        aggregate_id=user.id,
+        actor=actor,
+        payload={"display_name": user.display_label},
+    )
+    return user
