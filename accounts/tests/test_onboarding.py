@@ -18,6 +18,7 @@ from accounts.models import (
 from audit.models import AuditEvent
 
 from accounts.onboarding import (
+    accept_account_invitation_for_existing_user,
     authenticate_external_identity,
     create_account_invitation,
     link_external_identity,
@@ -293,3 +294,39 @@ def test_invitation_provisioning_emits_role_audit_events(manager):
         event_type="CoachProfileCreated",
         aggregate_id=coach.id,
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_existing_user_invitation_acceptance_rolls_back_provider_link_on_failure(
+    manager,
+):
+    user = User.objects.create_user(username="rollback-user", password="test")
+    student = Student.objects.create(display_name="Rollback student")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+    )
+    revoke_account_invitation(
+        invitation_id=created.invitation.id,
+        actor=manager,
+    )
+
+    with pytest.raises(ValidationError):
+        accept_account_invitation_for_existing_user(
+            user=user,
+            provider=ExternalIdentity.Provider.VK,
+            provider_subject="rollback-vk",
+            invitation_id=created.invitation.id,
+        )
+
+    assert ExternalIdentity.objects.filter(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+    ).exists() is False
+    assert StudentAccess.objects.filter(
+        user=user,
+        student=student,
+    ).exists() is False
