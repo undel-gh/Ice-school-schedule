@@ -11,6 +11,7 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 
 from core.permissions import require_permission
 from core.presentation import validation_message
@@ -354,6 +355,7 @@ def manager_account_invitations(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
+@never_cache
 def manager_account_invitation_create(request: HttpRequest) -> HttpResponse:
     require_permission(
         request.user,
