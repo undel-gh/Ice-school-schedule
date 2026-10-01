@@ -22,10 +22,16 @@
   <h2>Подключить ещё один способ входа</h2>
   <div class="toolbar">
     {% if "yandex" in available_providers %}
-      <a class="btn btn-primary" href="{% url 'external_auth:link' 'yandex' %}">Подключить Яндекс</a>
+      <form method="post" action="{% url 'external_auth:link' 'yandex' %}">
+        {% csrf_token %}
+        <button class="btn btn-primary" type="submit">Подключить Яндекс</button>
+      </form>
     {% endif %}
     {% if "vk" in available_providers %}
-      <a class="btn btn-secondary" href="{% url 'external_auth:link' 'vk' %}">Подключить VK ID</a>
+      <form method="post" action="{% url 'external_auth:link' 'vk' %}">
+        {% csrf_token %}
+        <button class="btn btn-secondary" type="submit">Подключить VK ID</button>
+      </form>
     {% endif %}
   </div>
 </section>
