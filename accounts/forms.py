@@ -96,6 +96,11 @@ class AccountInvitationForm(forms.Form):
         queryset=User.objects.none(),
         label="Существующий аккаунт",
         required=False,
+        help_text=(
+            "Ссылка восстановления — секретный одноразовый токен. "
+            "При компрометации передавайте её только по независимому доверенному "
+            "каналу: лично, по телефону или через другой проверенный мессенджер/аккаунт."
+        ),
     )
     account_display_name = forms.CharField(
         label="Как подписать аккаунт",
