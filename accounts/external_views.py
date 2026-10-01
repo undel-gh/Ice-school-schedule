@@ -82,6 +82,18 @@ def _start_flow(request, *, provider: str, mode: str, invitation_id=None):
 
 
 def external_login(request, *, provider: str):
+    if request.user.is_authenticated:
+        if not external_auth_allowed(request.user):
+            messages.error(
+                request,
+                "Для staff/manager аккаунтов внешний вход запрещён.",
+            )
+        else:
+            messages.info(
+                request,
+                "Вы уже вошли. Используйте «Способы входа» для привязки провайдера.",
+            )
+        return redirect("external_auth:identities")
     try:
         return _start_flow(request, provider=provider, mode="login")
     except ValidationError as exc:
