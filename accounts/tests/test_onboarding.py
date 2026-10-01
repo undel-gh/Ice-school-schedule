@@ -21,6 +21,7 @@ from accounts.onboarding import (
     accept_account_invitation_for_existing_user,
     authenticate_external_identity,
     create_account_invitation,
+    deactivate_external_user_for_recovery,
     link_external_identity,
     resolve_invitation_token,
     unlink_external_identity,
@@ -532,3 +533,145 @@ def test_manager_cannot_strand_external_only_user(manager):
         )
 
     assert ExternalIdentity.objects.filter(pk=identity.id).exists()
+
+
+
+@pytest.mark.django_db
+def test_manager_can_remove_last_provider_after_recovery_deactivation(manager):
+    user = User.objects.create_user(
+        username="single-provider-parent",
+        display_name="Мама Ани",
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    identity = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="single-stolen-vk",
+    )
+
+    with pytest.raises(ValidationError):
+        unlink_external_identity(
+            identity_id=identity.id,
+            actor=manager,
+            self_service=False,
+        )
+
+    deactivate_external_user_for_recovery(
+        user_id=user.id,
+        actor=manager,
+    )
+    user.refresh_from_db()
+    assert user.is_active is False
+
+    unlink_external_identity(
+        identity_id=identity.id,
+        actor=manager,
+        self_service=False,
+    )
+
+    assert ExternalIdentity.objects.filter(pk=identity.id).exists() is False
+    assert AuditEvent.objects.filter(
+        event_type="ExternalAccountDeactivatedForRecovery",
+        aggregate_id=user.id,
+    ).exists()
+    assert AuditEvent.objects.filter(
+        event_type="ExternalIdentityUnlinked",
+        aggregate_id=identity.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_recovery_invitation_rebinds_and_reactivates_same_user(manager):
+    user = User.objects.create_user(
+        username="recover-same-user",
+        display_name="Папа Ильи",
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    student = Student.objects.create(display_name="Илья")
+    access = StudentAccess.objects.create(
+        user=user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    )
+    compromised = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="old-compromised-vk",
+    )
+    original_user_id = user.id
+    original_access_id = access.id
+    users_before = User.objects.count()
+
+    deactivate_external_user_for_recovery(
+        user_id=user.id,
+        actor=manager,
+    )
+    unlink_external_identity(
+        identity_id=compromised.id,
+        actor=manager,
+        self_service=False,
+    )
+
+    recovery = create_account_invitation(
+        kind=AccountInvitation.Kind.RECOVERY,
+        actor=manager,
+        recovery_user_id=user.id,
+    )
+    assert recovery.invitation.recovery_user_id == original_user_id
+    assert recovery.invitation.account_display_name == "Папа Ильи"
+
+    recovered = authenticate_external_identity(
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="new-yandex-psuid",
+        invitation_id=recovery.invitation.id,
+    )
+
+    assert recovered.id == original_user_id
+    recovered.refresh_from_db()
+    assert recovered.is_active is True
+    assert User.objects.count() == users_before
+    assert StudentAccess.objects.get(pk=original_access_id).user_id == original_user_id
+    assert ExternalIdentity.objects.filter(
+        user_id=original_user_id,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="new-yandex-psuid",
+    ).exists()
+    recovery.invitation.refresh_from_db()
+    assert recovery.invitation.accepted_by_id == original_user_id
+    assert AuditEvent.objects.filter(
+        event_type="AccountRecovered",
+        aggregate_id=original_user_id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_recovery_invitation_requires_inactive_nonprivileged_target(manager):
+    active = User.objects.create_user(username="active-recovery-target")
+
+    with pytest.raises(ValidationError):
+        create_account_invitation(
+            kind=AccountInvitation.Kind.RECOVERY,
+            actor=manager,
+            recovery_user_id=active.id,
+        )
+
+    privileged = User.objects.create_user(
+        username="inactive-manager-target",
+        is_active=False,
+    )
+    privileged.user_permissions.add(
+        Permission.objects.get(
+            codename="view_student",
+            content_type__app_label="accounts",
+        )
+    )
+
+    with pytest.raises(ValidationError):
+        create_account_invitation(
+            kind=AccountInvitation.Kind.RECOVERY,
+            actor=manager,
+            recovery_user_id=privileged.id,
+        )
