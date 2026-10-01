@@ -971,6 +971,13 @@ class GroupPlaceHold(UUIDModel):
                 condition=models.Q(period_until__gte=models.F("period_from")),
                 name="grouphold_period_dates_ck",
             ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(status="active")
+                    | models.Q(seat_reservation__isnull=False)
+                ),
+                name="grouphold_active_has_seat_ck",
+            ),
             models.UniqueConstraint(
                 fields=["student", "group", "period_from"],
                 condition=~models.Q(status="cancelled"),
