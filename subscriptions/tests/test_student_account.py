@@ -415,7 +415,9 @@ def test_student_navigation_links_account_from_schedule(
 
     body = response.content.decode()
     assert response.status_code == 200
-    assert reverse("student_account:account") in body
+    account_url = reverse("student_account:account")
+    assert account_url in body
+    assert f"{account_url}?student={ctx['student'].id}" in body
     assert "Абонемент" in body
 
 
