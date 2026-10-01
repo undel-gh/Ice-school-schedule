@@ -30,3 +30,22 @@ class ManagerAttendanceCoverageRebindForm(forms.Form):
             "subscription_allowance_id": target.subscription_allowance_id,
             "makeup_entitlement_id": target.makeup_entitlement_id,
         }
+
+
+
+class ManagerAttendanceCoverageRecoveryForm(
+    ManagerAttendanceCoverageRebindForm
+):
+    source = forms.ChoiceField(
+        label="Источник покрытия",
+        required=False,
+    )
+
+    def target_kwargs(self) -> dict:
+        if not self.cleaned_data["source"]:
+            return {
+                "one_time_entitlement_id": None,
+                "subscription_allowance_id": None,
+                "makeup_entitlement_id": None,
+            }
+        return super().target_kwargs()

@@ -1862,12 +1862,14 @@ def test_recover_attendance_coverage_assigns_available_source(
         updated_by=admin_user,
     )
 
-    coverage = recover_attendance_coverage(
+    result = recover_attendance_coverage(
         attendance_id=attendance.id,
         actor=admin_user,
         now=lesson.ends_at,
     )
+    coverage = result.coverage
 
+    assert result.recovered is True
     assert coverage.subscription_allowance_id == allowance.id
     assert allowance_balance(allowance.id) == 0
     recovered = AuditEvent.objects.get(

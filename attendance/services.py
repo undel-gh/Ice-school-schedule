@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -26,6 +27,7 @@ from subscriptions.services import (
     _cancel_open_absence_compensation_cases,
     _reverse_materialized_absence_compensation_cases,
     assign_attendance_coverage,
+    assign_attendance_coverage_from_source,
     reverse_attendance_coverage,
 )
 
@@ -1062,13 +1064,22 @@ def revoke_medical_absence(
 
 
 
+@dataclass(frozen=True)
+class AttendanceCoverageRecoveryResult:
+    coverage: AttendanceCoverage
+    recovered: bool
+
+
 @transaction.atomic
 def recover_attendance_coverage(
     *,
     attendance_id: UUID,
     actor: User,
     now: datetime,
-) -> AttendanceCoverage:
+    one_time_entitlement_id: UUID | None = None,
+    subscription_allowance_id: UUID | None = None,
+    makeup_entitlement_id: UUID | None = None,
+) -> AttendanceCoverageRecoveryResult:
     require_permission(
         actor,
         "subscriptions.change_attendancecoverage",
@@ -1103,24 +1114,45 @@ def recover_attendance_coverage(
 
     existing = _active_coverage(attendance.id)
     if existing is not None:
-        return existing
+        return AttendanceCoverageRecoveryResult(
+            coverage=existing,
+            recovered=False,
+        )
 
     correlation_id = uuid4()
-    coverage = assign_attendance_coverage(
-        attendance_id=attendance.id,
-        actor=actor,
-        correlation_id=correlation_id,
-        now=now,
-    )
-    if coverage is None:
-        raise ValidationError(
-            {
-                "attendance": (
-                    "No eligible coverage source is currently available. "
-                    "Create or restore an applicable right and retry."
-                )
-            }
+    explicit_source = any(
+        value is not None
+        for value in (
+            one_time_entitlement_id,
+            subscription_allowance_id,
+            makeup_entitlement_id,
         )
+    )
+    if explicit_source:
+        coverage = assign_attendance_coverage_from_source(
+            attendance_id=attendance.id,
+            actor=actor,
+            one_time_entitlement_id=one_time_entitlement_id,
+            subscription_allowance_id=subscription_allowance_id,
+            makeup_entitlement_id=makeup_entitlement_id,
+            correlation_id=correlation_id,
+        )
+    else:
+        coverage = assign_attendance_coverage(
+            attendance_id=attendance.id,
+            actor=actor,
+            correlation_id=correlation_id,
+            now=now,
+        )
+        if coverage is None:
+            raise ValidationError(
+                {
+                    "attendance": (
+                        "No eligible coverage source is currently available. "
+                        "Create or restore an applicable right and retry."
+                    )
+                }
+            )
 
     _audit(
         event_type="AttendanceCoverageRecovered",
@@ -1130,7 +1162,11 @@ def recover_attendance_coverage(
             "lesson_id": str(attendance.lesson_id),
             "student_id": str(attendance.student_id),
             "coverage_id": str(coverage.id),
+            "mode": "explicit" if explicit_source else "automatic",
         },
         correlation_id=correlation_id,
     )
-    return coverage
+    return AttendanceCoverageRecoveryResult(
+        coverage=coverage,
+        recovered=True,
+    )

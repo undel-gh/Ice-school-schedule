@@ -11,14 +11,17 @@ from core.time import school_date
 
 from accounts.models import CoachProfile, Student
 from attendance.models import AbsenceJustification, Attendance
+from audit.models import AuditEvent
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
     AttendanceCoverage,
     MakeupEntitlement,
     OneTimeEntitlement,
     SubscriptionPlan,
+    SubscriptionLedgerEntry,
     SubscriptionPlanAllowance,
 )
+from subscriptions.selectors import allowance_balance
 from subscriptions.services import (
     assign_attendance_coverage,
     issue_subscription,
@@ -367,3 +370,152 @@ def test_manager_rebind_uses_restore_credit_for_same_allowance_makeup(
     )
     assert active.subscription_allowance_id == allowance.id
     assert active.makeup_entitlement_id == makeup.id
+
+
+
+@pytest.mark.django_db
+def test_manager_coverage_report_paginates_50_rows(client):
+    manager = User.objects.create_user(
+        username="coverage-pagination-manager",
+        password="test",
+        is_staff=True,
+        is_superuser=True,
+    )
+    first = _make_completed_present_attendance(
+        actor=manager,
+        suffix="pagination",
+    )
+    students = [
+        Student(display_name=f"Pagination Student {index:02d}")
+        for index in range(55)
+    ]
+    Student.objects.bulk_create(students)
+    Attendance.objects.bulk_create(
+        [
+            Attendance(
+                lesson=first.lesson,
+                student=student,
+                status=Attendance.Status.PRESENT,
+                marked_at=first.lesson.ends_at,
+                marked_by=manager,
+                updated_by=manager,
+            )
+            for student in students
+        ]
+    )
+    client.force_login(manager)
+
+    first_page = client.get(
+        reverse("attendance_manager:coverage_report"),
+        {"coverage": "all"},
+    )
+    second_page = client.get(
+        reverse("attendance_manager:coverage_report"),
+        {"coverage": "all", "page": "2"},
+    )
+
+    assert first_page.status_code == 200
+    assert first_page.context["page_obj"].paginator.count == 56
+    assert len(first_page.context["rows"]) == 50
+    assert len(second_page.context["rows"]) == 6
+    assert "coverage=all" in first_page.content.decode()
+
+
+@pytest.mark.django_db
+def test_manager_recovers_uncovered_with_explicit_source_without_rebind_ledger(
+    client,
+):
+    manager = User.objects.create_user(
+        username="coverage-explicit-recovery-manager",
+        password="test",
+        is_staff=True,
+        is_superuser=True,
+    )
+    attendance = _make_completed_present_attendance(
+        actor=manager,
+        suffix="explicit-recovery",
+    )
+    subscription = _issue_ice_subscription(
+        student=attendance.student,
+        actor=manager,
+        starts_at=attendance.lesson.starts_at,
+        suffix="explicit-recovery",
+    )
+    allowance = subscription.allowances.get()
+    entitlement = OneTimeEntitlement.objects.create(
+        student=attendance.student,
+        lesson=attendance.lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=manager,
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "attendance_manager:coverage_recover",
+            kwargs={"attendance_id": attendance.id},
+        ),
+        {"source": f"allowance:{allowance.id}"},
+    )
+
+    assert response.status_code == 302
+    coverage = AttendanceCoverage.objects.get(
+        attendance=attendance,
+        reversed_at__isnull=True,
+    )
+    assert coverage.subscription_allowance_id == allowance.id
+    assert coverage.one_time_entitlement_id is None
+    assert allowance_balance(allowance.id) == 0
+    assert not AttendanceCoverage.objects.filter(
+        one_time_entitlement=entitlement,
+        reversed_at__isnull=True,
+    ).exists()
+    assert not SubscriptionLedgerEntry.objects.filter(
+        coverage=coverage,
+        entry_type=SubscriptionLedgerEntry.EntryType.RESTORE,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_manager_repeat_recovery_reports_already_covered(client):
+    manager = User.objects.create_user(
+        username="coverage-repeat-recovery-manager",
+        password="test",
+        is_staff=True,
+        is_superuser=True,
+    )
+    attendance = _make_completed_present_attendance(
+        actor=manager,
+        suffix="repeat-recovery",
+    )
+    OneTimeEntitlement.objects.create(
+        student=attendance.student,
+        lesson=attendance.lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category="ice",
+        created_by=manager,
+    )
+    client.force_login(manager)
+
+    first = client.post(
+        reverse(
+            "attendance_manager:coverage_recover",
+            kwargs={"attendance_id": attendance.id},
+        )
+    )
+    second = client.post(
+        reverse(
+            "attendance_manager:coverage_recover",
+            kwargs={"attendance_id": attendance.id},
+        ),
+        follow=True,
+    )
+
+    assert first.status_code == 302
+    assert second.status_code == 200
+    assert "уже было покрыто" in second.content.decode()
+    assert AuditEvent.objects.filter(
+        event_type="AttendanceCoverageRecovered",
+        aggregate_id=attendance.id,
+    ).count() == 1

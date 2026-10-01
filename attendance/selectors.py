@@ -53,13 +53,13 @@ def _coverage_source_label(coverage: AttendanceCoverage) -> str:
     )
 
 
-def manager_attendance_coverage_report(
+def manager_attendance_coverage_queryset(
     *,
     coverage_state: str,
     student_id: UUID | None = None,
     from_date: date | None = None,
     until_date: date | None = None,
-) -> tuple[ManagerAttendanceCoverageRow, ...]:
+):
     active_coverage_exists = AttendanceCoverage.objects.filter(
         attendance_id=OuterRef("pk"),
         reversed_at__isnull=True,
@@ -112,6 +112,12 @@ def manager_attendance_coverage_report(
         )
         attendances = attendances.filter(lesson__starts_at__lt=until_at)
 
+    return attendances
+
+
+def manager_attendance_coverage_rows(
+    attendances,
+) -> tuple[ManagerAttendanceCoverageRow, ...]:
     rows = []
     for attendance in attendances:
         coverage = (
@@ -131,6 +137,23 @@ def manager_attendance_coverage_report(
             )
         )
     return tuple(rows)
+
+
+def manager_attendance_coverage_report(
+    *,
+    coverage_state: str,
+    student_id: UUID | None = None,
+    from_date: date | None = None,
+    until_date: date | None = None,
+) -> tuple[ManagerAttendanceCoverageRow, ...]:
+    return manager_attendance_coverage_rows(
+        manager_attendance_coverage_queryset(
+            coverage_state=coverage_state,
+            student_id=student_id,
+            from_date=from_date,
+            until_date=until_date,
+        )
+    )
 
 
 def available_attendance_coverage_targets(

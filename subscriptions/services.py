@@ -3623,23 +3623,31 @@ def _try_one_time_coverage(
     category: str,
     actor: User | None,
     correlation_id: UUID,
+    candidate_ids: list[UUID] | tuple[UUID, ...] | None = None,
 ) -> AttendanceCoverage | None:
-    candidate_ids = list(
-        OneTimeEntitlement.objects.filter(
-            student_id=attendance.student_id,
-            lesson_id=attendance.lesson_id,
-            category=category,
-            cancelled_at__isnull=True,
+    if candidate_ids is None:
+        candidate_ids = list(
+            OneTimeEntitlement.objects.filter(
+                student_id=attendance.student_id,
+                lesson_id=attendance.lesson_id,
+                category=category,
+                cancelled_at__isnull=True,
+            )
+            .order_by("created_at", "id")
+            .values_list("id", flat=True)
         )
-        .order_by("created_at", "id")
-        .values_list("id", flat=True)
-    )
 
     for entitlement_id in candidate_ids:
         entitlement = (
             OneTimeEntitlement.objects.select_for_update().get(pk=entitlement_id)
         )
         if entitlement.cancelled_at is not None:
+            continue
+        if (
+            entitlement.student_id != attendance.student_id
+            or entitlement.lesson_id != attendance.lesson_id
+            or entitlement.category != category
+        ):
             continue
         if AttendanceCoverage.objects.filter(
             one_time_entitlement_id=entitlement.id,
@@ -3717,25 +3725,27 @@ def _try_makeup_coverage(
     lesson_date: date,
     actor: User | None,
     correlation_id: UUID,
+    candidate_ids: list[UUID] | tuple[UUID, ...] | None = None,
 ) -> AttendanceCoverage | None:
-    base = MakeupEntitlement.objects.filter(
-        student_id=attendance.student_id,
-        category=category,
-        cancelled_at__isnull=True,
-        valid_from__lte=lesson_date,
-        valid_until__gte=lesson_date,
-    )
+    if candidate_ids is None:
+        base = MakeupEntitlement.objects.filter(
+            student_id=attendance.student_id,
+            category=category,
+            cancelled_at__isnull=True,
+            valid_from__lte=lesson_date,
+            valid_until__gte=lesson_date,
+        )
 
-    candidate_ids = list(
-        base.filter(target_lesson_id=attendance.lesson_id)
-        .order_by("valid_until", "created_at", "id")
-        .values_list("id", flat=True)
-    )
-    candidate_ids.extend(
-        base.filter(target_lesson__isnull=True)
-        .order_by("valid_until", "created_at", "id")
-        .values_list("id", flat=True)
-    )
+        candidate_ids = list(
+            base.filter(target_lesson_id=attendance.lesson_id)
+            .order_by("valid_until", "created_at", "id")
+            .values_list("id", flat=True)
+        )
+        candidate_ids.extend(
+            base.filter(target_lesson__isnull=True)
+            .order_by("valid_until", "created_at", "id")
+            .values_list("id", flat=True)
+        )
 
     for makeup_id in candidate_ids:
         makeup = MakeupEntitlement.objects.select_for_update().get(pk=makeup_id)
@@ -3939,23 +3949,25 @@ def _try_ordinary_allowance_coverage(
     lesson_date: date,
     actor: User | None,
     correlation_id: UUID,
+    candidate_ids: list[UUID] | tuple[UUID, ...] | None = None,
 ) -> AttendanceCoverage | None:
-    candidate_ids = list(
-        SubscriptionAllowance.objects.filter(
-            subscription__student_id=attendance.student_id,
-            category=category,
-            subscription__cancelled_at__isnull=True,
-            subscription__valid_from__lte=lesson_date,
-            subscription__valid_until__gte=lesson_date,
+    if candidate_ids is None:
+        candidate_ids = list(
+            SubscriptionAllowance.objects.filter(
+                subscription__student_id=attendance.student_id,
+                category=category,
+                subscription__cancelled_at__isnull=True,
+                subscription__valid_from__lte=lesson_date,
+                subscription__valid_until__gte=lesson_date,
+            )
+            .order_by(
+                "subscription__valid_until",
+                "subscription__valid_from",
+                "subscription__created_at",
+                "id",
+            )
+            .values_list("id", flat=True)
         )
-        .order_by(
-            "subscription__valid_until",
-            "subscription__valid_from",
-            "subscription__created_at",
-            "id",
-        )
-        .values_list("id", flat=True)
-    )
 
     for allowance_id in candidate_ids:
         allowance, balance = locked_allowance_balance(allowance_id)
@@ -4116,6 +4128,107 @@ def assign_attendance_coverage(
         actor=actor,
         correlation_id=correlation_id,
     )
+
+
+
+
+@transaction.atomic
+def assign_attendance_coverage_from_source(
+    *,
+    attendance_id: UUID,
+    actor: User | None,
+    one_time_entitlement_id: UUID | None = None,
+    subscription_allowance_id: UUID | None = None,
+    makeup_entitlement_id: UUID | None = None,
+    correlation_id: UUID | None = None,
+) -> AttendanceCoverage:
+    correlation_id = correlation_id or uuid4()
+    primary_count = sum(
+        value is not None
+        for value in (
+            one_time_entitlement_id,
+            subscription_allowance_id,
+        )
+    )
+    if primary_count != 1:
+        raise ValidationError(
+            "Exactly one target primary source must be supplied."
+        )
+    if (
+        makeup_entitlement_id is not None
+        and subscription_allowance_id is None
+    ):
+        raise ValidationError(
+            "Make-up entitlement requires a subscription allowance target."
+        )
+
+    attendance = (
+        Attendance.objects.select_for_update()
+        .select_related("lesson__lesson_type")
+        .get(pk=attendance_id)
+    )
+    if attendance.status != Attendance.Status.PRESENT:
+        raise ValidationError(
+            {"attendance": "Coverage can only be assigned to PRESENT attendance."}
+        )
+
+    existing = _active_coverage_for_attendance(attendance.id)
+    if existing is not None:
+        return existing
+
+    category = attendance.lesson.lesson_type.subscription_category
+    lesson_date = school_date(attendance.lesson.starts_at)
+
+    if one_time_entitlement_id is not None:
+        coverage = _try_one_time_coverage(
+            attendance=attendance,
+            category=category,
+            actor=actor,
+            correlation_id=correlation_id,
+            candidate_ids=[one_time_entitlement_id],
+        )
+    elif makeup_entitlement_id is not None:
+        makeup_ref = MakeupEntitlement.objects.only(
+            "source_subscription_allowance_id"
+        ).get(pk=makeup_entitlement_id)
+        if (
+            makeup_ref.source_subscription_allowance_id
+            != subscription_allowance_id
+        ):
+            raise ValidationError(
+                {
+                    "makeup_entitlement": (
+                        "Make-up entitlement does not belong to target allowance."
+                    )
+                }
+            )
+        coverage = _try_makeup_coverage(
+            attendance=attendance,
+            category=category,
+            lesson_date=lesson_date,
+            actor=actor,
+            correlation_id=correlation_id,
+            candidate_ids=[makeup_entitlement_id],
+        )
+    else:
+        coverage = _try_ordinary_allowance_coverage(
+            attendance=attendance,
+            category=category,
+            lesson_date=lesson_date,
+            actor=actor,
+            correlation_id=correlation_id,
+            candidate_ids=[subscription_allowance_id],
+        )
+
+    if coverage is None:
+        raise ValidationError(
+            {
+                "coverage": (
+                    "Selected coverage source is no longer eligible or available."
+                )
+            }
+        )
+    return coverage
 
 
 def _rolling_period_revert_dependencies(

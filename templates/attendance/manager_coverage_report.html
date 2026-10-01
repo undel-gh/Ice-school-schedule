@@ -38,6 +38,8 @@
   <button class="btn-secondary" type="submit">Показать</button>
 </form>
 
+{% include "shared/manager_pagination.html" %}
+
 <div class="card-list">
 {% for row in rows %}
   <article class="lesson-card">
@@ -69,4 +71,6 @@
   <div class="empty-state">Записей по выбранным условиям нет.</div>
 {% endfor %}
 </div>
+
+{% include "shared/manager_pagination.html" %}
 {% endblock %}

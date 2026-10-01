@@ -6,6 +6,7 @@ from uuid import UUID
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.core.paginator import Paginator
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -21,12 +22,14 @@ from subscriptions.services import rebind_attendance_coverage
 
 from .forms import (
     ManagerAttendanceCoverageRebindForm,
+    ManagerAttendanceCoverageRecoveryForm,
     ManagerMedicalVerifyForm,
 )
 from .models import AbsenceJustification, Attendance
 from .selectors import (
     available_attendance_coverage_targets,
-    manager_attendance_coverage_report,
+    manager_attendance_coverage_queryset,
+    manager_attendance_coverage_rows,
 )
 from .services import (
     reject_medical_absence,
@@ -85,19 +88,27 @@ def manager_coverage_report(request: HttpRequest) -> HttpResponse:
         if not Student.objects.filter(pk=student_id).exists():
             raise Http404("Student not found.")
 
-    rows = manager_attendance_coverage_report(
+    coverage_queryset = manager_attendance_coverage_queryset(
         coverage_state=coverage_state,
         student_id=student_id,
         from_date=from_date,
         until_date=until_date,
     )
+    page_obj = Paginator(coverage_queryset, 50).get_page(
+        request.GET.get("page")
+    )
+    rows = manager_attendance_coverage_rows(page_obj.object_list)
     students = Student.objects.order_by("display_name", "id")
+    pagination_query = request.GET.copy()
+    pagination_query.pop("page", None)
 
     return render(
         request,
         "attendance/manager_coverage_report.html",
         {
             "rows": rows,
+            "page_obj": page_obj,
+            "pagination_query": pagination_query.urlencode(),
             "students": students,
             "selected_student_id": (
                 str(student_id) if student_id is not None else ""
@@ -149,6 +160,9 @@ def manager_coverage_detail(
         else ()
     )
     rebind_form = ManagerAttendanceCoverageRebindForm(targets=targets)
+    recovery_form = ManagerAttendanceCoverageRecoveryForm(
+        targets=targets
+    )
 
     return render(
         request,
@@ -158,6 +172,7 @@ def manager_coverage_detail(
             "coverage": coverage,
             "targets": targets,
             "rebind_form": rebind_form,
+            "recovery_form": recovery_form,
             "lesson_is_completed": (
                 attendance.lesson.status == attendance.lesson.Status.COMPLETED
             ),
@@ -235,20 +250,56 @@ def manager_coverage_recover(
         "subscriptions.change_attendancecoverage",
         "Attendance coverage change permission is required.",
     )
-    get_object_or_404(Attendance, pk=attendance_id)
-    try:
-        recover_attendance_coverage(
-            attendance_id=attendance_id,
-            actor=request.user,
-            now=timezone.now(),
+    attendance = get_object_or_404(
+        Attendance.objects.select_related("lesson__lesson_type"),
+        pk=attendance_id,
+    )
+    current_coverage = (
+        AttendanceCoverage.objects.filter(
+            attendance=attendance,
+            reversed_at__isnull=True,
         )
-    except ValidationError as exc:
-        messages.error(request, validation_message(exc))
-    else:
-        messages.success(
+        .select_related(
+            "subscription_allowance__subscription",
+            "one_time_entitlement",
+            "makeup_entitlement",
+        )
+        .first()
+    )
+    targets = available_attendance_coverage_targets(
+        attendance=attendance,
+        current_coverage=current_coverage,
+    )
+    form = ManagerAttendanceCoverageRecoveryForm(
+        request.POST,
+        targets=targets,
+    )
+    if not form.is_valid():
+        messages.error(
             request,
-            "Покрытие посещения восстановлено.",
+            "Выберите доступный источник покрытия.",
         )
+    else:
+        try:
+            result = recover_attendance_coverage(
+                attendance_id=attendance_id,
+                actor=request.user,
+                now=timezone.now(),
+                **form.target_kwargs(),
+            )
+        except ValidationError as exc:
+            messages.error(request, validation_message(exc))
+        else:
+            if result.recovered:
+                messages.success(
+                    request,
+                    "Покрытие посещения восстановлено.",
+                )
+            else:
+                messages.info(
+                    request,
+                    "Посещение уже было покрыто.",
+                )
     return redirect(
         "attendance_manager:coverage_detail",
         attendance_id=attendance_id,
