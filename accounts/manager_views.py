@@ -370,7 +370,15 @@ def manager_account_invitation_create(request: HttpRequest) -> HttpResponse:
         "accounts.add_accountinvitation",
         "Account invitation creation permission is required.",
     )
-    form = AccountInvitationForm(request.POST or None)
+    initial = {}
+    if request.method == "GET":
+        recovery_user_id = request.GET.get("recovery_user")
+        if recovery_user_id:
+            initial = {
+                "kind": AccountInvitation.Kind.RECOVERY,
+                "recovery_user": recovery_user_id,
+            }
+    form = AccountInvitationForm(request.POST or None, initial=initial)
     if request.method == "POST" and form.is_valid():
         student = form.cleaned_data.get("student")
         expires_at = timezone.now() + timedelta(
@@ -392,6 +400,11 @@ def manager_account_invitation_create(request: HttpRequest) -> HttpResponse:
                 coach_display_name=form.cleaned_data.get(
                     "coach_display_name",
                     "",
+                ),
+                recovery_user_id=(
+                    form.cleaned_data["recovery_user"].id
+                    if form.cleaned_data.get("recovery_user") is not None
+                    else None
                 ),
                 expires_at=expires_at,
             )
