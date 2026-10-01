@@ -12,6 +12,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST
 
 from core.permissions import require_permission
 from core.presentation import validation_message
@@ -408,6 +409,7 @@ def manager_account_invitation_create(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
+@require_POST
 def manager_account_invitation_revoke(
     request: HttpRequest,
     *,
@@ -419,8 +421,6 @@ def manager_account_invitation_revoke(
         "Account invitation change permission is required.",
     )
     invitation = get_object_or_404(AccountInvitation, pk=invitation_id)
-    if request.method != "POST":
-        return redirect("accounts_manager:invitations")
     try:
         revoke_account_invitation(
             invitation_id=invitation.id,
