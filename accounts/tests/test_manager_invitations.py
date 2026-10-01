@@ -268,7 +268,9 @@ def test_manager_web_can_deactivate_unlink_and_issue_recovery_invitation(
         {"recovery_user": str(user.id)},
     )
     assert form_page.status_code == 200
-    assert "Восстановление доступа" in form_page.content.decode()
+    form_body = form_page.content.decode()
+    assert "Восстановление доступа" in form_body
+    assert "независимому доверенному" in form_body
 
     created = client.post(
         reverse("accounts_manager:invitation_create"),
