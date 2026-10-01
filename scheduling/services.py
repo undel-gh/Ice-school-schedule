@@ -2015,9 +2015,9 @@ def create_training_group(
     code: str,
     name: str,
     default_minimum_attendees: int,
-    capacity: int | None,
     is_active: bool,
     actor: User,
+    capacity: int | None = None,
 ) -> TrainingGroup:
     require_permission(
         actor,
@@ -2069,9 +2069,9 @@ def update_training_group(
     code: str,
     name: str,
     default_minimum_attendees: int,
-    capacity: int | None,
     is_active: bool,
     actor: User,
+    capacity: int | None = None,
 ) -> TrainingGroup:
     require_permission(
         actor,
