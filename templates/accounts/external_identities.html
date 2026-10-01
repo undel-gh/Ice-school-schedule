@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Способы входа{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Способы входа</h1>
+  <p class="page-header__meta">Внешние аккаунты используются только для идентификации. OAuth-токены школа не хранит.</p>
+</header>
+
+<div class="card-list">
+  {% for identity in identities %}
+    <article class="report-card">
+      <h2>{{ identity.get_provider_display }}</h2>
+      <p>Подключён {% if identity.last_used_at %}· последний вход {{ identity.last_used_at|date:"d.m.Y H:i" }}{% endif %}</p>
+    </article>
+  {% empty %}
+    <p class="empty-state">Внешние способы входа пока не подключены.</p>
+  {% endfor %}
+</div>
+
+{% if available_providers %}
+<section class="report-card">
+  <h2>Подключить ещё один способ входа</h2>
+  <div class="toolbar">
+    {% if "yandex" in available_providers %}
+      <a class="btn btn-primary" href="{% url 'external_auth:link' 'yandex' %}">Подключить Яндекс</a>
+    {% endif %}
+    {% if "vk" in available_providers %}
+      <a class="btn btn-secondary" href="{% url 'external_auth:link' 'vk' %}">Подключить VK ID</a>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}
