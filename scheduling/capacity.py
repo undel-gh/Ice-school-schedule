@@ -51,9 +51,13 @@ def group_occupied_student_ids(
     if exclude_reservation_id is not None:
         reservations = reservations.exclude(pk=exclude_reservation_id)
 
-    return set(memberships.values_list("student_id", flat=True)) | set(
+    occupied_student_ids = memberships.values_list(
+        "student_id",
+        flat=True,
+    ).union(
         reservations.values_list("student_id", flat=True)
     )
+    return set(occupied_student_ids)
 
 
 def group_capacity_snapshot(
