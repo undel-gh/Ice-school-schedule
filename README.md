@@ -210,6 +210,109 @@ Coverage rebinds and one-time entitlement administration currently remain
 service-level operations and are intended for a
 dedicated administrative UI rather than direct model editing.
 
+## External identity login and invitations
+
+Student, guardian and coach onboarding is invitation-only. An unknown Yandex or
+VK ID account is never allowed to create a school account by simply visiting
+the ordinary login page.
+
+Managers create one-time invitations in the web UI at
+`/manager/school/invitations/`. An invitation targets either:
+
+- one Student with SELF or GUARDIAN access plus a human-readable account
+  label such as "Мама Ани"; or
+- a new CoachProfile with a fixed display name.
+
+The raw invitation token is shown only once. The database stores only its
+SHA-256 hash, expiration and lifecycle metadata. When the invited person
+successfully authenticates, creation of the technical Django User,
+ExternalIdentity and StudentAccess/CoachProfile happens in one transaction.
+
+External-only users receive an unguessable technical username, an unusable
+Django password and the human-readable display label from the invitation.
+User-facing and manager-facing UI must show that label instead of the technical
+username whenever possible. No provider access token, refresh token, email,
+phone, avatar, first name or last name is persisted by this flow.
+
+Configure either or both providers:
+
+```bash
+YANDEX_OAUTH_CLIENT_ID=...
+YANDEX_OAUTH_CLIENT_SECRET=...   # optional when PKCE is accepted
+YANDEX_OAUTH_SCOPE=login:info
+
+VKID_CLIENT_ID=...
+VKID_SCOPE=
+```
+
+Register the callback URLs exactly for the public school origin:
+
+```text
+https://<school-host>/accounts/external/yandex/callback/
+https://<school-host>/accounts/external/vk/callback/
+```
+
+Both providers use Authorization Code + PKCE and a one-time `state`.
+Yandex uses `S256`; VK ID follows the current official SDK and sends
+`code_challenge_method=s256`. VK ID additionally returns a `device_id`
+with the authorization code; it is required for the token exchange.
+
+Yandex identity is **always** the pairwise `psuid`. If Yandex does not return
+`psuid`, authentication fails; the implementation never falls back to the
+global provider `id`, so one account cannot silently change subject format
+between logins.
+
+After onboarding, the ordinary login buttons resolve only an existing
+ExternalIdentity. Authenticated users can connect the other configured
+provider at `/accounts/external/identities/`; one internal User may have at
+most one identity per provider.
+
+If an already authenticated User opens another invitation and chooses a
+provider that is not linked yet, that provider is linked to the **same User**
+before the invitation is consumed. This prevents a parent who uses Yandex for
+the first child and VK ID for the second invitation from accidentally creating
+two school accounts.
+
+External authentication is deliberately disabled for `is_staff`,
+`is_superuser` and any account that has manager-operations permissions.
+Those accounts must use local username/password authentication, preserving the
+password/axes security boundary. Privileged signed-in sessions also cannot
+accept external invitations.
+
+Users may unlink one provider themselves only while another external provider
+remains. Managers with `change_externalidentity` may unlink a compromised
+provider. The final provider of an external-only User may be removed only
+after that User has been deactivated. Deactivation is available in manager web
+and prevents the inactive User from authenticating through Django's
+ModelBackend.
+
+For a compromised single-provider account the supported recovery procedure is:
+
+```text
+1. Deactivate the existing User.
+2. Unlink the compromised ExternalIdentity.
+3. Create an AccountInvitation of kind RECOVERY bound to that exact User.
+4. Send the one-time recovery URL to the account owner.
+   Treat the URL as a bearer secret: during compromise, deliver it through a
+   trusted channel independent of the compromised account (for example in
+   person, by phone, or via another verified messenger/account).
+5. The owner authenticates with Yandex/VK while signed out.
+6. The provider is linked to the existing User and the same User is reactivated.
+```
+
+A recovery invitation can be issued only when the target User is inactive,
+non-privileged and has no remaining ExternalIdentity rows. It never creates a
+replacement User, StudentAccess or CoachProfile, so all existing history and
+school relationships remain attached to the same UUID.
+
+For an external-only User, manager unlink also rotates the unusable password
+value so already-issued Django sessions fail the session-auth-hash check.
+Every unlink records `ExternalIdentityUnlinked`; recovery records
+`AccountRecovered`.
+
+Local username/password login remains the staff and emergency administration
+channel.
+
 ## Production checks
 
 Production defaults are closed: `DJANGO_DEBUG` defaults to off and

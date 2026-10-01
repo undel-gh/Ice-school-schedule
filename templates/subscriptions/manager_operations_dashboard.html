@@ -6,6 +6,9 @@
   <p class="page-header__meta">Расписание, права, компенсации и аудит</p>
 </header>
 <div class="manager-operation-grid">
+  {% if perms.accounts.view_accountinvitation %}
+  <a class="report-card manager-nav-card" href="{% url 'accounts_manager:invitations' %}"><h2>Приглашения</h2><p>Одноразовые ссылки для учеников, родителей и тренеров.</p></a>
+  {% endif %}
   {% if perms.accounts.view_student %}
   <a class="report-card manager-nav-card" href="{% url 'accounts_manager:students' %}"><h2>Ученики и доступы</h2><p>Участники школы, родители и self-доступ.</p></a>
   {% endif %}

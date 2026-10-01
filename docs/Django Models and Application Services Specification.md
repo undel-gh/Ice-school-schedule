@@ -3548,3 +3548,97 @@ medical review and relevant audit history.
 
 Pure background jobs may stay management-command/cron only, but their failures
 and conflicts must surface in manager-facing web UI.
+
+
+# 40. AccountInvitation and external identity services
+
+`AccountInvitation` is the one-time onboarding capability for non-staff
+accounts. The raw token is never stored. The persisted row contains
+`token_hash`, target fields, expiration and terminal accepted/revoked
+metadata.
+
+Supported targets are mutually exclusive:
+
+```text
+STUDENT_ACCESS -> student + SELF/GUARDIAN + account_display_name
+COACH          -> coach_display_name; the same value is used as the User label
+```
+
+Application services:
+
+```python
+create_account_invitation(...)
+resolve_invitation_token(...)
+revoke_account_invitation(...)
+authenticate_external_identity(...)
+link_external_identity(...)
+unlink_external_identity(...)
+```
+
+`authenticate_external_identity()` is invitation-gated for unknown provider
+subjects. Without `invitation_id`, only an existing ExternalIdentity may log
+in. Provisioning creates an unusable-password User, ExternalIdentity and the
+invited school role atomically. The User receives a human-readable
+`display_name` from the invitation; the random technical username is not a UI
+label.
+
+ExternalIdentity has both uniqueness rules:
+
+```text
+(provider, provider_subject)
+(user, provider)
+```
+
+This prevents one external account from authenticating two Users and prevents
+one User from accumulating multiple subjects from the same provider.
+
+When an authenticated User accepts another invitation with a provider that is
+not linked yet, provider linking and invitation acceptance are one atomic
+operation. Failure of the invitation must roll back the new ExternalIdentity.
+
+Identity operations use the following lock order:
+
+```text
+invitation acceptance: AccountInvitation -> User -> ExternalIdentity -> target role
+plain login/link:      User -> ExternalIdentity
+```
+
+Do not introduce a service that locks ExternalIdentity before User.
+
+The OAuth adapter in `accounts.external_auth` performs Authorization Code +
+PKCE. Tokens are transient callback data and are not domain entities or
+database fields.
+
+Yandex subject semantics are strict: `provider_subject = psuid`. Missing
+`psuid` is an authentication error; falling back to Yandex `id` is
+forbidden.
+
+External authentication is not an administrative authentication channel.
+`is_staff`, `is_superuser`, and Users for which
+`has_manager_operations_access()` is true may not external-login, link a
+provider, or accept an invitation in their current session. They must use
+local password authentication.
+
+`unlink_external_identity()` records `ExternalIdentityUnlinked`. Self-service
+unlink requires another external provider to remain. For an active
+external-only User, manager unlink still refuses to remove the final provider.
+Once the User is inactive, manager unlink may remove that final provider.
+
+Recovery is modelled explicitly as `AccountInvitation.Kind.RECOVERY` with a
+`recovery_user` FK. Recovery invitation creation requires:
+
+```text
+target User is inactive
+target User is not staff/superuser/manager
+target User has no remaining ExternalIdentity
+actor has accounts.change_externalidentity
+```
+
+Acceptance must happen while signed out. The OAuth callback creates the new
+ExternalIdentity for `recovery_user`, marks that same User active, consumes
+the invitation and records `AccountRecovered`. It does not create or change
+StudentAccess/CoachProfile rows.
+
+Manager unlink of an external-only User also rotates the unusable password
+hash so existing Django sessions are invalidated without creating a usable
+local password.

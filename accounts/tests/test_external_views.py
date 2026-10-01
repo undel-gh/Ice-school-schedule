@@ -1,0 +1,664 @@
+from __future__ import annotations
+
+import pytest
+from django.contrib.auth import get_user_model
+from django.urls import reverse
+from django.utils import timezone
+
+from accounts.external_auth import ExternalProfile
+from accounts.models import AccountInvitation, ExternalIdentity, Student, StudentAccess
+from accounts.onboarding import create_account_invitation
+
+User = get_user_model()
+
+
+@pytest.fixture
+def manager(db):
+    return User.objects.create_superuser(
+        username="invite-manager",
+        password="test",
+    )
+
+
+@pytest.mark.django_db
+def test_invitation_callback_creates_user_access_and_session(
+    client,
+    manager,
+    settings,
+    monkeypatch,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    student = Student.objects.create(display_name="Маша")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
+    )
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "yandex"},
+        )
+    )
+    assert begin.status_code == 302
+    flow = client.session["external_auth_flow"]
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.YANDEX,
+            subject="ya-subject",
+        ),
+    )
+    callback = client.get(
+        reverse(
+            "external_auth:callback",
+            kwargs={"provider": "yandex"},
+        ),
+        {"code": "code", "state": flow["state"]},
+    )
+
+    assert callback.status_code == 302
+    assert callback.url == reverse("scheduling:home")
+    identity = ExternalIdentity.objects.get(provider_subject="ya-subject")
+    assert str(client.session["_auth_user_id"]) == str(identity.user_id)
+    assert StudentAccess.objects.filter(
+        user=identity.user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_plain_login_does_not_auto_provision_unknown_identity(
+    client,
+    settings,
+    monkeypatch,
+):
+    settings.VKID_CLIENT_ID = "12345"
+
+    begin = client.get(
+        reverse("external_auth:login", kwargs={"provider": "vk"})
+    )
+    flow = client.session["external_auth_flow"]
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.VK,
+            subject="unknown-vk",
+        ),
+    )
+
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "vk"}),
+        {
+            "code": "code",
+            "state": flow["state"],
+            "device_id": "device",
+        },
+    )
+
+    assert callback.status_code == 302
+    assert callback.url == reverse("login")
+    assert ExternalIdentity.objects.filter(
+        provider_subject="unknown-vk"
+    ).exists() is False
+
+
+@pytest.mark.django_db
+def test_existing_external_identity_can_log_in(
+    client,
+    settings,
+    monkeypatch,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    user = User.objects.create_user(username="existing")
+    ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="existing-ya",
+    )
+
+    client.get(
+        reverse("external_auth:login", kwargs={"provider": "yandex"})
+    )
+    flow = client.session["external_auth_flow"]
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.YANDEX,
+            subject="existing-ya",
+        ),
+    )
+
+    callback = client.get(
+        reverse(
+            "external_auth:callback",
+            kwargs={"provider": "yandex"},
+        ),
+        {"code": "code", "state": flow["state"]},
+    )
+
+    assert callback.status_code == 302
+    assert str(client.session["_auth_user_id"]) == str(user.id)
+
+
+@pytest.mark.django_db
+def test_state_mismatch_rejects_callback_without_exchange(
+    client,
+    settings,
+    monkeypatch,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    client.get(
+        reverse("external_auth:login", kwargs={"provider": "yandex"})
+    )
+    called = False
+
+    def fake_exchange(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("must not exchange mismatched state")
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        fake_exchange,
+    )
+    callback = client.get(
+        reverse(
+            "external_auth:callback",
+            kwargs={"provider": "yandex"},
+        ),
+        {"code": "code", "state": "wrong"},
+    )
+
+    assert callback.status_code == 302
+    assert called is False
+    assert "external_auth_flow" not in client.session
+
+
+@pytest.mark.django_db
+def test_authenticated_user_can_link_second_provider(
+    client,
+    settings,
+    monkeypatch,
+):
+    settings.VKID_CLIENT_ID = "12345"
+    user = User.objects.create_user(username="local-user", password="test")
+    client.force_login(user)
+
+    begin = client.post(
+        reverse("external_auth:link", kwargs={"provider": "vk"})
+    )
+    assert begin.status_code == 302
+    flow = client.session["external_auth_flow"]
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.VK,
+            subject="linked-vk",
+        ),
+    )
+
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "vk"}),
+        {
+            "code": "code",
+            "state": flow["state"],
+            "device_id": "device",
+        },
+    )
+
+    assert callback.status_code == 302
+    assert callback.url == reverse("external_auth:identities")
+    assert ExternalIdentity.objects.filter(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="linked-vk",
+    ).exists()
+
+
+
+@pytest.mark.django_db
+def test_identity_link_start_rejects_get(client, settings):
+    settings.VKID_CLIENT_ID = "12345"
+    user = User.objects.create_user(username="csrf-link-user", password="test")
+    client.force_login(user)
+
+    response = client.get(
+        reverse("external_auth:link", kwargs={"provider": "vk"})
+    )
+
+    assert response.status_code == 405
+
+
+
+@pytest.mark.django_db
+def test_authenticated_invitation_with_new_provider_stays_on_same_user(
+    client,
+    manager,
+    settings,
+    monkeypatch,
+):
+    settings.VKID_CLIENT_ID = "12345"
+    user = User.objects.create_user(username="existing-parent", password="test")
+    ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="parent-yandex",
+    )
+    first_student = Student.objects.create(display_name="Первый ребёнок")
+    second_student = Student.objects.create(display_name="Второй ребёнок")
+    StudentAccess.objects.create(
+        user=user,
+        student=first_student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    )
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=second_student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
+    )
+    client.force_login(user)
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "vk"},
+        )
+    )
+    assert begin.status_code == 302
+    flow = client.session["external_auth_flow"]
+    assert flow["bound_user_id"] == str(user.id)
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.VK,
+            subject="parent-vk",
+        ),
+    )
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "vk"}),
+        {
+            "code": "code",
+            "state": flow["state"],
+            "device_id": "device",
+        },
+    )
+
+    assert callback.status_code == 302
+    assert User.objects.filter(id=user.id).exists()
+    assert User.objects.count() == 2  # parent + manager; no duplicate parent
+    assert ExternalIdentity.objects.filter(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="parent-vk",
+    ).exists()
+    assert StudentAccess.objects.filter(
+        user=user,
+        student=second_student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    ).exists()
+    assert str(client.session["_auth_user_id"]) == str(user.id)
+
+
+@pytest.mark.django_db
+def test_authenticated_invitation_rejects_provider_linked_to_other_user(
+    client,
+    manager,
+    settings,
+    monkeypatch,
+):
+    settings.VKID_CLIENT_ID = "12345"
+    signed_in = User.objects.create_user(username="signed-in", password="test")
+    other = User.objects.create_user(username="other")
+    ExternalIdentity.objects.create(
+        user=other,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="other-vk",
+    )
+    student = Student.objects.create(display_name="Ребёнок")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
+    )
+    client.force_login(signed_in)
+    client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "vk"},
+        )
+    )
+    flow = client.session["external_auth_flow"]
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.VK,
+            subject="other-vk",
+        ),
+    )
+
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "vk"}),
+        {
+            "code": "code",
+            "state": flow["state"],
+            "device_id": "device",
+        },
+    )
+
+    assert callback.status_code == 302
+    created.invitation.refresh_from_db()
+    assert created.invitation.accepted_at is None
+    assert StudentAccess.objects.filter(
+        user=signed_in,
+        student=student,
+    ).exists() is False
+
+
+
+@pytest.mark.django_db
+def test_corrupt_external_auth_flow_is_rejected_before_exchange(
+    client,
+    settings,
+    monkeypatch,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    session = client.session
+    session["external_auth_flow"] = {
+        "provider": "yandex",
+        "mode": "login",
+        "state": "state",
+        "issued_at": timezone.now().timestamp(),
+        "redirect_uri": "",
+        "code_verifier": "",
+        "invitation_id": None,
+        "bound_user_id": None,
+    }
+    session.save()
+    called = False
+
+    def fake_exchange(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("corrupt flow must not reach provider exchange")
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        fake_exchange,
+    )
+
+    response = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "yandex"}),
+        {"code": "code", "state": "state"},
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("login")
+    assert called is False
+    assert "external_auth_flow" not in client.session
+
+
+
+@pytest.mark.django_db
+def test_privileged_signed_in_invitation_page_warns_and_blocks_provider_start(
+    client,
+    manager,
+    settings,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    student = Student.objects.create(display_name="Ребёнок")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Мама ребёнка",
+    )
+    client.force_login(manager)
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+    body = landing.content.decode()
+    assert manager.display_label in body
+    assert "staff/manager" in body
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "yandex"},
+        )
+    )
+    assert begin.status_code == 302
+    assert "external_auth_flow" not in client.session
+
+
+@pytest.mark.django_db
+def test_anonymous_invitation_page_warns_existing_users_to_sign_in(
+    client,
+    manager,
+    settings,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    student = Student.objects.create(display_name="Ребёнок")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Папа ребёнка",
+    )
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+
+    assert landing.status_code == 200
+    body = landing.content.decode()
+    assert "Уже есть аккаунт Ice School" in body
+    assert "Папа ребёнка" in body
+
+
+@pytest.mark.django_db
+def test_self_service_unlink_view_keeps_second_provider(client):
+    user = User.objects.create_user(
+        username="unlink-view",
+        display_name="Родитель",
+    )
+    yandex = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="unlink-view-yandex",
+    )
+    vk = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="unlink-view-vk",
+    )
+    client.force_login(user)
+
+    response = client.post(
+        reverse(
+            "external_auth:unlink",
+            kwargs={"identity_id": vk.id},
+        )
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("external_auth:identities")
+    assert ExternalIdentity.objects.filter(pk=vk.id).exists() is False
+    assert ExternalIdentity.objects.filter(pk=yandex.id).exists()
+
+
+@pytest.mark.django_db
+def test_privileged_user_cannot_start_external_link(client, settings):
+    settings.VKID_CLIENT_ID = "12345"
+    staff = User.objects.create_user(
+        username="staff-link",
+        password="test",
+        is_staff=True,
+    )
+    client.force_login(staff)
+
+    response = client.post(
+        reverse("external_auth:link", kwargs={"provider": "vk"})
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("external_auth:identities")
+    assert "external_auth_flow" not in client.session
+
+
+
+@pytest.mark.django_db
+def test_recovery_invitation_callback_reactivates_existing_user(
+    client,
+    manager,
+    settings,
+    monkeypatch,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    user = User.objects.create_user(
+        username="recovery-callback-parent",
+        display_name="Папа Саши",
+        is_active=False,
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    student = Student.objects.create(display_name="Саша")
+    access = StudentAccess.objects.create(
+        user=user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    )
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.RECOVERY,
+        actor=manager,
+        recovery_user_id=user.id,
+    )
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+    body = landing.content.decode()
+    assert "Восстановление существующего аккаунта" in body
+    assert "Папа Саши" in body
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "yandex"},
+        )
+    )
+    assert begin.status_code == 302
+    flow = client.session["external_auth_flow"]
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.YANDEX,
+            subject="recovered-yandex-psuid",
+        ),
+    )
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "yandex"}),
+        {"code": "code", "state": flow["state"]},
+    )
+
+    assert callback.status_code == 302
+    user.refresh_from_db()
+    assert user.is_active is True
+    assert str(client.session["_auth_user_id"]) == str(user.id)
+    assert StudentAccess.objects.get(pk=access.id).user_id == user.id
+    assert ExternalIdentity.objects.filter(
+        user=user,
+        provider_subject="recovered-yandex-psuid",
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_recovery_invitation_requires_signed_out_session(
+    client,
+    manager,
+    settings,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    target = User.objects.create_user(
+        username="recovery-target-signed-out",
+        display_name="Родитель",
+        is_active=False,
+    )
+    target.set_unusable_password()
+    target.save(update_fields=["password"])
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.RECOVERY,
+        actor=manager,
+        recovery_user_id=target.id,
+    )
+    other = User.objects.create_user(username="already-signed-in")
+    client.force_login(other)
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+    assert "необходимо сначала выйти" in landing.content.decode()
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "yandex"},
+        )
+    )
+    assert begin.status_code == 302
+    assert "external_auth_flow" not in client.session

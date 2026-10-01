@@ -5,6 +5,11 @@ from . import manager_views
 app_name = "accounts_manager"
 
 urlpatterns = [
+    path("users/<uuid:user_id>/deactivate-for-recovery/", manager_views.manager_external_user_deactivate_for_recovery, name="external_user_deactivate_for_recovery"),
+    path("external-identities/<uuid:identity_id>/unlink/", manager_views.manager_external_identity_unlink, name="external_identity_unlink"),
+    path("invitations/", manager_views.manager_account_invitations, name="invitations"),
+    path("invitations/new/", manager_views.manager_account_invitation_create, name="invitation_create"),
+    path("invitations/<uuid:invitation_id>/revoke/", manager_views.manager_account_invitation_revoke, name="invitation_revoke"),
     path("students/", manager_views.manager_students, name="students"),
     path("students/new/", manager_views.manager_student_create, name="student_create"),
     path("students/<uuid:student_id>/", manager_views.manager_student_detail, name="student_detail"),

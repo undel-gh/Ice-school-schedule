@@ -22,7 +22,8 @@
         {% if manager_operations_available %}
           <a class="site-nav__manager" href="{% url 'subscriptions:manager_operations' %}">Менеджер</a>
         {% endif %}
-        <span class="site-nav__user">{{ request.user.username }}</span>
+        <a href="{% url 'external_auth:identities' %}">Способы входа</a>
+        <span class="site-nav__user">{{ request.user.display_label }}</span>
         <form method="post" action="{% url 'logout' %}">
           {% csrf_token %}
           <button type="submit">Выйти</button>

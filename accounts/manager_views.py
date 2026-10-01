@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID
 
 from django.contrib import messages
@@ -8,12 +9,27 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils import timezone
+from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST
 
 from core.permissions import require_permission
 from core.presentation import validation_message
 
-from .forms import CoachProfileForm, StudentAccessForm, StudentForm
-from .models import CoachProfile, Student, StudentAccess
+from .forms import (
+    AccountInvitationForm,
+    CoachProfileForm,
+    StudentAccessForm,
+    StudentForm,
+)
+from .models import AccountInvitation, CoachProfile, ExternalIdentity, Student, StudentAccess, User
+from .onboarding import (
+    create_account_invitation,
+    deactivate_external_user_for_recovery,
+    revoke_account_invitation,
+    unlink_external_identity,
+)
 from .services import (
     create_coach_profile,
     create_student,
@@ -86,7 +102,11 @@ def manager_student_detail(
         "Student view permission is required.",
     )
     student = get_object_or_404(Student, pk=student_id)
-    accesses = student.accesses.select_related("user").order_by("-is_active", "role", "id")
+    accesses = (
+        student.accesses.select_related("user")
+        .prefetch_related("user__external_identities")
+        .order_by("-is_active", "role", "id")
+    )
     memberships = student.group_memberships.select_related("group").order_by("-starts_on", "id")
     return render(
         request,
@@ -229,8 +249,10 @@ def manager_coaches(request: HttpRequest) -> HttpResponse:
         "Coach profile view permission is required.",
     )
     query = request.GET.get("q", "").strip()
-    coaches = CoachProfile.objects.select_related("user").order_by(
-        "-is_active", "display_name", "id"
+    coaches = (
+        CoachProfile.objects.select_related("user")
+        .prefetch_related("user__external_identities")
+        .order_by("-is_active", "display_name", "id")
     )
     if query:
         coaches = coaches.filter(display_name__icontains=query)
@@ -312,3 +334,213 @@ def manager_coach_edit(
         "accounts/manager_coach_form.html",
         {"form": form, "coach": coach, "title": "Редактирование тренера"},
     )
+
+
+
+@login_required
+def manager_account_invitations(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.view_accountinvitation",
+        "Account invitation view permission is required.",
+    )
+    invitations = (
+        AccountInvitation.objects.select_related(
+            "student",
+            "created_by",
+            "accepted_by",
+            "revoked_by",
+            "recovery_user",
+        )
+        .order_by("-created_at", "id")[:300]
+    )
+    return render(
+        request,
+        "accounts/manager_invitations.html",
+        {
+            "invitations": invitations,
+            "now": timezone.now(),
+        },
+    )
+
+
+@login_required
+@never_cache
+def manager_account_invitation_create(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.add_accountinvitation",
+        "Account invitation creation permission is required.",
+    )
+    initial = {}
+    if request.method == "GET":
+        recovery_user_id = request.GET.get("recovery_user")
+        if recovery_user_id:
+            initial = {
+                "kind": AccountInvitation.Kind.RECOVERY,
+                "recovery_user": recovery_user_id,
+            }
+    form = AccountInvitationForm(request.POST or None, initial=initial)
+    if request.method == "POST" and form.is_valid():
+        student = form.cleaned_data.get("student")
+        expires_at = timezone.now() + timedelta(
+            hours=form.cleaned_data["expires_in_hours"]
+        )
+        try:
+            created = create_account_invitation(
+                kind=form.cleaned_data["kind"],
+                actor=request.user,
+                student_id=student.id if student is not None else None,
+                student_access_role=form.cleaned_data.get(
+                    "student_access_role",
+                    "",
+                ),
+                account_display_name=form.cleaned_data.get(
+                    "account_display_name",
+                    "",
+                ),
+                coach_display_name=form.cleaned_data.get(
+                    "coach_display_name",
+                    "",
+                ),
+                recovery_user_id=(
+                    form.cleaned_data["recovery_user"].id
+                    if form.cleaned_data.get("recovery_user") is not None
+                    else None
+                ),
+                expires_at=expires_at,
+            )
+        except ValidationError as exc:
+            form.add_error(None, validation_message(exc))
+        else:
+            invitation_url = request.build_absolute_uri(
+                reverse(
+                    "external_auth:invitation",
+                    kwargs={"token": created.token},
+                )
+            )
+            return render(
+                request,
+                "accounts/manager_invitation_created.html",
+                {
+                    "invitation": created.invitation,
+                    "invitation_url": invitation_url,
+                },
+            )
+    return render(
+        request,
+        "accounts/manager_invitation_form.html",
+        {"form": form},
+    )
+
+
+@login_required
+@require_POST
+def manager_account_invitation_revoke(
+    request: HttpRequest,
+    *,
+    invitation_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.change_accountinvitation",
+        "Account invitation change permission is required.",
+    )
+    invitation = get_object_or_404(AccountInvitation, pk=invitation_id)
+    try:
+        revoke_account_invitation(
+            invitation_id=invitation.id,
+            actor=request.user,
+            now=timezone.now(),
+        )
+    except ValidationError as exc:
+        messages.error(request, validation_message(exc))
+    else:
+        messages.success(request, "Приглашение отозвано.")
+    return redirect("accounts_manager:invitations")
+
+
+
+@login_required
+@require_POST
+def manager_external_identity_unlink(
+    request: HttpRequest,
+    *,
+    identity_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.change_externalidentity",
+        "External identity change permission is required.",
+    )
+    identity = get_object_or_404(
+        ExternalIdentity.objects.select_related("user"),
+        pk=identity_id,
+    )
+    target_user = identity.user
+    student_access = (
+        target_user.student_accesses.order_by("-is_active", "created_at")
+        .select_related("student")
+        .first()
+    )
+    try:
+        unlink_external_identity(
+            identity_id=identity.id,
+            actor=request.user,
+            self_service=False,
+        )
+    except ValidationError as exc:
+        messages.error(request, validation_message(exc))
+    else:
+        messages.success(request, "Внешний аккаунт отвязан.")
+
+    if student_access is not None:
+        return redirect(
+            "accounts_manager:student_detail",
+            student_id=student_access.student_id,
+        )
+    if hasattr(target_user, "coach_profile"):
+        return redirect("accounts_manager:coaches")
+    return redirect("accounts_manager:invitations")
+
+
+
+@login_required
+@require_POST
+def manager_external_user_deactivate_for_recovery(
+    request: HttpRequest,
+    *,
+    user_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.change_externalidentity",
+        "External identity change permission is required.",
+    )
+    target_user = get_object_or_404(User, pk=user_id)
+    student_access = (
+        target_user.student_accesses.order_by("-is_active", "created_at")
+        .select_related("student")
+        .first()
+    )
+    try:
+        deactivate_external_user_for_recovery(
+            user_id=target_user.id,
+            actor=request.user,
+        )
+    except ValidationError as exc:
+        messages.error(request, validation_message(exc))
+    else:
+        messages.success(
+            request,
+            "Аккаунт деактивирован. Теперь можно отвязать скомпрометированный provider.",
+        )
+
+    if student_access is not None:
+        return redirect(
+            "accounts_manager:student_detail",
+            student_id=student_access.student_id,
+        )
+    if hasattr(target_user, "coach_profile"):
+        return redirect("accounts_manager:coaches")
+    return redirect("accounts_manager:invitations")

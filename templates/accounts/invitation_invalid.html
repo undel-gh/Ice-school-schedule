@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Приглашение недействительно{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <h1>Приглашение недействительно</h1>
+  <p>{{ message }}</p>
+  <p><a href="{% url 'login' %}">Перейти ко входу</a></p>
+</section>
+{% endblock %}
