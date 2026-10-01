@@ -10,6 +10,7 @@ class TrainingGroup(UUIDModel, TimeStampedModel):
     code = models.SlugField(max_length=64, unique=True)
     name = models.CharField(max_length=128)
     default_minimum_attendees = models.PositiveSmallIntegerField(default=1)
+    capacity = models.PositiveSmallIntegerField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -17,7 +18,11 @@ class TrainingGroup(UUIDModel, TimeStampedModel):
             models.CheckConstraint(
                 condition=models.Q(default_minimum_attendees__gte=1),
                 name="training_group_minimum_gte_1",
-            )
+            ),
+            models.CheckConstraint(
+                condition=models.Q(capacity__isnull=True) | models.Q(capacity__gte=1),
+                name="training_group_capacity_gte_1",
+            ),
         ]
         indexes = [models.Index(fields=["is_active", "name"], name="training_group_active_name_idx")]
 
@@ -53,6 +58,61 @@ class GroupMembership(UUIDModel):
             models.Index(fields=["group", "starts_on", "ends_on"], name="membership_group_dates_ix"),
             models.Index(fields=["student", "starts_on", "ends_on"], name="membership_student_dates_ix"),
         ]
+
+
+class GroupSeatReservation(UUIDModel):
+    """A non-roster seat claim used by higher-level paid hold workflows."""
+
+    student = models.ForeignKey(
+        Student,
+        on_delete=models.PROTECT,
+        related_name="group_seat_reservations",
+    )
+    group = models.ForeignKey(
+        TrainingGroup,
+        on_delete=models.PROTECT,
+        related_name="seat_reservations",
+    )
+    starts_on = models.DateField()
+    ends_on = models.DateField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(ends_on__gte=models.F("starts_on")),
+                name="seat_reservation_end_gte_start",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["group", "starts_on", "ends_on"],
+                name="seat_res_group_dates_ix",
+            ),
+            models.Index(
+                fields=["student", "starts_on", "ends_on"],
+                name="seat_res_student_dates_ix",
+            ),
+            models.Index(
+                fields=["group", "cancelled_at"],
+                name="seat_res_group_cancel_ix",
+            ),
+        ]
+
 
 
 class Venue(UUIDModel):
