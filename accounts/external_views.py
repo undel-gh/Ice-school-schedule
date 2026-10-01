@@ -58,6 +58,11 @@ def _start_flow(request, *, provider: str, mode: str, invitation_id=None):
         "redirect_uri": redirect_uri,
         "issued_at": timezone.now().timestamp(),
         "invitation_id": str(invitation_id) if invitation_id else None,
+        "bound_user_id": (
+            str(request.user.id)
+            if mode == "invitation" and request.user.is_authenticated
+            else None
+        ),
     }
     request.session[FLOW_SESSION_KEY] = flow
     request.session.modified = True
@@ -215,6 +220,27 @@ def external_callback(request, *, provider: str):
             if not raw_id:
                 raise ValidationError({"invitation": "Invitation is missing."})
             invitation_id = UUID(str(raw_id))
+
+            bound_user_id = flow.get("bound_user_id")
+            if bound_user_id is not None:
+                if (
+                    not request.user.is_authenticated
+                    or str(request.user.id) != str(bound_user_id)
+                ):
+                    raise ValidationError(
+                        {
+                            "user": (
+                                "The signed-in account changed during "
+                                "invitation acceptance."
+                            )
+                        }
+                    )
+                link_external_identity(
+                    user=request.user,
+                    provider=profile.provider,
+                    provider_subject=profile.subject,
+                    now=timezone.now(),
+                )
 
         user = authenticate_external_identity(
             provider=profile.provider,
