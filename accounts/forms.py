@@ -75,6 +75,7 @@ class AccountInvitationForm(forms.Form):
         choices=(
             (AccountInvitation.Kind.STUDENT_ACCESS, "Ученик / родитель"),
             (AccountInvitation.Kind.COACH, "Тренер"),
+            (AccountInvitation.Kind.RECOVERY, "Восстановление доступа"),
         ),
     )
     student = forms.ModelChoiceField(
@@ -90,6 +91,11 @@ class AccountInvitationForm(forms.Form):
             (StudentAccess.Role.SELF, "Сам ученик"),
             (StudentAccess.Role.GUARDIAN, "Родитель / представитель"),
         ),
+    )
+    recovery_user = UserChoiceField(
+        queryset=User.objects.none(),
+        label="Существующий аккаунт",
+        required=False,
     )
     account_display_name = forms.CharField(
         label="Как подписать аккаунт",
@@ -113,6 +119,11 @@ class AccountInvitationForm(forms.Form):
         self.fields["student"].queryset = Student.objects.filter(
             is_active=True
         ).order_by("display_name", "id")
+        self.fields["recovery_user"].queryset = User.objects.filter(
+            is_active=False,
+            is_staff=False,
+            is_superuser=False,
+        ).order_by("display_name", "username", "id")
         self.fields["expires_in_hours"].initial = getattr(
             settings,
             "ACCOUNT_INVITATION_TTL_HOURS",
@@ -133,6 +144,7 @@ class AccountInvitationForm(forms.Form):
                     "Укажите понятную подпись аккаунта.",
                 )
             cleaned["coach_display_name"] = ""
+            cleaned["recovery_user"] = None
         elif kind == AccountInvitation.Kind.COACH:
             coach_name = (cleaned.get("coach_display_name") or "").strip()
             if not coach_name:
@@ -140,4 +152,22 @@ class AccountInvitationForm(forms.Form):
             cleaned["account_display_name"] = coach_name
             cleaned["student"] = None
             cleaned["student_access_role"] = ""
+            cleaned["recovery_user"] = None
+        elif kind == AccountInvitation.Kind.RECOVERY:
+            recovery_user = cleaned.get("recovery_user")
+            if recovery_user is None:
+                self.add_error(
+                    "recovery_user",
+                    "Выберите существующий неактивный аккаунт.",
+                )
+            elif recovery_user.is_active:
+                self.add_error(
+                    "recovery_user",
+                    "Для восстановления сначала деактивируйте аккаунт.",
+                )
+            else:
+                cleaned["account_display_name"] = recovery_user.display_label
+            cleaned["student"] = None
+            cleaned["student_access_role"] = ""
+            cleaned["coach_display_name"] = ""
         return cleaned
