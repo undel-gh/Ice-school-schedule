@@ -13,6 +13,12 @@
     <nav class="site-nav" aria-label="Основная навигация">
       <a class="site-nav__home" href="{% url 'scheduling:home' %}">Ice School</a>
       {% if request.user.is_authenticated %}
+        {% if student_schedule_available %}
+          <a class="site-nav__student" href="{% url 'scheduling:student_schedule' %}">Расписание</a>
+        {% endif %}
+        {% if student_account_available %}
+          <a class="site-nav__student" href="{% url 'student_account:account' %}">Абонемент</a>
+        {% endif %}
         {% if manager_operations_available %}
           <a class="site-nav__manager" href="{% url 'subscriptions:manager_operations' %}">Менеджер</a>
         {% endif %}

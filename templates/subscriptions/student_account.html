@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% load manager_labels school_time %}
+{% block title %}Абонемент{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>{{ selected_student.display_name }}</h1>
+  <div class="page-header__meta">Абонемент, права и история посещений</div>
+  {% if not selected_student.is_active %}
+    <div class="student-card__state"><span class="badge badge--cancelled">Профиль неактивен</span></div>
+  {% endif %}
+</header>
+
+<form class="filter-form account-student-filter" method="get">
+  {% if students|length > 1 %}
+    <div class="field">
+      <label for="student">Ученик</label>
+      <select id="student" name="student">
+        {% for student in students %}
+          <option value="{{ student.id }}" {% if student.id == selected_student.id %}selected{% endif %}>
+            {{ student.display_name }}{% if not student.is_active %} · неактивен{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="btn-secondary" type="submit">Показать</button>
+  {% else %}
+    <input type="hidden" name="student" value="{{ selected_student.id }}">
+  {% endif %}
+</form>
+
+{% if selected_student.is_active %}
+<div class="action-row account-primary-actions">
+  <a class="btn btn-secondary" href="{% url 'scheduling:student_schedule' %}?student={{ selected_student.id }}">Расписание</a>
+</div>
+{% endif %}
+
+<h2 class="section-title">Абонементы</h2>
+<div class="report-list">
+{% for item in account.subscriptions %}
+  <article class="report-card">
+    <div class="report-card__top">
+      <div>
+        <h2>{{ item.subscription.plan_name_snapshot }}</h2>
+        <p class="report-card__meta">{{ item.subscription.plan_code_snapshot }}</p>
+      </div>
+      {% if item.state == "active" %}
+        <span class="badge badge--covered">{{ item.state_label }}</span>
+      {% elif item.state == "cancelled" or item.state == "expired" %}
+        <span class="badge badge--cancelled">{{ item.state_label }}</span>
+      {% else %}
+        <span class="badge badge--unknown">{{ item.state_label }}</span>
+      {% endif %}
+    </div>
+
+    <p class="report-card__period">
+      {% if item.subscription.valid_from and item.subscription.valid_until %}
+        {{ item.subscription.valid_from|date:"d.m.Y" }}–{{ item.subscription.valid_until|date:"d.m.Y" }}
+      {% else %}
+        Срок начнётся с первого подходящего занятия
+      {% endif %}
+    </p>
+
+    <div class="account-balance-grid">
+      {% for balance in item.allowances %}
+        <div class="account-balance">
+          <span>{{ balance.allowance.category|manager_label:"subscription_category" }}</span>
+          <strong>{{ balance.balance }}</strong>
+          <small>остаток · базовый лимит {{ balance.allowance.visit_limit_snapshot }}</small>
+        </div>
+      {% empty %}
+        <div class="muted">Лимиты не настроены.</div>
+      {% endfor %}
+    </div>
+  </article>
+{% empty %}
+  <div class="empty-state">Абонементов пока нет.</div>
+{% endfor %}
+</div>
+
+<h2 class="section-title">Разовые права</h2>
+<div class="card-list">
+{% for right in account.one_time_rights %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <h3>{{ right.entitlement.entitlement_type|manager_label:"one_time_entitlement" }}</h3>
+        <p class="lesson-card__meta">
+          {{ right.entitlement.category|manager_label:"subscription_category" }}
+          · {{ right.entitlement.lesson.starts_at|school_datetime:"%d.%m.%Y %H:%M" }}
+        </p>
+      </div>
+      {% if right.status == "available" %}
+        <span class="badge badge--covered">{{ right.status_label }}</span>
+      {% elif right.status == "used" %}
+        <span class="badge">{{ right.status_label }}</span>
+      {% else %}
+        <span class="badge badge--cancelled">{{ right.status_label }}</span>
+      {% endif %}
+    </div>
+    <p>{{ right.entitlement.lesson.lesson_type.name }} · {{ right.entitlement.lesson.venue.name }}</p>
+  </article>
+{% empty %}
+  <div class="empty-state">Разовых прав нет.</div>
+{% endfor %}
+</div>
+
+<h2 class="section-title">Отработки</h2>
+<div class="card-list">
+{% for right in account.makeup_rights %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <h3>{{ right.entitlement.category|manager_label:"subscription_category" }}</h3>
+        <p class="lesson-card__meta">
+          {{ right.entitlement.valid_from|date:"d.m.Y" }}–{{ right.entitlement.valid_until|date:"d.m.Y" }}
+        </p>
+      </div>
+      {% if right.status == "available" or right.status == "targeted" %}
+        <span class="badge badge--covered">{{ right.status_label }}</span>
+      {% elif right.status == "not_started" or right.status == "used" %}
+        <span class="badge badge--unknown">{{ right.status_label }}</span>
+      {% else %}
+        <span class="badge badge--cancelled">{{ right.status_label }}</span>
+      {% endif %}
+    </div>
+    <p class="lesson-card__meta">
+      За занятие {{ right.entitlement.source_lesson.starts_at|school_datetime:"%d.%m.%Y" }}
+      {% if right.entitlement.target_lesson %}
+        · для {{ right.entitlement.target_lesson.starts_at|school_datetime:"%d.%m.%Y %H:%M" }}
+      {% endif %}
+    </p>
+  </article>
+{% empty %}
+  <div class="empty-state">Прав на отработку нет.</div>
+{% endfor %}
+</div>
+
+<h2 class="section-title">История посещений</h2>
+<div class="card-list">
+{% for attendance in history_page.object_list %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <div class="lesson-card__time">{{ attendance.lesson.starts_at|school_datetime:"%d.%m.%Y · %H:%M" }}</div>
+        <h3>{{ attendance.lesson.lesson_type.name }}</h3>
+      </div>
+      {% if attendance.status == "present" %}
+        <span class="badge badge--present">Пришёл</span>
+      {% else %}
+        <span class="badge badge--absent">Отсутствовал</span>
+      {% endif %}
+    </div>
+    <p class="lesson-card__meta">{{ attendance.lesson.coach.display_name }} · {{ attendance.lesson.venue.name }}</p>
+
+    {% if attendance.status == "present" %}
+      {% with coverage=attendance.account_active_coverages.0 %}
+        <div class="student-card__state">
+        {% if coverage %}
+          {% if coverage.one_time_entitlement %}
+            <span class="badge badge--covered">Разовое право</span>
+          {% elif coverage.makeup_entitlement %}
+            <span class="badge badge--covered">Отработка</span>
+          {% elif coverage.subscription_allowance %}
+            <span class="badge badge--covered">
+              Абонемент · {{ coverage.subscription_allowance.category|manager_label:"subscription_category" }}
+            </span>
+          {% endif %}
+        {% else %}
+          <span class="badge badge--uncovered">Без покрытия</span>
+        {% endif %}
+        </div>
+      {% endwith %}
+    {% endif %}
+  </article>
+{% empty %}
+  <div class="empty-state">Истории посещений пока нет.</div>
+{% endfor %}
+</div>
+
+{% if history_page.paginator.num_pages > 1 %}
+<nav class="action-row account-pagination" aria-label="Страницы истории">
+  {% if history_page.has_previous %}
+    <a class="btn btn-secondary" href="?student={{ selected_student.id }}&page={{ history_page.previous_page_number }}">Назад</a>
+  {% endif %}
+  <span class="account-pagination__state">Страница {{ history_page.number }} из {{ history_page.paginator.num_pages }}</span>
+  {% if history_page.has_next %}
+    <a class="btn btn-secondary" href="?student={{ selected_student.id }}&page={{ history_page.next_page_number }}">Далее</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endblock %}
