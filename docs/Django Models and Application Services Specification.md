@@ -3548,3 +3548,47 @@ medical review and relevant audit history.
 
 Pure background jobs may stay management-command/cron only, but their failures
 and conflicts must surface in manager-facing web UI.
+
+
+# 40. AccountInvitation and external identity services
+
+`AccountInvitation` is the one-time onboarding capability for non-staff
+accounts. The raw token is never stored. The persisted row contains
+`token_hash`, target fields, expiration and terminal accepted/revoked
+metadata.
+
+Supported targets are mutually exclusive:
+
+```text
+STUDENT_ACCESS -> student + SELF/GUARDIAN
+COACH          -> coach_display_name
+```
+
+Application services:
+
+```python
+create_account_invitation(...)
+resolve_invitation_token(...)
+revoke_account_invitation(...)
+authenticate_external_identity(...)
+link_external_identity(...)
+```
+
+`authenticate_external_identity()` is invitation-gated for unknown provider
+subjects. Without `invitation_id`, only an existing ExternalIdentity may log
+in. Provisioning creates an unusable-password User, ExternalIdentity and the
+invited school role atomically.
+
+ExternalIdentity has both uniqueness rules:
+
+```text
+(provider, provider_subject)
+(user, provider)
+```
+
+This prevents one external account from authenticating two Users and prevents
+one User from accumulating multiple subjects from the same provider.
+
+The OAuth adapter in `accounts.external_auth` performs Authorization Code +
+PKCE. Tokens are transient callback data and are not domain entities or
+database fields.
