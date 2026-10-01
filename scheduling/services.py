@@ -20,6 +20,7 @@ from core.time import make_school_aware, school_date as get_school_date
 
 from accounts.models import CoachProfile, Student
 from audit.services import event_exists_with_payload, record_event
+from .capacity import group_occupied_student_ids
 from .models import (
     GroupMembership,
     GroupSeatReservation,
@@ -69,34 +70,6 @@ def _membership_overlaps(
     effective_end = ends_on or date.max
     other_end = other.ends_on or date.max
     return starts_on <= other_end and other.starts_on <= effective_end
-
-
-def group_occupied_student_ids(
-    *,
-    group_id: UUID,
-    on_date: date,
-    exclude_membership_id: UUID | None = None,
-    exclude_reservation_id: UUID | None = None,
-) -> set[UUID]:
-    memberships = GroupMembership.objects.filter(
-        group_id=group_id,
-        starts_on__lte=on_date,
-    ).filter(Q(ends_on__isnull=True) | Q(ends_on__gte=on_date))
-    if exclude_membership_id is not None:
-        memberships = memberships.exclude(pk=exclude_membership_id)
-
-    reservations = GroupSeatReservation.objects.filter(
-        group_id=group_id,
-        starts_on__lte=on_date,
-        ends_on__gte=on_date,
-        cancelled_at__isnull=True,
-    )
-    if exclude_reservation_id is not None:
-        reservations = reservations.exclude(pk=exclude_reservation_id)
-
-    return set(memberships.values_list("student_id", flat=True)) | set(
-        reservations.values_list("student_id", flat=True)
-    )
 
 
 def _capacity_boundary_dates(
