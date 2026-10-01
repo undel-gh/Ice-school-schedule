@@ -11,6 +11,7 @@ from django.core.exceptions import ValidationError
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 
 from core.presentation import validation_message
@@ -95,6 +96,7 @@ def external_link(request, *, provider: str):
         return redirect("external_auth:identities")
 
 
+@never_cache
 def invitation_landing(request, *, token: str):
     try:
         invitation = resolve_invitation_token(token, now=timezone.now())
@@ -153,6 +155,7 @@ def invitation_external_login(request, *, provider: str):
         return redirect("login")
 
 
+@never_cache
 def external_callback(request, *, provider: str):
     flow = request.session.pop(FLOW_SESSION_KEY, None)
     request.session.modified = True
