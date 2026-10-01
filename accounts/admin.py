@@ -1,6 +1,8 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
+from core.admin import ReadOnlyAdmin
+
 from .models import (
     AccountInvitation,
     CoachProfile,
@@ -19,12 +21,17 @@ class CustomUserAdmin(UserAdmin):
 admin.site.register(Student)
 admin.site.register(StudentAccess)
 admin.site.register(CoachProfile)
-admin.site.register(ExternalIdentity)
+@admin.register(ExternalIdentity)
+class ExternalIdentityAdmin(ReadOnlyAdmin):
+    list_display = ("user", "provider", "last_used_at", "created_at")
+    list_filter = ("provider",)
+
+
 
 
 
 @admin.register(AccountInvitation)
-class AccountInvitationAdmin(admin.ModelAdmin):
+class AccountInvitationAdmin(ReadOnlyAdmin):
     list_display = (
         "kind",
         "student",
@@ -49,12 +56,3 @@ class AccountInvitationAdmin(admin.ModelAdmin):
         "revoked_at",
         "revoked_by",
     )
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
