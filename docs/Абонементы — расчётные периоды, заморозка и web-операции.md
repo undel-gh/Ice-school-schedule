@@ -1,6 +1,6 @@
 # Абонементы: расчётные периоды, заморозка, сохранение места и web-операции
 
-**Статус:** реализация начата; period foundation, GroupPlaceHold и первый Manager web/reporting slice находятся в `feat/billing-periods-place-hold-manager-web`  
+**Статус:** period foundation, GroupPlaceHold, manager web/reporting и фактическая capacity/membership semantics реализованы  
 **Область:** subscriptions, scheduling, group membership, manager/trainer web UI  
 **Не является:** спецификацией биллинга или онлайн-оплаты
 
@@ -291,10 +291,51 @@ confirm_group_place_hold_fee(...)
 cancel_group_place_hold(...)
 ```
 
-В текущем срезе GroupPlaceHold фиксирует оплату/обязательство сохранить место,
-но **ещё не изменяет автоматически** GroupMembership, roster, вместимость группы
-или правила зачисления. Интеграция hold с фактическим удержанием места — отдельный
-следующий этап.
+### Фактическое удержание места
+
+`TrainingGroup.capacity` задаёт hard cap группы. Для исторических групп поле
+может быть `NULL`: в этом случае система показывает occupancy, но не блокирует
+зачисление по лимиту.
+
+Определение занятого места едино для read/write path:
+
+```text
+occupied students =
+    active GroupMembership
+    UNION
+    active GroupSeatReservation
+```
+
+Union выполняется по Student, поэтому membership и reservation одного ученика
+занимают **одно**, а не два места.
+
+`GroupPlaceHold` является платным suspension overlay над существующим
+`GroupMembership`. Создать hold можно только если membership того же ученика
+в той же группе покрывает весь период hold. До подтверждения оплаты
+`PENDING_PAYMENT` не создаёт seat reservation.
+
+При `confirm_group_place_hold_fee(...)` в той же транзакции:
+
+```text
+GroupPlaceHold PENDING_PAYMENT
+    -> GroupSeatReservation(period_from..period_until)
+    -> ACTIVE
+```
+
+`GroupSeatReservation` принадлежит scheduling-домену и не является roster
+membership. При публикации Lesson membership ученика, покрытый действующей
+reservation, **не добавляется в roster**. На следующий день после
+`period_until` reservation больше не действует и тот же долгосрочный
+membership снова автоматически участвует в построении roster.
+
+Capacity writers сериализуются блокировкой строки `TrainingGroup`.
+`create_group_membership`, `update_group_membership`, активация hold и
+изменение hard cap используют одну occupancy semantics. Это не позволяет двум
+конкурентным операциям одновременно занять последнее свободное место.
+
+Отмена ACTIVE hold помечает связанную reservation отменённой и сразу снимает
+roster suppression. При естественном истечении hold reservation просто выходит
+за свой интервал; отдельное удаление исторической записи не требуется.
 
 Для одного ученика и группы одновременно запрещены пересекающиеся
 non-CANCELLED hold. CANCELLED запись остаётся историей и не мешает создать
