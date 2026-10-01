@@ -6,7 +6,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
-from accounts.models import AccountInvitation, Student
+from accounts.models import AccountInvitation, ExternalIdentity, Student, StudentAccess
 from audit.models import AuditEvent
 
 User = get_user_model()
@@ -155,3 +155,64 @@ def test_manager_invitation_revoke_rejects_get(client, manager):
     assert get_response.status_code == 405
     invitation.refresh_from_db()
     assert invitation.revoked_at is None
+
+
+
+@pytest.mark.django_db
+def test_manager_unlinks_compromised_identity_from_student_account(
+    client,
+    manager,
+):
+    user = User.objects.create_user(
+        username="parent-with-two-providers",
+        display_name="Мама Ани",
+    )
+    student = Student.objects.create(display_name="Аня")
+    StudentAccess.objects.create(
+        user=user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    )
+    safe = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="safe-yandex-manager-view",
+    )
+    compromised = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="stolen-vk-manager-view",
+    )
+    client.force_login(manager)
+
+    detail = client.get(
+        reverse(
+            "accounts_manager:student_detail",
+            kwargs={"student_id": student.id},
+        )
+    )
+    assert detail.status_code == 200
+    body = detail.content.decode()
+    assert "Мама Ани" in body
+    assert "stolen-vk-manager-view" not in body
+    assert "Отвязать VK" in body
+
+    response = client.post(
+        reverse(
+            "accounts_manager:external_identity_unlink",
+            kwargs={"identity_id": compromised.id},
+        )
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse(
+        "accounts_manager:student_detail",
+        kwargs={"student_id": student.id},
+    )
+    assert ExternalIdentity.objects.filter(pk=compromised.id).exists() is False
+    assert ExternalIdentity.objects.filter(pk=safe.id).exists()
+    assert AuditEvent.objects.filter(
+        event_type="ExternalIdentityUnlinked",
+        aggregate_id=compromised.id,
+    ).exists()
