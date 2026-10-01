@@ -41,7 +41,6 @@ def account(request: HttpRequest) -> HttpResponse:
     snapshot = student_account_snapshot(
         student_id=selected.id,
         as_of=school_date(now),
-        now=now,
     )
     history_page = Paginator(
         student_attendance_history(student_id=selected.id),
