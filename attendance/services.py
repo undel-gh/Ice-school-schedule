@@ -1105,9 +1105,11 @@ def recover_attendance_coverage(
     if existing is not None:
         return existing
 
+    correlation_id = uuid4()
     coverage = assign_attendance_coverage(
         attendance_id=attendance.id,
         actor=actor,
+        correlation_id=correlation_id,
         now=now,
     )
     if coverage is None:
@@ -1129,5 +1131,6 @@ def recover_attendance_coverage(
             "student_id": str(attendance.student_id),
             "coverage_id": str(coverage.id),
         },
+        correlation_id=correlation_id,
     )
     return coverage

@@ -164,48 +164,6 @@ def available_attendance_coverage_targets(
         else None
     )
 
-    allowances = (
-        SubscriptionAllowance.objects.filter(
-            subscription__student_id=attendance.student_id,
-            category=category,
-            subscription__cancelled_at__isnull=True,
-            subscription__valid_from__lte=lesson_date,
-            subscription__valid_until__gte=lesson_date,
-        )
-        .select_related("subscription")
-        .annotate(selector_balance=Sum("ledger_entries__delta"))
-        .order_by(
-            "subscription__valid_until",
-            "subscription__valid_from",
-            "subscription__created_at",
-            "id",
-        )
-    )
-    for allowance in allowances:
-        effective_balance = int(allowance.selector_balance or 0)
-        if allowance.id == restore_credit_allowance_id:
-            effective_balance += 1
-        if effective_balance <= 0:
-            continue
-        if (
-            current_coverage is not None
-            and current_coverage.makeup_entitlement_id is None
-            and current_coverage.subscription_allowance_id == allowance.id
-        ):
-            continue
-        targets.append(
-            AttendanceCoverageTarget(
-                key=f"allowance:{allowance.id}",
-                label=(
-                    "Абонемент · "
-                    f"{allowance.subscription.plan_name_snapshot} · "
-                    f"остаток после перепривязки {effective_balance} · "
-                    f"до {allowance.subscription.valid_until:%d.%m.%Y}"
-                ),
-                subscription_allowance_id=allowance.id,
-            )
-        )
-
     active_makeup_usage = AttendanceCoverage.objects.filter(
         makeup_entitlement_id=OuterRef("pk"),
         reversed_at__isnull=True,
@@ -283,6 +241,48 @@ def available_attendance_coverage_targets(
                     makeup.source_subscription_allowance_id
                 ),
                 makeup_entitlement_id=makeup.id,
+            )
+        )
+
+    allowances = (
+        SubscriptionAllowance.objects.filter(
+            subscription__student_id=attendance.student_id,
+            category=category,
+            subscription__cancelled_at__isnull=True,
+            subscription__valid_from__lte=lesson_date,
+            subscription__valid_until__gte=lesson_date,
+        )
+        .select_related("subscription")
+        .annotate(selector_balance=Sum("ledger_entries__delta"))
+        .order_by(
+            "subscription__valid_until",
+            "subscription__valid_from",
+            "subscription__created_at",
+            "id",
+        )
+    )
+    for allowance in allowances:
+        effective_balance = int(allowance.selector_balance or 0)
+        if allowance.id == restore_credit_allowance_id:
+            effective_balance += 1
+        if effective_balance <= 0:
+            continue
+        if (
+            current_coverage is not None
+            and current_coverage.makeup_entitlement_id is None
+            and current_coverage.subscription_allowance_id == allowance.id
+        ):
+            continue
+        targets.append(
+            AttendanceCoverageTarget(
+                key=f"allowance:{allowance.id}",
+                label=(
+                    "Абонемент · "
+                    f"{allowance.subscription.plan_name_snapshot} · "
+                    f"доступно {effective_balance} · "
+                    f"до {allowance.subscription.valid_until:%d.%m.%Y}"
+                ),
+                subscription_allowance_id=allowance.id,
             )
         )
 
