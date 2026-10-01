@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.external_auth import ExternalProfile
 from accounts.models import AccountInvitation, ExternalIdentity, Student, StudentAccess
@@ -399,7 +400,7 @@ def test_corrupt_external_auth_flow_is_rejected_before_exchange(
         "provider": "yandex",
         "mode": "login",
         "state": "state",
-        "issued_at": __import__("django.utils.timezone").utils.timezone.now().timestamp(),
+        "issued_at": timezone.now().timestamp(),
         "redirect_uri": "",
         "code_verifier": "",
         "invitation_id": None,
