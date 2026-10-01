@@ -3448,6 +3448,18 @@ group capacity. A non-cancelled paid GroupSeatReservation remains an explicit
 seat claim even if that Student is later deactivated, until the reservation is
 cancelled or expires.
 
+Reactivating a Student is a capacity-changing operation. Before `False -> True`,
+the application locks all groups referenced by the student's current/future
+memberships in stable id order and validates every membership interval with the
+same capacity invariant used by ordinary admission. Reactivation is rejected if
+another student has taken the seat; the conflicting membership must be ended or
+moved first.
+
+Deactivating a Student does **not** automatically cancel an ACTIVE
+GroupPlaceHold. Its paid GroupSeatReservation continues to claim the seat until
+explicit hold cancellation or lifecycle expiry. Restore remains forbidden while
+the Student is inactive.
+
 All capacity-changing writers serialize on the TrainingGroup row. This includes
 ordinary membership admission/update, hold activation/restore and hard-cap
 changes.
