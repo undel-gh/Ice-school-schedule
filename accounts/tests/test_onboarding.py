@@ -23,6 +23,7 @@ from accounts.onboarding import (
     create_account_invitation,
     link_external_identity,
     resolve_invitation_token,
+    unlink_external_identity,
     revoke_account_invitation,
 )
 
@@ -58,6 +59,8 @@ def test_student_invitation_provisions_external_only_user(manager):
     )
 
     assert user.username.startswith("u_")
+    assert user.display_name == "Родитель ученика"
+    assert user.display_label == "Родитель ученика"
     assert user.has_usable_password() is False
     identity = ExternalIdentity.objects.get(user=user)
     assert identity.provider == ExternalIdentity.Provider.YANDEX
@@ -338,3 +341,188 @@ def test_existing_user_invitation_acceptance_rolls_back_provider_link_on_failure
         user=user,
         student=student,
     ).exists() is False
+
+
+
+@pytest.mark.django_db
+def test_staff_and_superuser_cannot_link_or_use_external_identity():
+    staff = User.objects.create_user(
+        username="staff-user",
+        password="test",
+        is_staff=True,
+    )
+    superuser = User.objects.create_superuser(
+        username="root-user",
+        password="test",
+    )
+    staff_identity = ExternalIdentity.objects.create(
+        user=staff,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="staff-yandex",
+    )
+    root_identity = ExternalIdentity.objects.create(
+        user=superuser,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="root-vk",
+    )
+
+    for user, provider, subject in (
+        (staff, ExternalIdentity.Provider.YANDEX, "staff-yandex"),
+        (superuser, ExternalIdentity.Provider.VK, "root-vk"),
+    ):
+        with pytest.raises(ValidationError):
+            authenticate_external_identity(
+                provider=provider,
+                provider_subject=subject,
+            )
+        with pytest.raises(ValidationError):
+            link_external_identity(
+                user=user,
+                provider=ExternalIdentity.Provider.VK
+                if provider == ExternalIdentity.Provider.YANDEX
+                else ExternalIdentity.Provider.YANDEX,
+                provider_subject=f"new-{subject}",
+            )
+
+    assert ExternalIdentity.objects.filter(pk=staff_identity.pk).exists()
+    assert ExternalIdentity.objects.filter(pk=root_identity.pk).exists()
+
+
+@pytest.mark.django_db
+def test_manager_permission_blocks_external_login_and_link():
+    user = User.objects.create_user(username="manager-role-user", password="test")
+    user.user_permissions.add(
+        Permission.objects.get(
+            codename="view_student",
+            content_type__app_label="accounts",
+        )
+    )
+    ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="manager-yandex",
+    )
+
+    with pytest.raises(ValidationError):
+        authenticate_external_identity(
+            provider=ExternalIdentity.Provider.YANDEX,
+            provider_subject="manager-yandex",
+        )
+
+    with pytest.raises(ValidationError):
+        link_external_identity(
+            user=user,
+            provider=ExternalIdentity.Provider.VK,
+            provider_subject="manager-vk",
+        )
+
+
+@pytest.mark.django_db
+def test_privileged_signed_in_user_cannot_accept_invitation(manager):
+    student = Student.objects.create(display_name="Privileged target")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Не должно примениться",
+    )
+
+    with pytest.raises(ValidationError):
+        accept_account_invitation_for_existing_user(
+            user=manager,
+            provider=ExternalIdentity.Provider.YANDEX,
+            provider_subject="manager-external",
+            invitation_id=created.invitation.id,
+        )
+
+    created.invitation.refresh_from_db()
+    assert created.invitation.accepted_at is None
+    assert ExternalIdentity.objects.filter(
+        user=manager,
+        provider_subject="manager-external",
+    ).exists() is False
+    assert StudentAccess.objects.filter(
+        user=manager,
+        student=student,
+    ).exists() is False
+
+
+@pytest.mark.django_db
+def test_self_unlink_requires_another_external_provider():
+    user = User.objects.create_user(username="unlink-self")
+    yandex = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="unlink-yandex",
+    )
+
+    with pytest.raises(ValidationError):
+        unlink_external_identity(
+            identity_id=yandex.id,
+            actor=user,
+            self_service=True,
+        )
+
+    vk = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="unlink-vk",
+    )
+    unlink_external_identity(
+        identity_id=yandex.id,
+        actor=user,
+        self_service=True,
+    )
+
+    assert ExternalIdentity.objects.filter(pk=yandex.id).exists() is False
+    assert ExternalIdentity.objects.filter(pk=vk.id).exists()
+    assert AuditEvent.objects.filter(
+        event_type="ExternalIdentityUnlinked",
+        aggregate_id=yandex.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_manager_can_unlink_compromised_provider_if_login_remains(manager):
+    user = User.objects.create_user(username="compromised-parent")
+    yandex = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="safe-yandex",
+    )
+    vk = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="stolen-vk",
+    )
+
+    unlink_external_identity(
+        identity_id=vk.id,
+        actor=manager,
+        self_service=False,
+    )
+
+    assert ExternalIdentity.objects.filter(pk=vk.id).exists() is False
+    assert ExternalIdentity.objects.filter(pk=yandex.id).exists()
+
+
+@pytest.mark.django_db
+def test_manager_cannot_strand_external_only_user(manager):
+    user = User.objects.create_user(username="external-only")
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    identity = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="only-vk",
+    )
+
+    with pytest.raises(ValidationError):
+        unlink_external_identity(
+            identity_id=identity.id,
+            actor=manager,
+            self_service=False,
+        )
+
+    assert ExternalIdentity.objects.filter(pk=identity.id).exists()
