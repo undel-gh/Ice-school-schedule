@@ -15,6 +15,8 @@ from accounts.models import (
     Student,
     StudentAccess,
 )
+from audit.models import AuditEvent
+
 from accounts.onboarding import (
     authenticate_external_identity,
     create_account_invitation,
@@ -253,3 +255,41 @@ def test_invitation_permission_does_not_bypass_target_permission():
             student_id=student.id,
             student_access_role=StudentAccess.Role.GUARDIAN,
         )
+
+
+
+@pytest.mark.django_db
+def test_invitation_provisioning_emits_role_audit_events(manager):
+    student = Student.objects.create(display_name="Аудит")
+    student_invite = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.SELF,
+    )
+    student_user = authenticate_external_identity(
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="audit-student",
+        invitation_id=student_invite.invitation.id,
+    )
+    access = StudentAccess.objects.get(user=student_user, student=student)
+    assert AuditEvent.objects.filter(
+        event_type="StudentAccessCreated",
+        aggregate_id=access.id,
+    ).exists()
+
+    coach_invite = create_account_invitation(
+        kind=AccountInvitation.Kind.COACH,
+        actor=manager,
+        coach_display_name="Аудит Тренер",
+    )
+    coach_user = authenticate_external_identity(
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="audit-coach",
+        invitation_id=coach_invite.invitation.id,
+    )
+    coach = CoachProfile.objects.get(user=coach_user)
+    assert AuditEvent.objects.filter(
+        event_type="CoachProfileCreated",
+        aggregate_id=coach.id,
+    ).exists()
