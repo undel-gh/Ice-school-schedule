@@ -210,6 +210,58 @@ Coverage rebinds and one-time entitlement administration currently remain
 service-level operations and are intended for a
 dedicated administrative UI rather than direct model editing.
 
+## External identity login and invitations
+
+Student, guardian and coach onboarding is invitation-only. An unknown Yandex or
+VK ID account is never allowed to create a school account by simply visiting
+the ordinary login page.
+
+Managers create one-time invitations in the web UI at
+`/manager/school/invitations/`. An invitation targets either:
+
+- one Student with SELF or GUARDIAN access; or
+- a new CoachProfile with a fixed display name.
+
+The raw invitation token is shown only once. The database stores only its
+SHA-256 hash, expiration and lifecycle metadata. When the invited person
+successfully authenticates, creation of the technical Django User,
+ExternalIdentity and StudentAccess/CoachProfile happens in one transaction.
+
+External-only users receive an unguessable technical username and an unusable
+Django password. No provider access token, refresh token, email, phone, avatar,
+first name or last name is persisted by this flow.
+
+Configure either or both providers:
+
+```bash
+YANDEX_OAUTH_CLIENT_ID=...
+YANDEX_OAUTH_CLIENT_SECRET=...   # optional when PKCE is accepted
+YANDEX_OAUTH_SCOPE=login:info
+
+VKID_CLIENT_ID=...
+VKID_SCOPE=
+```
+
+Register the callback URLs exactly for the public school origin:
+
+```text
+https://<school-host>/accounts/external/yandex/callback/
+https://<school-host>/accounts/external/vk/callback/
+```
+
+Both providers use Authorization Code + PKCE (S256) and a one-time `state`.
+VK ID additionally returns a `device_id` with the authorization code; it is
+required for the token exchange. Yandex user identification prefers the
+pairwise `psuid` value and falls back to the provider user id.
+
+After onboarding, the ordinary login buttons resolve only an existing
+ExternalIdentity. Authenticated users can connect the other configured
+provider at `/accounts/external/identities/`; one internal User may have at
+most one identity per provider.
+
+Local username/password login remains available for staff and emergency
+administration.
+
 ## Production checks
 
 Production defaults are closed: `DJANGO_DEBUG` defaults to off and
