@@ -349,11 +349,17 @@ def _lock_external_identity(
         return None
 
     user = User.objects.select_for_update().get(pk=reference["user_id"])
-    identity = ExternalIdentity.objects.select_for_update().get(
-        pk=reference["id"],
-        provider=provider,
-        provider_subject=provider_subject,
+    identity = (
+        ExternalIdentity.objects.select_for_update()
+        .filter(
+            pk=reference["id"],
+            provider=provider,
+            provider_subject=provider_subject,
+        )
+        .first()
     )
+    if identity is None:
+        return None
     return identity, user
 
 
