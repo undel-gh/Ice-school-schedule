@@ -674,10 +674,16 @@ def cancel_group_seat_reservation(
     actor: User | None,
     at: datetime,
 ) -> GroupSeatReservation:
+    reservation_ref = GroupSeatReservation.objects.only(
+        "id",
+        "group_id",
+    ).get(pk=reservation_id)
+    TrainingGroup.objects.select_for_update().get(
+        pk=reservation_ref.group_id
+    )
     reservation = GroupSeatReservation.objects.select_for_update().get(
         pk=reservation_id
     )
-    TrainingGroup.objects.select_for_update().get(pk=reservation.group_id)
     if reservation.cancelled_at is not None:
         return reservation
     reservation.cancelled_at = at
