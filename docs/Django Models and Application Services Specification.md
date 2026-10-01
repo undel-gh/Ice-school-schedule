@@ -3622,4 +3622,6 @@ local password authentication.
 `unlink_external_identity()` records `ExternalIdentityUnlinked`. Self-service
 unlink requires another external provider to remain. Manager unlink requires
 `accounts.change_externalidentity` and may not strand an external-only User
-without any login method.
+without any login method. Manager unlink of an external-only User also rotates
+the unusable password hash so existing Django sessions are invalidated without
+creating a usable local password.
