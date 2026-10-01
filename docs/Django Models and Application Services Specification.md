@@ -3424,6 +3424,10 @@ student/group covers the full hold period. Confirmation of payment atomically
 materializes the GroupSeatReservation. The TrainingGroup row is the
 serialization lock for capacity-changing writers.
 
+A TrainingGroup cannot be deactivated while it has a non-cancelled current or
+future GroupSeatReservation; the related hold must be cancelled or allowed to
+expire first.
+
 During the reservation interval, `publish_lesson(...)` excludes that student
 from membership-derived roster entries. If the reservation is materialized
 after future lessons were already published, active GROUP-derived roster rows
