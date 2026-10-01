@@ -3174,7 +3174,7 @@ def confirm_group_place_hold_fee(
         "Group place hold change permission is required.",
     )
     hold = (
-        GroupPlaceHold.objects.select_for_update()
+        GroupPlaceHold.objects.select_for_update(of=("self",))
         .select_related("seat_reservation")
         .get(pk=hold_id)
     )
