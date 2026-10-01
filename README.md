@@ -281,10 +281,31 @@ accept external invitations.
 
 Users may unlink one provider themselves only while another external provider
 remains. Managers with `change_externalidentity` may unlink a compromised
-provider; the service refuses to remove the final login method from an
-external-only User. For an external-only User, manager unlink also rotates the
-unusable password value so Django invalidates already-issued sessions via the
-session authentication hash. Every unlink records `ExternalIdentityUnlinked`.
+provider. The final provider of an external-only User may be removed only
+after that User has been deactivated. Deactivation is available in manager web
+and prevents the inactive User from authenticating through Django's
+ModelBackend.
+
+For a compromised single-provider account the supported recovery procedure is:
+
+```text
+1. Deactivate the existing User.
+2. Unlink the compromised ExternalIdentity.
+3. Create an AccountInvitation of kind RECOVERY bound to that exact User.
+4. Send the one-time recovery URL to the account owner.
+5. The owner authenticates with Yandex/VK while signed out.
+6. The provider is linked to the existing User and the same User is reactivated.
+```
+
+A recovery invitation can be issued only when the target User is inactive,
+non-privileged and has no remaining ExternalIdentity rows. It never creates a
+replacement User, StudentAccess or CoachProfile, so all existing history and
+school relationships remain attached to the same UUID.
+
+For an external-only User, manager unlink also rotates the unusable password
+value so already-issued Django sessions fail the session-auth-hash check.
+Every unlink records `ExternalIdentityUnlinked`; recovery records
+`AccountRecovered`.
 
 Local username/password login remains the staff and emergency administration
 channel.
