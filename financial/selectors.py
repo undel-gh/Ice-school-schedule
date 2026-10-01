@@ -101,25 +101,6 @@ def get_closed_lesson_report(*, lesson_id: UUID) -> ClosedLessonReport:
     )
 
 
-def get_uncovered_attendance():
-    active_coverage = AttendanceCoverage.objects.filter(
-        attendance_id=OuterRef("pk"),
-        reversed_at__isnull=True,
-    )
-    return (
-        Attendance.objects.filter(status=Attendance.Status.PRESENT)
-        .annotate(has_active_coverage=Exists(active_coverage))
-        .filter(has_active_coverage=False)
-        .select_related(
-            "student",
-            "lesson",
-            "lesson__lesson_type",
-            "lesson__coach",
-        )
-        .order_by("lesson__starts_at", "student__display_name", "student_id")
-    )
-
-
 def get_expired_unused_report(
     *,
     as_of: date,

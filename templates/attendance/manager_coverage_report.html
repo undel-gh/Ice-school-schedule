@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% load manager_labels %}
+{% block title %}Покрытие посещений{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Покрытие посещений</h1>
+  <p class="page-header__meta">
+    PRESENT Attendance без активного AttendanceCoverage требуют проверки.
+  </p>
+</header>
+
+<form class="filter-form" method="get">
+  <div class="field">
+    <label for="coverage">Покрытие</label>
+    <select id="coverage" name="coverage">
+      <option value="uncovered" {% if selected_coverage_state == "uncovered" %}selected{% endif %}>Без покрытия</option>
+      <option value="covered" {% if selected_coverage_state == "covered" %}selected{% endif %}>С покрытием</option>
+      <option value="all" {% if selected_coverage_state == "all" %}selected{% endif %}>Все PRESENT</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="student">Ученик</label>
+    <select id="student" name="student">
+      <option value="">Все</option>
+      {% for student in students %}
+        <option value="{{ student.id }}" {% if selected_student_id == student.id|stringformat:"s" %}selected{% endif %}>{{ student.display_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="from">С</label>
+    <input id="from" type="date" name="from" value="{{ from_date|date:'Y-m-d' }}">
+  </div>
+  <div class="field">
+    <label for="until">По</label>
+    <input id="until" type="date" name="until" value="{{ until_date|date:'Y-m-d' }}">
+  </div>
+  <button class="btn-secondary" type="submit">Показать</button>
+</form>
+
+{% include "shared/manager_pagination.html" %}
+
+<div class="card-list">
+{% for row in rows %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <h2>
+          <a href="{% url 'attendance_manager:coverage_detail' row.attendance.id %}">
+            {{ row.attendance.student.display_name }}
+          </a>
+        </h2>
+        <p class="lesson-card__meta">
+          {{ row.attendance.lesson.starts_at|date:"d.m.Y H:i" }}
+          · {{ row.attendance.lesson.lesson_type.name }}
+          · {{ row.attendance.lesson.group.name }}
+        </p>
+      </div>
+      {% if row.coverage %}
+        <span class="badge">покрыто</span>
+      {% else %}
+        <span class="badge badge--cancelled">без покрытия</span>
+      {% endif %}
+    </div>
+    <p class="lesson-card__meta">
+      Занятие: {{ row.attendance.lesson.status|manager_label:"lesson_status" }}
+      {% if row.coverage %}· {{ row.source_label }}{% endif %}
+    </p>
+  </article>
+{% empty %}
+  <div class="empty-state">Записей по выбранным условиям нет.</div>
+{% endfor %}
+</div>
+
+{% include "shared/manager_pagination.html" %}
+{% endblock %}

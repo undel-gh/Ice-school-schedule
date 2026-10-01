@@ -34,6 +34,9 @@
   {% if perms.attendance.view_absencejustification %}
   <a class="report-card manager-nav-card" href="{% url 'attendance_manager:medical' %}"><h2>Медицинские основания</h2><p>Подтверждение, отклонение и отзыв.</p></a>
   {% endif %}
+  {% if perms.subscriptions.view_attendancecoverage %}
+  <a class="report-card manager-nav-card" href="{% url 'attendance_manager:coverage_report' %}"><h2>Покрытие посещений</h2><p>Непокрытые посещения, восстановление и смена источника списания.</p></a>
+  {% endif %}
   {% if perms.subscriptions.view_onetimeentitlement %}
   <a class="report-card manager-nav-card" href="{% url 'subscriptions:manager_one_time_entitlements' %}"><h2>Разовые права</h2><p>Разовые, пробные, индивидуальные и мини-групповые права.</p></a>
   {% endif %}

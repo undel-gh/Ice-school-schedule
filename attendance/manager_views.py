@@ -1,27 +1,310 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from uuid import UUID
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
-from django.http import HttpRequest, HttpResponse
+from django.core.paginator import Paginator
+from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
+from accounts.models import Student
 from core.permissions import require_permission
 from core.presentation import localized_choices, validation_message
 from core.time import school_date
 
-from .forms import ManagerMedicalVerifyForm
-from .models import AbsenceJustification
+from subscriptions.models import AttendanceCoverage
+from subscriptions.services import rebind_attendance_coverage
+
+from .forms import (
+    ManagerAttendanceCoverageRebindForm,
+    ManagerAttendanceCoverageRecoveryForm,
+    ManagerMedicalVerifyForm,
+)
+from .models import AbsenceJustification, Attendance
+from .selectors import (
+    available_attendance_coverage_targets,
+    manager_attendance_coverage_queryset,
+    manager_attendance_coverage_rows,
+)
 from .services import (
     reject_medical_absence,
+    recover_attendance_coverage,
     revoke_medical_absence,
     verify_medical_absence,
 )
+
+MAX_MANAGER_COVERAGE_REPORT_RANGE_DAYS = 366
+
+
+def _parse_report_date(value: str | None, *, default: date) -> date:
+    if not value:
+        return default
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise Http404("Invalid date.") from exc
+
+
+@login_required
+def manager_coverage_report(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.view_attendancecoverage",
+        "Attendance coverage view permission is required.",
+    )
+
+    today = school_date(timezone.now())
+    from_date = _parse_report_date(
+        request.GET.get("from"),
+        default=today - timedelta(days=90),
+    )
+    until_date = _parse_report_date(
+        request.GET.get("until"),
+        default=today,
+    )
+    if until_date < from_date:
+        raise Http404("Invalid date range.")
+    if (
+        until_date - from_date
+    ).days > MAX_MANAGER_COVERAGE_REPORT_RANGE_DAYS:
+        raise Http404("Date range is too large.")
+
+    coverage_state = request.GET.get("coverage", "uncovered")
+    if coverage_state not in {"uncovered", "covered", "all"}:
+        raise Http404("Invalid coverage state.")
+
+    student_id = None
+    raw_student = request.GET.get("student")
+    if raw_student:
+        try:
+            student_id = UUID(raw_student)
+        except ValueError as exc:
+            raise Http404("Invalid student.") from exc
+        if not Student.objects.filter(pk=student_id).exists():
+            raise Http404("Student not found.")
+
+    coverage_queryset = manager_attendance_coverage_queryset(
+        coverage_state=coverage_state,
+        student_id=student_id,
+        from_date=from_date,
+        until_date=until_date,
+    )
+    page_obj = Paginator(coverage_queryset, 50).get_page(
+        request.GET.get("page")
+    )
+    rows = manager_attendance_coverage_rows(page_obj.object_list)
+    students = Student.objects.order_by("display_name", "id")
+    pagination_query = request.GET.copy()
+    if "page" in pagination_query:
+        pagination_query.pop("page")
+
+    return render(
+        request,
+        "attendance/manager_coverage_report.html",
+        {
+            "rows": rows,
+            "page_obj": page_obj,
+            "pagination_query": pagination_query.urlencode(),
+            "students": students,
+            "selected_student_id": (
+                str(student_id) if student_id is not None else ""
+            ),
+            "selected_coverage_state": coverage_state,
+            "from_date": from_date,
+            "until_date": until_date,
+        },
+    )
+
+
+@login_required
+def manager_coverage_detail(
+    request: HttpRequest,
+    *,
+    attendance_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.view_attendancecoverage",
+        "Attendance coverage view permission is required.",
+    )
+    attendance = get_object_or_404(
+        Attendance.objects.select_related(
+            "student",
+            "lesson__lesson_type",
+            "lesson__group",
+        ),
+        pk=attendance_id,
+    )
+    coverage = (
+        AttendanceCoverage.objects.filter(
+            attendance=attendance,
+            reversed_at__isnull=True,
+        )
+        .select_related(
+            "subscription_allowance__subscription",
+            "one_time_entitlement",
+            "makeup_entitlement",
+        )
+        .first()
+    )
+    targets = (
+        available_attendance_coverage_targets(
+            attendance=attendance,
+            current_coverage=coverage,
+        )
+        if attendance.status == Attendance.Status.PRESENT
+        else ()
+    )
+    rebind_form = ManagerAttendanceCoverageRebindForm(targets=targets)
+    recovery_form = ManagerAttendanceCoverageRecoveryForm(
+        targets=targets
+    )
+
+    return render(
+        request,
+        "attendance/manager_coverage_detail.html",
+        {
+            "attendance": attendance,
+            "coverage": coverage,
+            "targets": targets,
+            "rebind_form": rebind_form,
+            "recovery_form": recovery_form,
+            "lesson_is_completed": (
+                attendance.lesson.status == attendance.lesson.Status.COMPLETED
+            ),
+        },
+    )
+
+
+@login_required
+@require_POST
+def manager_coverage_rebind(
+    request: HttpRequest,
+    *,
+    attendance_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_attendancecoverage",
+        "Attendance coverage change permission is required.",
+    )
+    attendance = get_object_or_404(
+        Attendance.objects.select_related("lesson__lesson_type"),
+        pk=attendance_id,
+    )
+    coverage = (
+        AttendanceCoverage.objects.filter(
+            attendance=attendance,
+            reversed_at__isnull=True,
+        )
+        .select_related(
+            "subscription_allowance__subscription",
+            "one_time_entitlement",
+            "makeup_entitlement",
+        )
+        .first()
+    )
+    targets = available_attendance_coverage_targets(
+        attendance=attendance,
+        current_coverage=coverage,
+    )
+    form = ManagerAttendanceCoverageRebindForm(
+        request.POST,
+        targets=targets,
+    )
+    if form.is_valid():
+        try:
+            rebind_attendance_coverage(
+                attendance_id=attendance.id,
+                actor=request.user,
+                **form.target_kwargs(),
+            )
+        except ValidationError as exc:
+            messages.error(request, validation_message(exc))
+        else:
+            messages.success(request, "Источник покрытия изменён.")
+    else:
+        messages.error(
+            request,
+            "Выберите доступный источник покрытия.",
+        )
+    return redirect(
+        "attendance_manager:coverage_detail",
+        attendance_id=attendance.id,
+    )
+
+
+@login_required
+@require_POST
+def manager_coverage_recover(
+    request: HttpRequest,
+    *,
+    attendance_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_attendancecoverage",
+        "Attendance coverage change permission is required.",
+    )
+    attendance = get_object_or_404(
+        Attendance.objects.select_related("lesson__lesson_type"),
+        pk=attendance_id,
+    )
+    current_coverage = (
+        AttendanceCoverage.objects.filter(
+            attendance=attendance,
+            reversed_at__isnull=True,
+        )
+        .select_related(
+            "subscription_allowance__subscription",
+            "one_time_entitlement",
+            "makeup_entitlement",
+        )
+        .first()
+    )
+    targets = available_attendance_coverage_targets(
+        attendance=attendance,
+        current_coverage=current_coverage,
+    )
+    form = ManagerAttendanceCoverageRecoveryForm(
+        request.POST,
+        targets=targets,
+    )
+    if not form.is_valid():
+        messages.error(
+            request,
+            "Выберите доступный источник покрытия.",
+        )
+    else:
+        try:
+            result = recover_attendance_coverage(
+                attendance_id=attendance_id,
+                actor=request.user,
+                now=timezone.now(),
+                **form.target_kwargs(),
+            )
+        except ValidationError as exc:
+            messages.error(request, validation_message(exc))
+        else:
+            if result.recovered:
+                messages.success(
+                    request,
+                    "Покрытие посещения восстановлено.",
+                )
+            else:
+                messages.info(
+                    request,
+                    "Посещение уже было покрыто.",
+                )
+    return redirect(
+        "attendance_manager:coverage_detail",
+        attendance_id=attendance_id,
+    )
 
 
 @login_required

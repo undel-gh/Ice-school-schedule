@@ -8,11 +8,11 @@ from django.core.exceptions import ValidationError
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
+from attendance.selectors import manager_attendance_coverage_queryset
 from core.choices import SubscriptionCategory
 from financial.selectors import (
     get_closed_lesson_report,
     get_expired_unused_report,
-    get_uncovered_attendance,
 )
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
@@ -180,7 +180,11 @@ def test_uncovered_query_includes_reversed_coverage(
         actor=actor,
     )
 
-    ids = list(get_uncovered_attendance().values_list("id", flat=True))
+    ids = list(
+        manager_attendance_coverage_queryset(
+            coverage_state="uncovered",
+        ).values_list("id", flat=True)
+    )
     assert attendance.id in ids
 
 

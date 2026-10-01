@@ -15,6 +15,7 @@ from attendance.services import (
     mark_expected_present,
     mark_remaining_absent,
     reject_medical_absence,
+    recover_attendance_coverage,
     reopen_attendance,
     revoke_medical_absence,
     set_attendance,
@@ -1826,4 +1827,137 @@ def test_administratively_revoked_medical_absence_cannot_be_redeclared(
             student_id=student.id,
             lesson_id=lesson.id,
             actor=admin_user,
+        )
+
+
+
+@pytest.mark.django_db
+def test_recover_attendance_coverage_assigns_available_source(
+    student,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    allowance = issue_one_ice(
+        student=student,
+        actor=admin_user,
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=lesson.ends_at,
+        marked_by=admin_user,
+        updated_by=admin_user,
+    )
+
+    result = recover_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=admin_user,
+        now=lesson.ends_at,
+    )
+    coverage = result.coverage
+
+    assert result.recovered is True
+    assert coverage.subscription_allowance_id == allowance.id
+    assert allowance_balance(allowance.id) == 0
+    recovered = AuditEvent.objects.get(
+        event_type="AttendanceCoverageRecovered",
+        aggregate_id=attendance.id,
+    )
+    assigned = AuditEvent.objects.get(
+        event_type="AttendanceCoverageAssigned",
+        aggregate_id=coverage.id,
+    )
+    assert recovered.correlation_id == assigned.correlation_id
+
+
+@pytest.mark.django_db
+def test_recover_attendance_coverage_rejects_closed_lesson(
+    student,
+    admin_user,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+        status=Lesson.Status.CLOSED,
+    )
+    issue_one_ice(
+        student=student,
+        actor=admin_user,
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=lesson.ends_at,
+        marked_by=admin_user,
+        updated_by=admin_user,
+    )
+
+    with pytest.raises(ValidationError, match="COMPLETED"):
+        recover_attendance_coverage(
+            attendance_id=attendance.id,
+            actor=admin_user,
+            now=lesson.ends_at,
+        )
+
+    assert not AttendanceCoverage.objects.filter(
+        attendance=attendance,
+        reversed_at__isnull=True,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_recover_attendance_coverage_requires_permission(
+    student,
+    outsider,
+    school_context,
+):
+    starts_at = datetime(
+        2026,
+        9,
+        15,
+        15,
+        0,
+        tzinfo=dt_timezone.utc,
+    )
+    lesson = make_lesson(
+        school_context=school_context,
+        starts_at=starts_at,
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=lesson.ends_at,
+        marked_by=outsider,
+        updated_by=outsider,
+    )
+
+    with pytest.raises(PermissionDenied):
+        recover_attendance_coverage(
+            attendance_id=attendance.id,
+            actor=outsider,
+            now=lesson.ends_at,
         )

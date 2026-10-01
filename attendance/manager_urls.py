@@ -5,6 +5,22 @@ from . import manager_views
 app_name = "attendance_manager"
 
 urlpatterns = [
+    path("coverage/", manager_views.manager_coverage_report, name="coverage_report"),
+    path(
+        "coverage/<uuid:attendance_id>/",
+        manager_views.manager_coverage_detail,
+        name="coverage_detail",
+    ),
+    path(
+        "coverage/<uuid:attendance_id>/rebind/",
+        manager_views.manager_coverage_rebind,
+        name="coverage_rebind",
+    ),
+    path(
+        "coverage/<uuid:attendance_id>/recover/",
+        manager_views.manager_coverage_recover,
+        name="coverage_recover",
+    ),
     path("medical/", manager_views.manager_medical_absences, name="medical"),
     path("medical/<uuid:justification_id>/", manager_views.manager_medical_detail, name="medical_detail"),
     path("medical/<uuid:justification_id>/verify/", manager_views.manager_medical_verify, name="medical_verify"),
