@@ -9,6 +9,7 @@ from django.db import migrations, models
 
 
 def backfill_active_place_hold_reservations(apps, schema_editor):
+    Attendance = apps.get_model("attendance", "Attendance")
     GroupPlaceHold = apps.get_model("subscriptions", "GroupPlaceHold")
     GroupMembership = apps.get_model("scheduling", "GroupMembership")
     GroupSeatReservation = apps.get_model("scheduling", "GroupSeatReservation")
@@ -47,10 +48,17 @@ def backfill_active_place_hold_reservations(apps, schema_editor):
         )
         update_fields = ["seat_reservation"]
         if membership is not None:
+            original_ends_on = membership.ends_on
             membership.ends_on = hold.period_from - timedelta(days=1)
             membership.save(update_fields=["ends_on"])
             hold.suspended_membership_id = membership.id
-            update_fields.append("suspended_membership")
+            hold.suspended_membership_ends_on_snapshot = original_ends_on
+            update_fields.extend(
+                [
+                    "suspended_membership",
+                    "suspended_membership_ends_on_snapshot",
+                ]
+            )
 
             starts_at = datetime.combine(
                 hold.period_from,
@@ -60,6 +68,11 @@ def backfill_active_place_hold_reservations(apps, schema_editor):
             explicit_lesson_ids = LessonEnrollment.objects.filter(
                 student_id=hold.student_id,
                 cancelled_at__isnull=True,
+                lesson__group_id=hold.group_id,
+                lesson__starts_at__gte=starts_at,
+            ).values_list("lesson_id", flat=True)
+            attended_lesson_ids = Attendance.objects.filter(
+                student_id=hold.student_id,
                 lesson__group_id=hold.group_id,
                 lesson__starts_at__gte=starts_at,
             ).values_list("lesson_id", flat=True)
@@ -74,6 +87,7 @@ def backfill_active_place_hold_reservations(apps, schema_editor):
                     is_active=True,
                 )
                 .exclude(lesson_id__in=explicit_lesson_ids)
+                .exclude(lesson_id__in=attended_lesson_ids)
                 .update(
                     is_active=False,
                     deactivated_at=hold.fee_confirmed_at,
@@ -136,6 +150,11 @@ class Migration(migrations.Migration):
                 related_name="suspending_place_hold",
                 to="scheduling.groupmembership",
             ),
+        ),
+        migrations.AddField(
+            model_name="groupplacehold",
+            name="suspended_membership_ends_on_snapshot",
+            field=models.DateField(blank=True, null=True),
         ),
         migrations.AddField(
             model_name="groupplacehold",
