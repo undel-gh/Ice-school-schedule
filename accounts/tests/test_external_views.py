@@ -197,7 +197,7 @@ def test_authenticated_user_can_link_second_provider(
     user = User.objects.create_user(username="local-user", password="test")
     client.force_login(user)
 
-    begin = client.get(
+    begin = client.post(
         reverse("external_auth:link", kwargs={"provider": "vk"})
     )
     assert begin.status_code == 302
@@ -226,3 +226,17 @@ def test_authenticated_user_can_link_second_provider(
         provider=ExternalIdentity.Provider.VK,
         provider_subject="linked-vk",
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_identity_link_start_rejects_get(client, settings):
+    settings.VKID_CLIENT_ID = "12345"
+    user = User.objects.create_user(username="csrf-link-user", password="test")
+    client.force_login(user)
+
+    response = client.get(
+        reverse("external_auth:link", kwargs={"provider": "vk"})
+    )
+
+    assert response.status_code == 405
