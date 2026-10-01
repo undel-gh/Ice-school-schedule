@@ -71,10 +71,6 @@ def _membership_overlaps(
     return starts_on <= other_end and other.starts_on <= effective_end
 
 
-def _interval_contains(*, starts_on: date, ends_on: date | None, on_date: date) -> bool:
-    return starts_on <= on_date and (ends_on is None or ends_on >= on_date)
-
-
 def group_occupied_student_ids(
     *,
     group_id: UUID,
@@ -300,8 +296,8 @@ def create_group_membership(
             {"ends_on": "Membership end date cannot precede start date."}
         )
 
-    student = Student.objects.select_for_update().get(pk=student_id)
     group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    student = Student.objects.select_for_update().get(pk=student_id)
     if not student.is_active:
         raise ValidationError(
             {"student": "Inactive students cannot be added to a group."}
@@ -383,8 +379,8 @@ def update_group_membership(
     membership = GroupMembership.objects.select_for_update().get(
         pk=membership_id
     )
-    Student.objects.select_for_update().get(pk=membership.student_id)
     group = TrainingGroup.objects.select_for_update().get(pk=membership.group_id)
+    Student.objects.select_for_update().get(pk=membership.student_id)
     others = list(
         GroupMembership.objects.select_for_update()
         .filter(
