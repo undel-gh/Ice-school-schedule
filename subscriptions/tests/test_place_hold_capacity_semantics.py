@@ -8,6 +8,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from accounts.models import CoachProfile, Student
+from attendance.models import Attendance
 from core.choices import SubscriptionCategory
 from core.testing import school_dt
 from core.time import school_date
@@ -132,6 +133,211 @@ def _activate_hold(*, holder, group, scheme, actor):
         actor=actor,
         now=timezone.now(),
     )
+
+
+@pytest.mark.django_db
+def test_retroactive_hold_confirmation_is_rejected_without_mutation(
+    hold_manager,
+    rolling_scheme,
+):
+    today = school_date(timezone.now())
+    period_from = today - timedelta(days=5)
+    period_until = period_from + timedelta(days=27)
+    group = TrainingGroup.objects.create(
+        code="hold-no-retroactive",
+        name="Hold no retroactive",
+        capacity=2,
+    )
+    holder = Student.objects.create(display_name="Retroactive holder")
+    membership = GroupMembership.objects.create(
+        student=holder,
+        group=group,
+        starts_on=period_from - timedelta(days=30),
+        ends_on=None,
+        created_by=hold_manager,
+    )
+    hold = create_group_place_hold(
+        student_id=holder.id,
+        group_id=group.id,
+        period_scheme_id=rolling_scheme.id,
+        period_from=period_from,
+        period_until=period_until,
+        actor=hold_manager,
+    )
+
+    lesson = _lesson(
+        group=group,
+        actor=hold_manager,
+        lesson_date=today - timedelta(days=1),
+    )
+    publish_lesson(
+        lesson_id=lesson.id,
+        actor=hold_manager,
+        now=lesson.rsvp_deadline - timedelta(minutes=1),
+    )
+    roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=holder,
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=holder,
+        status=Attendance.Status.PRESENT,
+        marked_by=hold_manager,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        confirm_group_place_hold_fee(
+            hold_id=hold.id,
+            actor=hold_manager,
+            now=timezone.now(),
+        )
+
+    assert "period" in exc.value.message_dict
+    membership.refresh_from_db()
+    roster.refresh_from_db()
+    attendance.refresh_from_db()
+    hold.refresh_from_db()
+    assert membership.ends_on is None
+    assert roster.is_active is True
+    assert attendance.status == Attendance.Status.PRESENT
+    assert hold.status == GroupPlaceHold.Status.PENDING_PAYMENT
+    assert hold.seat_reservation_id is None
+
+
+@pytest.mark.django_db
+def test_hold_suspension_never_deactivates_roster_with_attendance(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, period_until = _hold_window()
+    group = TrainingGroup.objects.create(
+        code="hold-attendance-protected",
+        name="Hold attendance protected",
+        capacity=2,
+    )
+    holder, membership = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Attendance holder",
+    )
+    lesson = _lesson(
+        group=group,
+        actor=hold_manager,
+        lesson_date=period_from,
+    )
+    publish_lesson(
+        lesson_id=lesson.id,
+        actor=hold_manager,
+        now=lesson.rsvp_deadline - timedelta(minutes=1),
+    )
+    roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=holder,
+    )
+    Attendance.objects.create(
+        lesson=lesson,
+        student=holder,
+        status=Attendance.Status.PRESENT,
+        marked_by=hold_manager,
+    )
+
+    hold = create_group_place_hold(
+        student_id=holder.id,
+        group_id=group.id,
+        period_scheme_id=rolling_scheme.id,
+        period_from=period_from,
+        period_until=period_until,
+        actor=hold_manager,
+    )
+    confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=hold_manager,
+        now=timezone.now(),
+    )
+
+    membership.refresh_from_db()
+    roster.refresh_from_db()
+    assert membership.ends_on == period_from - timedelta(days=1)
+    assert roster.is_active is True
+
+
+@pytest.mark.django_db
+def test_restore_preserves_original_membership_end_date(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, period_until = _hold_window()
+    return_on = period_until + timedelta(days=1)
+    original_ends_on = return_on + timedelta(days=90)
+    group = TrainingGroup.objects.create(
+        code="hold-finite-membership",
+        name="Hold finite membership",
+        capacity=2,
+    )
+    holder, original = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Finite holder",
+        ends_on=original_ends_on,
+    )
+
+    hold = _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
+        actor=hold_manager,
+    )
+    hold.refresh_from_db()
+    original.refresh_from_db()
+    assert hold.suspended_membership_ends_on_snapshot == original_ends_on
+    assert original.ends_on == period_from - timedelta(days=1)
+
+    restored = restore_group_place_hold(
+        hold_id=hold.id,
+        actor=hold_manager,
+        now=timezone.now(),
+    )
+    restored.restored_membership.refresh_from_db()
+    assert restored.restored_membership.starts_on == return_on
+    assert restored.restored_membership.ends_on == original_ends_on
+
+
+@pytest.mark.django_db
+def test_restore_rejects_when_original_membership_ended_before_return(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, period_until = _hold_window()
+    group = TrainingGroup.objects.create(
+        code="hold-membership-expires-during-hold",
+        name="Hold membership expires during hold",
+        capacity=2,
+    )
+    holder, _ = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Expiring holder",
+        ends_on=period_from + timedelta(days=5),
+    )
+    hold = _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
+        actor=hold_manager,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        restore_group_place_hold(
+            hold_id=hold.id,
+            actor=hold_manager,
+            now=timezone.now(),
+        )
+
+    assert "hold" in exc.value.message_dict
+    hold.refresh_from_db()
+    assert hold.status == GroupPlaceHold.Status.ACTIVE
+    assert hold.restored_membership_id is None
 
 
 @pytest.mark.django_db
