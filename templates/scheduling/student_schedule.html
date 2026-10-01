@@ -6,6 +6,10 @@
   <div class="page-header__meta">Моё расписание</div>
 </header>
 
+<div class="action-row account-primary-actions">
+  <a class="btn btn-secondary" href="{% url 'student_account:account' %}?student={{ selected_student.id }}">Абонемент</a>
+</div>
+
 <form class="filter-form" method="get">
   {% if students|length > 1 %}
     <div class="field">
