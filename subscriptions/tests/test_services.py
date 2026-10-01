@@ -39,6 +39,7 @@ from subscriptions.services import (
     grant_administrative_makeup,
     grant_one_time_entitlement,
     assign_attendance_coverage,
+    assign_attendance_coverage_from_source,
     cancel_subscription,
     issue_subscription,
     process_subscription_lifecycle,
@@ -1753,3 +1754,116 @@ def test_issue_subscription_rejects_staff_without_model_permission(
             valid_until=date(2026, 9, 30),
             actor=actor,
         )
+
+
+
+@pytest.mark.django_db
+def test_explicit_allowance_rejects_pending_subscription_without_dates(
+    student,
+    actor,
+    school_context,
+):
+    plan = make_plan(code="explicit-pending-no-dates", ice=1)
+    subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=None,
+        valid_until=None,
+        actor=actor,
+    )
+    allowance = subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="Selected coverage source is no longer eligible",
+    ):
+        assign_attendance_coverage_from_source(
+            attendance_id=attendance.id,
+            actor=actor,
+            subscription_allowance_id=allowance.id,
+        )
+
+    assert not AttendanceCoverage.objects.filter(
+        attendance=attendance,
+        reversed_at__isnull=True,
+    ).exists()
+    assert allowance_balance(allowance.id) == 1
+
+
+@pytest.mark.django_db
+def test_rebind_rejects_pending_target_subscription_without_dates(
+    student,
+    actor,
+    school_context,
+):
+    actor.is_staff = True
+    actor.save(update_fields=["is_staff"])
+    plan = make_plan(code="rebind-pending-no-dates", ice=1)
+    pending_subscription = issue_subscription(
+        student_id=student.id,
+        plan_id=plan.id,
+        valid_from=None,
+        valid_until=None,
+        actor=actor,
+    )
+    pending_allowance = pending_subscription.allowances.get()
+    lesson = make_lesson(
+        school_context=school_context,
+        lesson_type=school_context["ice"],
+        starts_at=datetime(
+            2026,
+            9,
+            15,
+            15,
+            0,
+            tzinfo=dt_timezone.utc,
+        ),
+    )
+    attendance = make_present_attendance(
+        lesson=lesson,
+        student=student,
+        actor=actor,
+    )
+    entitlement = OneTimeEntitlement.objects.create(
+        student=student,
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=actor,
+    )
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+    )
+    assert old_coverage.one_time_entitlement_id == entitlement.id
+
+    with pytest.raises(
+        ValidationError,
+        match="Ordinary allowance is not valid on lesson date",
+    ):
+        rebind_attendance_coverage(
+            attendance_id=attendance.id,
+            actor=actor,
+            subscription_allowance_id=pending_allowance.id,
+        )
+
+    old_coverage.refresh_from_db()
+    assert old_coverage.reversed_at is None
+    assert allowance_balance(pending_allowance.id) == 1

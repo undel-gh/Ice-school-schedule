@@ -3981,6 +3981,11 @@ def _try_ordinary_allowance_coverage(
             continue
         if allowance.category != category:
             continue
+        if (
+            subscription.valid_from is None
+            or subscription.valid_until is None
+        ):
+            continue
         if not (
             subscription.valid_from
             <= lesson_date
@@ -5129,10 +5134,14 @@ def rebind_attendance_coverage(
                     )
                 }
             )
-        if target_makeup is None and not (
-            target_subscription.valid_from
-            <= lesson_date
-            <= target_subscription.valid_until
+        if target_makeup is None and (
+            target_subscription.valid_from is None
+            or target_subscription.valid_until is None
+            or not (
+                target_subscription.valid_from
+                <= lesson_date
+                <= target_subscription.valid_until
+            )
         ):
             raise ValidationError(
                 {
