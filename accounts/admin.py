@@ -48,6 +48,8 @@ class AccountInvitationAdmin(ReadOnlyAdmin):
         "student",
         "student_access_role",
         "coach_display_name",
+        "recovery_user",
+        "account_display_name",
         "expires_at",
         "created_at",
         "created_by",
