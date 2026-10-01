@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Приглашение{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <h1>Приглашение в Ice School</h1>
+  {% if invitation.kind == "student_access" %}
+    <p>
+      Доступ к ученику <strong>{{ invitation.student.display_name }}</strong>
+      {% if invitation.student_access_role == "guardian" %}как родителю / представителю{% else %}как самому ученику{% endif %}.
+    </p>
+  {% else %}
+    <p>Профиль тренера: <strong>{{ invitation.coach_display_name }}</strong>.</p>
+  {% endif %}
+  <p>Ссылка действует до {{ invitation.expires_at|date:"d.m.Y H:i" }}.</p>
+
+  {% if providers %}
+    <div class="toolbar">
+      {% if "yandex" in providers %}
+        <a class="btn btn-primary" href="{% url 'external_auth:invitation_login' 'yandex' %}">Продолжить через Яндекс</a>
+      {% endif %}
+      {% if "vk" in providers %}
+        <a class="btn btn-secondary" href="{% url 'external_auth:invitation_login' 'vk' %}">Продолжить через VK ID</a>
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="empty-state">Внешние провайдеры входа пока не настроены.</p>
+  {% endif %}
+</section>
+{% endblock %}
