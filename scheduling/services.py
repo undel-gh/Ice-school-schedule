@@ -2016,6 +2016,13 @@ def create_training_group(
         )
     if capacity is not None and capacity < 1:
         raise ValidationError({"capacity": "Capacity must be at least 1."})
+    if (
+        capacity is not None
+        and capacity < default_minimum_attendees
+    ):
+        raise ValidationError(
+            {"capacity": "Capacity cannot be lower than minimum attendees."}
+        )
     if TrainingGroup.objects.filter(code=code).exists():
         raise ValidationError({"code": "A group with this code already exists."})
     try:
@@ -2071,6 +2078,13 @@ def update_training_group(
         )
     if capacity is not None and capacity < 1:
         raise ValidationError({"capacity": "Capacity must be at least 1."})
+    if (
+        capacity is not None
+        and capacity < default_minimum_attendees
+    ):
+        raise ValidationError(
+            {"capacity": "Capacity cannot be lower than minimum attendees."}
+        )
     _ensure_capacity_not_below_existing_claims(group=group, capacity=capacity)
     if TrainingGroup.objects.filter(code=code).exclude(pk=group.id).exists():
         raise ValidationError({"code": "A group with this code already exists."})
