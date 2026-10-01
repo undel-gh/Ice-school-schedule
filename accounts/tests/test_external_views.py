@@ -384,3 +384,46 @@ def test_authenticated_invitation_rejects_provider_linked_to_other_user(
         user=signed_in,
         student=student,
     ).exists() is False
+
+
+
+@pytest.mark.django_db
+def test_corrupt_external_auth_flow_is_rejected_before_exchange(
+    client,
+    settings,
+    monkeypatch,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    session = client.session
+    session["external_auth_flow"] = {
+        "provider": "yandex",
+        "mode": "login",
+        "state": "state",
+        "issued_at": __import__("django.utils.timezone").utils.timezone.now().timestamp(),
+        "redirect_uri": "",
+        "code_verifier": "",
+        "invitation_id": None,
+        "bound_user_id": None,
+    }
+    session.save()
+    called = False
+
+    def fake_exchange(**kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("corrupt flow must not reach provider exchange")
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        fake_exchange,
+    )
+
+    response = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "yandex"}),
+        {"code": "code", "state": "state"},
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("login")
+    assert called is False
+    assert "external_auth_flow" not in client.session
