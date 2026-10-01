@@ -431,3 +431,121 @@ def test_corrupt_external_auth_flow_is_rejected_before_exchange(
     assert response.url == reverse("login")
     assert called is False
     assert "external_auth_flow" not in client.session
+
+
+
+@pytest.mark.django_db
+def test_privileged_signed_in_invitation_page_warns_and_blocks_provider_start(
+    client,
+    manager,
+    settings,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    student = Student.objects.create(display_name="Ребёнок")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Мама ребёнка",
+    )
+    client.force_login(manager)
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+    body = landing.content.decode()
+    assert manager.display_label in body
+    assert "staff/manager" in body
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "yandex"},
+        )
+    )
+    assert begin.status_code == 302
+    assert "external_auth_flow" not in client.session
+
+
+@pytest.mark.django_db
+def test_anonymous_invitation_page_warns_existing_users_to_sign_in(
+    client,
+    manager,
+    settings,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    student = Student.objects.create(display_name="Ребёнок")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Папа ребёнка",
+    )
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+
+    assert landing.status_code == 200
+    body = landing.content.decode()
+    assert "Уже есть аккаунт Ice School" in body
+    assert "Папа ребёнка" in body
+
+
+@pytest.mark.django_db
+def test_self_service_unlink_view_keeps_second_provider(client):
+    user = User.objects.create_user(
+        username="unlink-view",
+        display_name="Родитель",
+    )
+    yandex = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="unlink-view-yandex",
+    )
+    vk = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="unlink-view-vk",
+    )
+    client.force_login(user)
+
+    response = client.post(
+        reverse(
+            "external_auth:unlink",
+            kwargs={"identity_id": vk.id},
+        )
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("external_auth:identities")
+    assert ExternalIdentity.objects.filter(pk=vk.id).exists() is False
+    assert ExternalIdentity.objects.filter(pk=yandex.id).exists()
+
+
+@pytest.mark.django_db
+def test_privileged_user_cannot_start_external_link(client, settings):
+    settings.VKID_CLIENT_ID = "12345"
+    staff = User.objects.create_user(
+        username="staff-link",
+        password="test",
+        is_staff=True,
+    )
+    client.force_login(staff)
+
+    response = client.post(
+        reverse("external_auth:link", kwargs={"provider": "vk"})
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("external_auth:identities")
+    assert "external_auth_flow" not in client.session
