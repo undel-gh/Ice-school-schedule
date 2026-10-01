@@ -27,14 +27,16 @@ from .models import (
 User = get_user_model()
 
 
-def external_auth_allowed(user: User) -> bool:
-    if not user.is_active:
-        return False
+def external_auth_role_allowed(user: User) -> bool:
     if user.is_staff or user.is_superuser:
         return False
     if has_manager_operations_access(user):
         return False
     return True
+
+
+def external_auth_allowed(user: User) -> bool:
+    return user.is_active and external_auth_role_allowed(user)
 
 
 def _require_external_auth_allowed(user: User) -> None:
@@ -72,7 +74,7 @@ def resolve_invitation_token(
 ) -> AccountInvitation:
     checked_at = now or timezone.now()
     invitation = (
-        AccountInvitation.objects.select_related("student")
+        AccountInvitation.objects.select_related("student", "recovery_user")
         .filter(token_hash=hash_invitation_token(token))
         .first()
     )
@@ -104,6 +106,7 @@ def create_account_invitation(
     student_access_role: str = "",
     account_display_name: str = "",
     coach_display_name: str = "",
+    recovery_user_id: UUID | None = None,
     expires_at=None,
 ) -> CreatedInvitation:
     require_permission(
@@ -120,6 +123,7 @@ def create_account_invitation(
         raise ValidationError({"expires_at": "Invitation must expire in the future."})
 
     student = None
+    recovery_user = None
     cleaned_role = ""
     cleaned_coach_name = ""
     cleaned_account_name = account_display_name.strip()
@@ -142,7 +146,7 @@ def create_account_invitation(
         if not student.is_active:
             raise ValidationError({"student": "Cannot invite access to an inactive student."})
         cleaned_role = student_access_role
-    else:
+    elif kind == AccountInvitation.Kind.COACH:
         require_permission(
             actor,
             "accounts.add_coachprofile",
@@ -152,6 +156,28 @@ def create_account_invitation(
         if not cleaned_coach_name:
             raise ValidationError({"coach_display_name": "Coach display name is required."})
         cleaned_account_name = cleaned_coach_name
+    else:
+        require_permission(
+            actor,
+            "accounts.change_externalidentity",
+            "External identity change permission is required for account recovery.",
+        )
+        if recovery_user_id is None:
+            raise ValidationError({"recovery_user": "Recovery user is required."})
+        recovery_user = User.objects.select_for_update().get(pk=recovery_user_id)
+        if recovery_user.is_active:
+            raise ValidationError(
+                {"recovery_user": "Deactivate the user before issuing recovery."}
+            )
+        if not external_auth_role_allowed(recovery_user):
+            raise ValidationError(
+                {
+                    "recovery_user": (
+                        "Staff and manager accounts cannot use external recovery."
+                    )
+                }
+            )
+        cleaned_account_name = recovery_user.display_label
 
     token = secrets.token_urlsafe(32)
     invitation = AccountInvitation.objects.create(
@@ -160,6 +186,7 @@ def create_account_invitation(
         student=student,
         student_access_role=cleaned_role,
         coach_display_name=cleaned_coach_name,
+        recovery_user=recovery_user,
         account_display_name=cleaned_account_name,
         expires_at=expires_at,
         created_by=actor,
@@ -174,6 +201,11 @@ def create_account_invitation(
             "student_id": str(student.id) if student is not None else None,
             "student_access_role": invitation.student_access_role,
             "coach_display_name": invitation.coach_display_name,
+            "recovery_user_id": (
+                str(invitation.recovery_user_id)
+                if invitation.recovery_user_id
+                else None
+            ),
             "account_display_name": invitation.account_display_name,
             "expires_at": invitation.expires_at.isoformat(),
         },
@@ -328,6 +360,109 @@ def _accept_invitation_locked(
     )
 
 
+def _accept_recovery_invitation_locked(
+    *,
+    invitation: AccountInvitation,
+    provider: str,
+    provider_subject: str,
+    accepted_at,
+) -> User:
+    _validate_invitation_pending(invitation, now=accepted_at)
+    if invitation.kind != AccountInvitation.Kind.RECOVERY:
+        raise ValidationError({"invitation": "This is not a recovery invitation."})
+    if invitation.recovery_user_id is None:
+        raise ValidationError({"invitation": "Recovery target is missing."})
+
+    user = User.objects.select_for_update().get(pk=invitation.recovery_user_id)
+    if user.is_active:
+        raise ValidationError(
+            {"invitation": "Recovery target is already active."}
+        )
+    if not external_auth_role_allowed(user):
+        raise ValidationError(
+            {"invitation": "Staff and manager accounts cannot use external recovery."}
+        )
+
+    subject = str(provider_subject).strip()
+    if not subject:
+        raise ValidationError({"provider_subject": "Provider subject is required."})
+
+    conflict = (
+        ExternalIdentity.objects.select_for_update()
+        .filter(provider=provider, provider_subject=subject)
+        .first()
+    )
+    if conflict is not None and conflict.user_id != user.id:
+        raise ValidationError(
+            {"external_identity": "This external account is linked to another user."}
+        )
+
+    same_provider = (
+        ExternalIdentity.objects.select_for_update()
+        .filter(user=user, provider=provider)
+        .first()
+    )
+    if same_provider is not None and same_provider.provider_subject != subject:
+        raise ValidationError(
+            {"external_identity": "This provider is already linked to this user."}
+        )
+
+    created = False
+    if conflict is None:
+        identity = ExternalIdentity.objects.create(
+            user=user,
+            provider=provider,
+            provider_subject=subject,
+            last_used_at=accepted_at,
+        )
+        created = True
+    else:
+        identity = conflict
+        identity.last_used_at = accepted_at
+        identity.save(update_fields=["last_used_at"])
+
+    user.is_active = True
+    user.save(update_fields=["is_active"])
+    invitation.accepted_at = accepted_at
+    invitation.accepted_by = user
+    invitation.save(update_fields=["accepted_at", "accepted_by"])
+
+    if created:
+        record_event(
+            event_type="ExternalIdentityLinked",
+            aggregate_type="ExternalIdentity",
+            aggregate_id=identity.id,
+            actor=user,
+            payload={
+                "provider": provider,
+                "user_id": str(user.id),
+                "source": "account_recovery",
+            },
+        )
+    record_event(
+        event_type="AccountRecovered",
+        aggregate_type="User",
+        aggregate_id=user.id,
+        actor=user,
+        payload={
+            "provider": provider,
+            "invitation_id": str(invitation.id),
+        },
+    )
+    record_event(
+        event_type="AccountInvitationAccepted",
+        aggregate_type="AccountInvitation",
+        aggregate_id=invitation.id,
+        actor=user,
+        payload={
+            "kind": invitation.kind,
+            "target_type": "User",
+            "target_id": str(user.id),
+        },
+    )
+    return user
+
+
 def _lock_external_identity(
     *,
     provider: str,
@@ -406,6 +541,14 @@ def authenticate_external_identity(
         pk=invitation_id
     )
     _validate_invitation_pending(invitation, now=authenticated_at)
+
+    if invitation.kind == AccountInvitation.Kind.RECOVERY:
+        return _accept_recovery_invitation_locked(
+            invitation=invitation,
+            provider=provider,
+            provider_subject=subject,
+            accepted_at=authenticated_at,
+        )
 
     locked = _lock_external_identity(
         provider=provider,
@@ -558,6 +701,10 @@ def accept_account_invitation_for_existing_user(
         pk=invitation_id
     )
     _validate_invitation_pending(invitation, now=accepted_at)
+    if invitation.kind == AccountInvitation.Kind.RECOVERY:
+        raise ValidationError(
+            {"invitation": "Recovery invitations must be accepted while signed out."}
+        )
 
     locked_user = User.objects.select_for_update().get(pk=user.id)
     _require_external_auth_allowed(locked_user)
@@ -623,12 +770,16 @@ def unlink_external_identity(
         has_alternative = ExternalIdentity.objects.filter(
             user=target_user
         ).exclude(pk=identity.id).exists()
-        if not has_alternative and not target_user.has_usable_password():
+        if (
+            not has_alternative
+            and not target_user.has_usable_password()
+            and target_user.is_active
+        ):
             raise ValidationError(
                 {
                     "external_identity": (
-                        "This is the user's last login method. Link a replacement "
-                        "provider or deactivate the account before removing it."
+                        "Deactivate the user before removing the last external "
+                        "login provider."
                     )
                 }
             )
