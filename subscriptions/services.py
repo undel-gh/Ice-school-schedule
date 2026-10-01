@@ -3233,6 +3233,7 @@ def confirm_group_place_hold_fee(
             starts_on=hold.period_from,
             ends_on=hold.period_until,
             actor=actor,
+            at=confirmed_at,
         )
         hold.seat_reservation = reservation
     hold.status = GroupPlaceHold.Status.ACTIVE
