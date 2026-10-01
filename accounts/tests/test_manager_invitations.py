@@ -31,6 +31,7 @@ def test_manager_creates_student_invitation_link(client, manager):
             "kind": AccountInvitation.Kind.STUDENT_ACCESS,
             "student": str(student.id),
             "student_access_role": "guardian",
+            "account_display_name": "Мама Маши",
             "coach_display_name": "",
             "expires_in_hours": "24",
         },
@@ -42,6 +43,7 @@ def test_manager_creates_student_invitation_link(client, manager):
     invitation = AccountInvitation.objects.get()
     assert invitation.student_id == student.id
     assert invitation.student_access_role == "guardian"
+    assert invitation.account_display_name == "Мама Маши"
     assert len(invitation.token_hash) == 64
     assert invitation.token_hash not in body
     assert AuditEvent.objects.filter(
@@ -60,6 +62,7 @@ def test_manager_creates_coach_invitation(client, manager):
             "kind": AccountInvitation.Kind.COACH,
             "student": "",
             "student_access_role": "",
+            "account_display_name": "",
             "coach_display_name": "Анна Тренер",
             "expires_in_hours": "168",
         },
@@ -81,6 +84,7 @@ def test_manager_can_revoke_unused_invitation(client, manager):
             "kind": AccountInvitation.Kind.COACH,
             "student": "",
             "student_access_role": "",
+            "account_display_name": "",
             "coach_display_name": "Тренер",
             "expires_in_hours": "24",
         },
@@ -110,6 +114,7 @@ def test_manager_invitation_form_rejects_incomplete_target(client, manager):
             "kind": AccountInvitation.Kind.STUDENT_ACCESS,
             "student": "",
             "student_access_role": "",
+            "account_display_name": "",
             "coach_display_name": "",
             "expires_in_hours": "24",
         },
@@ -132,6 +137,7 @@ def test_manager_invitation_revoke_rejects_get(client, manager):
             "kind": AccountInvitation.Kind.STUDENT_ACCESS,
             "student": str(student.id),
             "student_access_role": "self",
+            "account_display_name": "Ученик",
             "coach_display_name": "",
             "expires_in_hours": "24",
         },
