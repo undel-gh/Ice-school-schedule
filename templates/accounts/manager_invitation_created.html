@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Приглашение создано{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Приглашение создано</h1>
+  <p class="page-header__meta">Эта ссылка показывается только сейчас. В базе хранится только её хеш.</p>
+</header>
+<article class="report-card">
+  <p><strong>Скопируйте ссылку:</strong></p>
+  <p><code>{{ invitation_url }}</code></p>
+  <p>Действует до {{ invitation.expires_at|date:"d.m.Y H:i" }}.</p>
+  <div class="toolbar">
+    <a class="btn btn-secondary" href="{% url 'accounts_manager:invitations' %}">К списку приглашений</a>
+  </div>
+</article>
+{% endblock %}
