@@ -3425,9 +3425,16 @@ materializes the GroupSeatReservation. The TrainingGroup row is the
 serialization lock for capacity-changing writers.
 
 During the reservation interval, `publish_lesson(...)` excludes that student
-from membership-derived roster entries. The underlying membership remains
-intact. After the reservation interval the membership automatically becomes
-roster-eligible again without rewriting historical membership intervals.
+from membership-derived roster entries. If the reservation is materialized
+after future lessons were already published, active GROUP-derived roster rows
+inside the interval are deactivated immediately. Explicit ENROLLMENT/MANUAL
+participation is preserved. Cancelling the reservation restores eligible
+GROUP-derived roster rows for still-open/confirmed lessons when no other
+reservation covers the date.
+
+The underlying membership remains intact. After the reservation interval the
+membership automatically becomes roster-eligible again without rewriting
+historical membership intervals.
 
 Cancelling the hold cancels its reservation. Expiry keeps the reservation as
 history; its date interval is no longer active.
