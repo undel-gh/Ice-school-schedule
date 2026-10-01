@@ -151,3 +151,33 @@ def test_vk_code_exchange_rejects_missing_token_state(settings, monkeypatch):
         )
 
     assert "state validation failed" in exc.value.message_dict["provider"][0]
+
+
+
+@pytest.mark.django_db
+def test_yandex_code_exchange_requires_psuid(settings, monkeypatch):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    settings.YANDEX_OAUTH_CLIENT_SECRET = ""
+    responses = iter(
+        [
+            {"access_token": "ya-token"},
+            {"id": "global-id"},
+        ]
+    )
+
+    monkeypatch.setattr(
+        external_auth,
+        "_request_json",
+        lambda **kwargs: next(responses),
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        external_auth.exchange_authorization_code(
+            provider=ExternalIdentity.Provider.YANDEX,
+            code="code",
+            redirect_uri="https://school.example/callback",
+            state="state",
+            code_verifier="verifier",
+        )
+
+    assert "psuid" in exc.value.message_dict["provider"][0]
