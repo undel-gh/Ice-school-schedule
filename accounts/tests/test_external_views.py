@@ -240,3 +240,147 @@ def test_identity_link_start_rejects_get(client, settings):
     )
 
     assert response.status_code == 405
+
+
+
+@pytest.mark.django_db
+def test_authenticated_invitation_with_new_provider_stays_on_same_user(
+    client,
+    manager,
+    settings,
+    monkeypatch,
+):
+    settings.VKID_CLIENT_ID = "12345"
+    user = User.objects.create_user(username="existing-parent", password="test")
+    ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.YANDEX,
+        provider_subject="parent-yandex",
+    )
+    first_student = Student.objects.create(display_name="Первый ребёнок")
+    second_student = Student.objects.create(display_name="Второй ребёнок")
+    StudentAccess.objects.create(
+        user=user,
+        student=first_student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    )
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=second_student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+    )
+    client.force_login(user)
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "vk"},
+        )
+    )
+    assert begin.status_code == 302
+    flow = client.session["external_auth_flow"]
+    assert flow["bound_user_id"] == str(user.id)
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.VK,
+            subject="parent-vk",
+        ),
+    )
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "vk"}),
+        {
+            "code": "code",
+            "state": flow["state"],
+            "device_id": "device",
+        },
+    )
+
+    assert callback.status_code == 302
+    assert User.objects.filter(id=user.id).exists()
+    assert User.objects.count() == 2  # parent + manager; no duplicate parent
+    assert ExternalIdentity.objects.filter(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="parent-vk",
+    ).exists()
+    assert StudentAccess.objects.filter(
+        user=user,
+        student=second_student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    ).exists()
+    assert str(client.session["_auth_user_id"]) == str(user.id)
+
+
+@pytest.mark.django_db
+def test_authenticated_invitation_rejects_provider_linked_to_other_user(
+    client,
+    manager,
+    settings,
+    monkeypatch,
+):
+    settings.VKID_CLIENT_ID = "12345"
+    signed_in = User.objects.create_user(username="signed-in", password="test")
+    other = User.objects.create_user(username="other")
+    ExternalIdentity.objects.create(
+        user=other,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="other-vk",
+    )
+    student = Student.objects.create(display_name="Ребёнок")
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.STUDENT_ACCESS,
+        actor=manager,
+        student_id=student.id,
+        student_access_role=StudentAccess.Role.GUARDIAN,
+    )
+    client.force_login(signed_in)
+    client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "vk"},
+        )
+    )
+    flow = client.session["external_auth_flow"]
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.VK,
+            subject="other-vk",
+        ),
+    )
+
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "vk"}),
+        {
+            "code": "code",
+            "state": flow["state"],
+            "device_id": "device",
+        },
+    )
+
+    assert callback.status_code == 302
+    created.invitation.refresh_from_db()
+    assert created.invitation.accepted_at is None
+    assert StudentAccess.objects.filter(
+        user=signed_in,
+        student=student,
+    ).exists() is False
