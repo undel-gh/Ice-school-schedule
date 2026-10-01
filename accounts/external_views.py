@@ -11,6 +11,7 @@ from django.core.exceptions import ValidationError
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from core.presentation import validation_message
 
@@ -80,6 +81,7 @@ def external_login(request, *, provider: str):
 
 
 @login_required
+@require_POST
 def external_link(request, *, provider: str):
     try:
         return _start_flow(request, provider=provider, mode="link")
