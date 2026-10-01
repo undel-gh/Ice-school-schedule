@@ -3589,6 +3589,19 @@ ExternalIdentity has both uniqueness rules:
 This prevents one external account from authenticating two Users and prevents
 one User from accumulating multiple subjects from the same provider.
 
+When an authenticated User accepts another invitation with a provider that is
+not linked yet, provider linking and invitation acceptance are one atomic
+operation. Failure of the invitation must roll back the new ExternalIdentity.
+
+Identity operations use the following lock order:
+
+```text
+invitation acceptance: AccountInvitation -> User -> ExternalIdentity -> target role
+plain login/link:      User -> ExternalIdentity
+```
+
+Do not introduce a service that locks ExternalIdentity before User.
+
 The OAuth adapter in `accounts.external_auth` performs Authorization Code +
 PKCE. Tokens are transient callback data and are not domain entities or
 database fields.
