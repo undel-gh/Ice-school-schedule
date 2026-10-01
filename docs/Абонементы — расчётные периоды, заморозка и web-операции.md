@@ -304,13 +304,19 @@ return_on = period_until + 1 day
 
 ```text
 occupied students =
-    active GroupMembership
+    GroupMembership активных Student
     UNION
     non-cancelled GroupSeatReservation
 ```
 
 Union выполняется по Student. Если в дату возврата одновременно существуют
 reservation и новый membership одного ученика, они занимают **одно** место.
+
+Membership деактивированного Student не занимает capacity: деактивация ученика
+сохраняет исторические membership как записи, но снимает их текущую/будущую
+seat-семантику. Явная оплаченная GroupSeatReservation остаётся отдельным
+обязательством школы и продолжает занимать место до cancel/expiry даже для
+inactive Student.
 
 Все операции, способные изменить occupancy, сериализуются блокировкой строки
 `TrainingGroup`. Это относится к обычному admission/update membership,
@@ -321,6 +327,15 @@ reservation и новый membership одного ученика, они зан�
 
 Создать hold можно только для ученика, у которого membership той же группы
 активен на `period_from` и начался до даты hold.
+
+Подтвердить оплату можно только пока `period_from > school_today`. Hold нельзя
+активировать задним числом и нельзя начинать в текущий календарный день:
+дневная гранулярность не позволяет безопасно отделить уже прошедшие занятия от
+будущих в том же дне.
+
+Независимо от этой проверки roster entry занятия, для которого уже существует
+Attendance, никогда не деактивируется hold-механизмом. Attendance и возможность
+последующей коррекции тренером имеют приоритет над изменением membership.
 
 При `confirm_group_place_hold_fee(...)` в одной транзакции:
 
@@ -335,6 +350,7 @@ GroupSeatReservation
 GroupPlaceHold
     PENDING_PAYMENT -> ACTIVE
     suspended_membership = старый membership
+    suspended_membership_ends_on_snapshot = исходный ends_on
     seat_reservation = reservation
 ```
 
@@ -352,10 +368,12 @@ Lesson даже во время hold.
 пересекающий собственную действующую reservation ученика. Возврат должен идти
 через `restore_group_place_hold(...)`.
 
-Restore создаёт новый открытый membership:
+Restore создаёт новый membership:
 
 ```text
 new GroupMembership.starts_on = return_on
+new GroupMembership.ends_on   = исходный ends_on
+                                или NULL для исходно бессрочного membership
 
 GroupPlaceHold
     ACTIVE -> RESTORED
@@ -367,6 +385,12 @@ Capacity-check допускает этот переход даже когда г
 reservation уже принадлежит тому же Student, поэтому reservation + membership
 дедуплицируются в одно занятое место. При этом другой ученик получить это место
 не может.
+
+Если исходный membership имел конечный `ends_on`, эта дата сохраняется в
+`suspended_membership_ends_on_snapshot` и переносится в восстановленный
+membership. Restore не превращает сезонное/срочное членство в бессрочное. Если
+исходный срок закончился раньше `return_on`, автоматический restore
+отклоняется.
 
 Если Lessons на дату возврата и позже уже опубликованы, GROUP-derived roster
 для нового membership материализуется/восстанавливается сразу. Уроки периода
