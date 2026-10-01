@@ -496,6 +496,8 @@ def test_manager_can_unlink_compromised_provider_if_login_remains(manager):
         provider=ExternalIdentity.Provider.VK,
         provider_subject="stolen-vk",
     )
+    previous_session_hash = user.get_session_auth_hash()
+    previous_password = user.password
 
     unlink_external_identity(
         identity_id=vk.id,
@@ -505,6 +507,10 @@ def test_manager_can_unlink_compromised_provider_if_login_remains(manager):
 
     assert ExternalIdentity.objects.filter(pk=vk.id).exists() is False
     assert ExternalIdentity.objects.filter(pk=yandex.id).exists()
+    user.refresh_from_db()
+    assert user.has_usable_password() is False
+    assert user.password != previous_password
+    assert user.get_session_auth_hash() != previous_session_hash
 
 
 @pytest.mark.django_db
