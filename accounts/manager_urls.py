@@ -5,6 +5,7 @@ from . import manager_views
 app_name = "accounts_manager"
 
 urlpatterns = [
+    path("external-identities/<uuid:identity_id>/unlink/", manager_views.manager_external_identity_unlink, name="external_identity_unlink"),
     path("invitations/", manager_views.manager_account_invitations, name="invitations"),
     path("invitations/new/", manager_views.manager_account_invitation_create, name="invitation_create"),
     path("invitations/<uuid:invitation_id>/revoke/", manager_views.manager_account_invitation_revoke, name="invitation_revoke"),
