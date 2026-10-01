@@ -36,6 +36,7 @@ def group_occupied_student_ids(
     """
     memberships = GroupMembership.objects.filter(
         group_id=group_id,
+        student__is_active=True,
         starts_on__lte=on_date,
     ).filter(Q(ends_on__isnull=True) | Q(ends_on__gte=on_date))
     if exclude_membership_id is not None:
