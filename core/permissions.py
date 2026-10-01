@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.core.exceptions import PermissionDenied
+from django.db.models import Q
 
 
 MANAGER_OPERATION_PERMISSIONS = (
@@ -57,6 +58,36 @@ MANAGER_OPERATION_PERMISSIONS = (
     "attendance.change_absencejustification",
     "audit.view_auditevent",
 )
+
+
+def has_manager_operations_assignment(actor) -> bool:
+    """
+    Return whether manager-operation permissions are assigned to the User,
+    independent of is_active. Identity recovery uses this to ensure that
+    deactivating a privileged account never turns it into an external-auth
+    eligible account merely because Django permission backends stop reporting
+    permissions for inactive users.
+    """
+    if actor is None:
+        return False
+    if getattr(actor, "is_superuser", False):
+        return True
+
+    permission_query = Q()
+    for permission in MANAGER_OPERATION_PERMISSIONS:
+        app_label, codename = permission.split(".", 1)
+        permission_query |= Q(
+            content_type__app_label=app_label,
+            codename=codename,
+        )
+
+    if not permission_query:
+        return False
+    if actor.user_permissions.filter(permission_query).exists():
+        return True
+    return actor.groups.filter(permissions__in=actor.user_permissions.model.objects.filter(
+        permission_query
+    )).exists()
 
 
 def has_manager_operations_access(actor) -> bool:
