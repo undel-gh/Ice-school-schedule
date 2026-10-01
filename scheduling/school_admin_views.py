@@ -65,6 +65,7 @@ def manager_group_create(request: HttpRequest) -> HttpResponse:
                 default_minimum_attendees=form.cleaned_data[
                     "default_minimum_attendees"
                 ],
+                capacity=form.cleaned_data["capacity"],
                 is_active=form.cleaned_data["is_active"],
                 actor=request.user,
             )
@@ -120,6 +121,7 @@ def manager_group_edit(
             "code": group.code,
             "name": group.name,
             "default_minimum_attendees": group.default_minimum_attendees,
+            "capacity": group.capacity,
             "is_active": group.is_active,
         },
     )
@@ -132,6 +134,7 @@ def manager_group_edit(
                 default_minimum_attendees=form.cleaned_data[
                     "default_minimum_attendees"
                 ],
+                capacity=form.cleaned_data["capacity"],
                 is_active=form.cleaned_data["is_active"],
                 actor=request.user,
             )
