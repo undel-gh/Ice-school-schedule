@@ -181,6 +181,152 @@ def _ensure_capacity_not_below_existing_claims(
             )
 
 
+def _school_date_datetime_bounds(
+    *,
+    starts_on: date,
+    ends_on: date,
+) -> tuple[datetime, datetime]:
+    start = datetime.combine(starts_on, datetime.min.time())
+    end = datetime.combine(ends_on + timedelta(days=1), datetime.min.time())
+    if settings.USE_TZ:
+        start = make_school_aware(start)
+        end = make_school_aware(end)
+    return start, end
+
+
+def _suppress_group_rosters_for_reservation(
+    *,
+    reservation: GroupSeatReservation,
+    actor: User | None,
+    at: datetime,
+) -> int:
+    start, end = _school_date_datetime_bounds(
+        starts_on=reservation.starts_on,
+        ends_on=reservation.ends_on,
+    )
+    updated = LessonRosterEntry.objects.filter(
+        student_id=reservation.student_id,
+        lesson__group_id=reservation.group_id,
+        lesson__starts_at__gte=start,
+        lesson__starts_at__lt=end,
+        lesson__status__in=[
+            Lesson.Status.RSVP_OPEN,
+            Lesson.Status.CONFIRMED,
+        ],
+        source=LessonRosterEntry.Source.GROUP,
+        is_active=True,
+    ).update(
+        is_active=False,
+        deactivated_at=at,
+        deactivated_by=actor,
+    )
+    if updated:
+        record_event(
+            event_type="GroupSeatReservationRosterSuppressed",
+            aggregate_type="GroupSeatReservation",
+            aggregate_id=reservation.id,
+            actor=actor,
+            payload={"roster_entries": updated},
+        )
+    return updated
+
+
+def _restore_group_rosters_after_reservation(
+    *,
+    reservation: GroupSeatReservation,
+    actor: User | None,
+) -> int:
+    start, end = _school_date_datetime_bounds(
+        starts_on=reservation.starts_on,
+        ends_on=reservation.ends_on,
+    )
+    lessons = (
+        Lesson.objects.select_for_update()
+        .filter(
+            group_id=reservation.group_id,
+            starts_at__gte=start,
+            starts_at__lt=end,
+            status__in=[
+                Lesson.Status.RSVP_OPEN,
+                Lesson.Status.CONFIRMED,
+            ],
+        )
+        .order_by("starts_at", "id")
+    )
+
+    restored = 0
+    for lesson in lessons:
+        lesson_date = get_school_date(lesson.starts_at)
+        if GroupSeatReservation.objects.filter(
+            group_id=reservation.group_id,
+            student_id=reservation.student_id,
+            starts_on__lte=lesson_date,
+            ends_on__gte=lesson_date,
+            cancelled_at__isnull=True,
+        ).exists():
+            continue
+
+        membership = (
+            GroupMembership.objects.filter(
+                group_id=reservation.group_id,
+                student_id=reservation.student_id,
+                student__is_active=True,
+                starts_on__lte=lesson_date,
+            )
+            .filter(Q(ends_on__isnull=True) | Q(ends_on__gte=lesson_date))
+            .order_by("-starts_on", "id")
+            .first()
+        )
+        if membership is None:
+            continue
+
+        roster = (
+            LessonRosterEntry.objects.select_for_update()
+            .filter(
+                lesson=lesson,
+                student_id=reservation.student_id,
+            )
+            .first()
+        )
+        if roster is None:
+            LessonRosterEntry.objects.create(
+                lesson=lesson,
+                student_id=reservation.student_id,
+                source=LessonRosterEntry.Source.GROUP,
+                group_membership=membership,
+                added_by=actor,
+                is_active=True,
+            )
+            restored += 1
+            continue
+        if roster.is_active or roster.source != LessonRosterEntry.Source.GROUP:
+            continue
+
+        roster.group_membership = membership
+        roster.is_active = True
+        roster.deactivated_at = None
+        roster.deactivated_by = None
+        roster.save(
+            update_fields=[
+                "group_membership",
+                "is_active",
+                "deactivated_at",
+                "deactivated_by",
+            ]
+        )
+        restored += 1
+
+    if restored:
+        record_event(
+            event_type="GroupSeatReservationRosterRestored",
+            aggregate_type="GroupSeatReservation",
+            aggregate_id=reservation.id,
+            actor=actor,
+            payload={"roster_entries": restored},
+        )
+    return restored
+
+
 @transaction.atomic
 def create_group_seat_reservation(
     *,
@@ -189,6 +335,7 @@ def create_group_seat_reservation(
     starts_on: date,
     ends_on: date,
     actor: User | None,
+    at: datetime | None = None,
 ) -> GroupSeatReservation:
     if ends_on < starts_on:
         raise ValidationError(
@@ -208,6 +355,11 @@ def create_group_seat_reservation(
         starts_on=starts_on,
         ends_on=ends_on,
         created_by=actor,
+    )
+    _suppress_group_rosters_for_reservation(
+        reservation=reservation,
+        actor=actor,
+        at=at or timezone.now(),
     )
     record_event(
         event_type="GroupSeatReserved",
@@ -240,6 +392,10 @@ def cancel_group_seat_reservation(
     reservation.cancelled_at = at
     reservation.cancelled_by = actor
     reservation.save(update_fields=["cancelled_at", "cancelled_by"])
+    _restore_group_rosters_after_reservation(
+        reservation=reservation,
+        actor=actor,
+    )
     record_event(
         event_type="GroupSeatReservationCancelled",
         aggregate_type="GroupSeatReservation",
