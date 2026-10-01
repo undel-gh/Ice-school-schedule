@@ -13,6 +13,7 @@ MANAGER_OPERATION_PERMISSIONS = (
     "accounts.view_coachprofile",
     "accounts.add_coachprofile",
     "accounts.change_coachprofile",
+    "accounts.change_externalidentity",
     "accounts.view_accountinvitation",
     "accounts.add_accountinvitation",
     "accounts.change_accountinvitation",
