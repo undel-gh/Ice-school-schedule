@@ -191,9 +191,16 @@ def exchange_authorization_code(
             method="GET",
             headers={"Authorization": f"OAuth {access_token}"},
         )
-        subject = profile.get("psuid") or profile.get("id")
+        subject = profile.get("psuid")
         if not subject:
-            raise ValidationError({"provider": "Yandex user identifier is missing."})
+            raise ValidationError(
+                {
+                    "provider": (
+                        "Yandex did not return psuid. A stable pairwise "
+                        "identifier is required for login."
+                    )
+                }
+            )
         return ExternalProfile(
             provider=ExternalIdentity.Provider.YANDEX,
             subject=str(subject),
