@@ -44,6 +44,7 @@ class Migration(migrations.Migration):
                         choices=[
                             ("student_access", "Student access"),
                             ("coach", "Coach"),
+                            ("recovery", "Account recovery"),
                         ],
                         max_length=24,
                     ),
@@ -97,6 +98,16 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
+                    "recovery_user",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="recovery_account_invitations",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
                     "student",
                     models.ForeignKey(
                         blank=True,
@@ -123,14 +134,23 @@ class Migration(migrations.Migration):
                                     student__isnull=False,
                                     student_access_role__in=["self", "guardian"],
                                     coach_display_name="",
+                                    recovery_user__isnull=True,
                                 )
                                 | (
                                     models.Q(
                                         kind="coach",
                                         student__isnull=True,
                                         student_access_role="",
+                                        recovery_user__isnull=True,
                                     )
                                     & ~models.Q(coach_display_name="")
+                                )
+                                | models.Q(
+                                    kind="recovery",
+                                    student__isnull=True,
+                                    student_access_role="",
+                                    coach_display_name="",
+                                    recovery_user__isnull=False,
                                 )
                             )
                             & ~models.Q(account_display_name="")
