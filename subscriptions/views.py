@@ -36,6 +36,7 @@ from subscriptions.services import (
     cancel_subscription,
     confirm_group_place_hold_fee,
     create_group_place_hold,
+    restore_group_place_hold,
     issue_subscription_for_period,
     resolve_subscription_period_window,
 )
@@ -184,6 +185,9 @@ def manager_place_holds_view(
             "student",
             "group",
             "period_scheme",
+            "seat_reservation",
+            "suspended_membership",
+            "restored_membership",
         )
         .order_by("-period_from", "student__display_name", "id")
     )
@@ -282,6 +286,34 @@ def manager_place_hold_confirm_view(
         messages.error(request, " ".join(exc.messages))
     else:
         messages.success(request, "Оплата сохранения места подтверждена.")
+    return redirect("subscriptions:manager_place_holds")
+
+
+@login_required
+@require_POST
+def manager_place_hold_restore_view(
+    request: HttpRequest,
+    *,
+    hold_id: UUID,
+) -> HttpResponse:
+    try:
+        hold = restore_group_place_hold(
+            hold_id=hold_id,
+            actor=request.user,
+            now=timezone.now(),
+        )
+    except GroupPlaceHold.DoesNotExist as exc:
+        raise Http404("Place hold not found.") from exc
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+    else:
+        messages.success(
+            request,
+            (
+                "Возврат в группу запланирован с "
+                f"{hold.restored_membership.starts_on:%d.%m.%Y}."
+            ),
+        )
     return redirect("subscriptions:manager_place_holds")
 
 
