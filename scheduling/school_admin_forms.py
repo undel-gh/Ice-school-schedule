@@ -24,6 +24,12 @@ class TrainingGroupForm(forms.Form):
         label="Минимум участников по умолчанию",
         min_value=1,
     )
+    capacity = forms.IntegerField(
+        label="Вместимость",
+        min_value=1,
+        required=False,
+        help_text="Пусто — вместимость не ограничивается системой.",
+    )
     is_active = forms.BooleanField(label="Активна", required=False, initial=True)
 
 
