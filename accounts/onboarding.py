@@ -293,6 +293,35 @@ def _accept_invitation_locked(
     )
 
 
+def _lock_external_identity(
+    *,
+    provider: str,
+    provider_subject: str,
+) -> tuple[ExternalIdentity, User] | None:
+    """
+    Resolve an existing identity using the global auth lock order:
+    User -> ExternalIdentity.
+    """
+    reference = (
+        ExternalIdentity.objects.filter(
+            provider=provider,
+            provider_subject=provider_subject,
+        )
+        .values("id", "user_id")
+        .first()
+    )
+    if reference is None:
+        return None
+
+    user = User.objects.select_for_update().get(pk=reference["user_id"])
+    identity = ExternalIdentity.objects.select_for_update().get(
+        pk=reference["id"],
+        provider=provider,
+        provider_subject=provider_subject,
+    )
+    return identity, user
+
+
 @transaction.atomic
 def authenticate_external_identity(
     *,
@@ -308,54 +337,43 @@ def authenticate_external_identity(
         raise ValidationError({"provider_subject": "Provider subject is required."})
 
     authenticated_at = now or timezone.now()
-    identity = (
-        ExternalIdentity.objects.select_for_update()
-        .select_related("user")
-        .filter(provider=provider, provider_subject=subject)
-        .first()
-    )
 
-    if identity is not None:
-        user = User.objects.select_for_update().get(pk=identity.user_id)
+    if invitation_id is None:
+        locked = _lock_external_identity(
+            provider=provider,
+            provider_subject=subject,
+        )
+        if locked is None:
+            raise ValidationError(
+                {
+                    "external_identity": (
+                        "This external account is not linked to the school. "
+                        "Use an invitation link first."
+                    )
+                }
+            )
+        identity, user = locked
         if not user.is_active:
             raise ValidationError({"user": "This account is inactive."})
-        if invitation_id is not None:
-            invitation = AccountInvitation.objects.select_for_update().get(
-                pk=invitation_id
-            )
-            _accept_invitation_locked(
-                invitation=invitation,
-                user=user,
-                accepted_at=authenticated_at,
-            )
         identity.last_used_at = authenticated_at
         identity.save(update_fields=["last_used_at"])
         return user
 
-    if invitation_id is None:
-        raise ValidationError(
-            {
-                "external_identity": (
-                    "This external account is not linked to the school. "
-                    "Use an invitation link first."
-                )
-            }
-        )
-
-    invitation = AccountInvitation.objects.select_for_update().get(pk=invitation_id)
+    # Invitation acceptance always starts with the invitation lock. This keeps
+    # the cross-service order deterministic:
+    # AccountInvitation -> User -> ExternalIdentity -> target role.
+    invitation = AccountInvitation.objects.select_for_update().get(
+        pk=invitation_id
+    )
     _validate_invitation_pending(invitation, now=authenticated_at)
 
-    # Re-check after locking the invitation. Another invitation for the same
-    # provider subject may have completed between the first lookup and now.
-    identity = (
-        ExternalIdentity.objects.select_for_update()
-        .select_related("user")
-        .filter(provider=provider, provider_subject=subject)
-        .first()
+    locked = _lock_external_identity(
+        provider=provider,
+        provider_subject=subject,
     )
     created_identity = False
-    if identity is not None:
-        user = User.objects.select_for_update().get(pk=identity.user_id)
+    if locked is not None:
+        identity, user = locked
         if not user.is_active:
             raise ValidationError({"user": "This account is inactive."})
     else:
@@ -372,12 +390,13 @@ def authenticate_external_identity(
                 )
                 created_identity = True
         except IntegrityError:
-            identity = (
-                ExternalIdentity.objects.select_for_update()
-                .select_related("user")
-                .get(provider=provider, provider_subject=subject)
+            locked = _lock_external_identity(
+                provider=provider,
+                provider_subject=subject,
             )
-            user = User.objects.select_for_update().get(pk=identity.user_id)
+            if locked is None:
+                raise
+            identity, user = locked
             if not user.is_active:
                 raise ValidationError({"user": "This account is inactive."})
 
@@ -386,10 +405,7 @@ def authenticate_external_identity(
         user=user,
         accepted_at=authenticated_at,
     )
-    if not created_identity:
-        identity.last_used_at = authenticated_at
-        identity.save(update_fields=["last_used_at"])
-    else:
+    if created_identity:
         record_event(
             event_type="ExternalIdentityLinked",
             aggregate_type="ExternalIdentity",
@@ -401,6 +417,9 @@ def authenticate_external_identity(
                 "source": "invitation",
             },
         )
+    else:
+        identity.last_used_at = authenticated_at
+        identity.save(update_fields=["last_used_at"])
     return user
 
 
@@ -488,11 +507,17 @@ def accept_account_invitation_for_existing_user(
     now=None,
 ) -> User:
     """
-    Link/authenticate a provider and consume an invitation for the signed-in User
-    as one transaction. A failed invitation acceptance must not leave a partial
-    provider link behind.
+    Link/authenticate a provider and consume an invitation for the signed-in
+    User as one transaction.
+
+    Lock order is AccountInvitation -> User -> ExternalIdentity -> target role.
     """
     accepted_at = now or timezone.now()
+    invitation = AccountInvitation.objects.select_for_update().get(
+        pk=invitation_id
+    )
+    _validate_invitation_pending(invitation, now=accepted_at)
+
     locked_user = User.objects.select_for_update().get(pk=user.id)
     if not locked_user.is_active:
         raise ValidationError({"user": "This account is inactive."})
@@ -503,14 +528,10 @@ def accept_account_invitation_for_existing_user(
         provider_subject=provider_subject,
         now=accepted_at,
     )
-    authenticated = authenticate_external_identity(
-        provider=provider,
-        provider_subject=provider_subject,
-        invitation_id=invitation_id,
-        now=accepted_at,
+    _accept_invitation_locked(
+        invitation=invitation,
+        user=locked_user,
+        accepted_at=accepted_at,
     )
-    if authenticated.id != locked_user.id:
-        raise ValidationError(
-            {"external_identity": "External identity resolved to another user."}
-        )
     return locked_user
+
