@@ -6,6 +6,7 @@ from core.admin import ReadOnlyAdmin
 
 from .models import (
     GroupMembership,
+    GroupSeatReservation,
     Lesson,
     LessonEnrollment,
     LessonResponse,
@@ -88,4 +89,17 @@ class LessonResponseAdmin(ReadOnlyAdmin):
 @admin.register(GroupMembership)
 class GroupMembershipAdmin(ReadOnlyAdmin):
     list_display = ("student", "group", "starts_on", "ends_on", "created_at")
+    list_filter = ("group",)
+
+
+@admin.register(GroupSeatReservation)
+class GroupSeatReservationAdmin(ReadOnlyAdmin):
+    list_display = (
+        "student",
+        "group",
+        "starts_on",
+        "ends_on",
+        "cancelled_at",
+        "created_at",
+    )
     list_filter = ("group",)
