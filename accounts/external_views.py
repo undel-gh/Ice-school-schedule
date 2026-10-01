@@ -196,16 +196,28 @@ def external_callback(request, *, provider: str):
         messages.error(request, "Провайдер не вернул код авторизации.")
         return redirect("login")
 
+    mode = flow.get("mode")
+    redirect_uri = flow.get("redirect_uri")
+    code_verifier = flow.get("code_verifier")
+    if (
+        mode not in {"login", "link", "invitation"}
+        or not isinstance(redirect_uri, str)
+        or not redirect_uri
+        or not isinstance(code_verifier, str)
+        or not code_verifier
+    ):
+        messages.error(request, "Сессия внешнего входа повреждена.")
+        return redirect("login")
+
     try:
         profile = exchange_authorization_code(
             provider=provider,
             code=code,
-            redirect_uri=str(flow["redirect_uri"]),
+            redirect_uri=redirect_uri,
             state=expected_state,
-            code_verifier=str(flow["code_verifier"]),
+            code_verifier=code_verifier,
             device_id=request.GET.get("device_id"),
         )
-        mode = flow.get("mode")
         if mode == "link":
             if not request.user.is_authenticated:
                 raise ValidationError({"user": "Sign in before linking a provider."})
