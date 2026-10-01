@@ -376,10 +376,17 @@ def update_group_membership(
             {"ends_on": "Membership end date cannot precede start date."}
         )
 
+    membership_ref = GroupMembership.objects.only(
+        "id",
+        "group_id",
+        "student_id",
+    ).get(pk=membership_id)
+    group = TrainingGroup.objects.select_for_update().get(
+        pk=membership_ref.group_id
+    )
     membership = GroupMembership.objects.select_for_update().get(
         pk=membership_id
     )
-    group = TrainingGroup.objects.select_for_update().get(pk=membership.group_id)
     Student.objects.select_for_update().get(pk=membership.student_id)
     others = list(
         GroupMembership.objects.select_for_update()
