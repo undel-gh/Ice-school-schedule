@@ -3192,6 +3192,18 @@ def confirm_group_place_hold_fee(
             {"hold": "Only a pending place hold can confirm payment."}
         )
 
+    confirmed_at = now or timezone.now()
+    today = school_date(confirmed_at)
+    if hold.period_from <= today:
+        raise ValidationError(
+            {
+                "period": (
+                    "Place hold payment must be confirmed before the hold "
+                    "start date."
+                )
+            }
+        )
+
     group = TrainingGroup.objects.select_for_update().get(pk=hold.group_id)
     student = Student.objects.select_for_update().get(pk=hold.student_id)
     if not student.is_active:
@@ -3226,7 +3238,6 @@ def confirm_group_place_hold_fee(
             }
         )
 
-    confirmed_at = now or timezone.now()
     if hold.seat_reservation_id is None:
         suspended_membership, reservation = (
             suspend_group_membership_with_seat_reservation(
