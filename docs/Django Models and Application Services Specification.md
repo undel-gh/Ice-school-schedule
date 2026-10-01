@@ -3620,8 +3620,25 @@ provider, or accept an invitation in their current session. They must use
 local password authentication.
 
 `unlink_external_identity()` records `ExternalIdentityUnlinked`. Self-service
-unlink requires another external provider to remain. Manager unlink requires
-`accounts.change_externalidentity` and may not strand an external-only User
-without any login method. Manager unlink of an external-only User also rotates
-the unusable password hash so existing Django sessions are invalidated without
-creating a usable local password.
+unlink requires another external provider to remain. For an active
+external-only User, manager unlink still refuses to remove the final provider.
+Once the User is inactive, manager unlink may remove that final provider.
+
+Recovery is modelled explicitly as `AccountInvitation.Kind.RECOVERY` with a
+`recovery_user` FK. Recovery invitation creation requires:
+
+```text
+target User is inactive
+target User is not staff/superuser/manager
+target User has no remaining ExternalIdentity
+actor has accounts.change_externalidentity
+```
+
+Acceptance must happen while signed out. The OAuth callback creates the new
+ExternalIdentity for `recovery_user`, marks that same User active, consumes
+the invitation and records `AccountRecovered`. It does not create or change
+StudentAccess/CoachProfile rows.
+
+Manager unlink of an external-only User also rotates the unusable password
+hash so existing Django sessions are invalidated without creating a usable
+local password.
