@@ -3435,13 +3435,18 @@ GroupSeatReservation
 One occupied place is a distinct Student present in the union of:
 
 ```text
-active GroupMembership
+GroupMembership whose Student is active
 UNION
 non-cancelled GroupSeatReservation
 ```
 
 A reservation and a membership for the same Student therefore consume one
 place, not two. `TrainingGroup.capacity = NULL` means no hard cap is enforced.
+
+An inactive Student's membership is retained for history but does not consume
+group capacity. A non-cancelled paid GroupSeatReservation remains an explicit
+seat claim even if that Student is later deactivated, until the reservation is
+cancelled or expires.
 
 All capacity-changing writers serialize on the TrainingGroup row. This includes
 ordinary membership admission/update, hold activation/restore and hard-cap
@@ -3455,6 +3460,11 @@ future GroupSeatReservation.
 A hold may be created only when an existing membership for the same
 student/group is active on `period_from` and started before that date.
 
+Payment confirmation requires `period_from > school_today`. Retroactive
+activation, including activation on the start calendar date, is rejected.
+Additionally, roster entries for lessons that already have Attendance records
+are never deactivated by hold suspension.
+
 Confirming payment atomically performs:
 
 ```text
@@ -3467,6 +3477,7 @@ GroupSeatReservation:
 GroupPlaceHold:
     PENDING_PAYMENT -> ACTIVE
     suspended_membership = old membership
+    suspended_membership_ends_on_snapshot = original ends_on
     seat_reservation = reservation
 ```
 
@@ -3480,8 +3491,12 @@ Ordinary membership creation/update is rejected when the same student's
 interval overlaps an active seat reservation. The caller must use the explicit
 place-hold restore flow.
 
-`restore_group_place_hold(...)` creates an open membership starting on
-`return_on` and moves the hold from ACTIVE to RESTORED. The reservation still
+`restore_group_place_hold(...)` creates a membership starting on
+`return_on` and moves the hold from ACTIVE to RESTORED. The original
+membership's finite `ends_on` is snapshotted during suspension and copied to
+the restored membership; an originally open-ended membership remains
+open-ended. Restore is rejected if the original end date is before
+`return_on`. The reservation still
 protects `return_on`; because occupancy is deduplicated by Student, the
 returning membership is allowed even when the group is otherwise at its
 formal capacity. Other students remain blocked from taking the protected seat.
