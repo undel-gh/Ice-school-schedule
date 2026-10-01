@@ -46,15 +46,21 @@
     </div>
   {% endif %}
 
-  {% if providers and signed_in_external_auth_allowed and not invitation_requires_signed_out or providers and not request.user.is_authenticated %}
-    <div class="toolbar">
-      {% if "yandex" in providers %}
-        <a class="btn btn-primary" href="{% url 'external_auth:invitation_login' 'yandex' %}">Продолжить через Яндекс</a>
-      {% endif %}
-      {% if "vk" in providers %}
-        <a class="btn btn-secondary" href="{% url 'external_auth:invitation_login' 'vk' %}">Продолжить через VK ID</a>
-      {% endif %}
-    </div>
+  {% if invitation_requires_signed_out and request.user.is_authenticated %}
+    <p class="empty-state">Выйдите из текущего аккаунта, затем снова откройте эту ссылку для восстановления.</p>
+  {% elif providers %}
+    {% if not request.user.is_authenticated or signed_in_external_auth_allowed %}
+      <div class="toolbar">
+        {% if "yandex" in providers %}
+          <a class="btn btn-primary" href="{% url 'external_auth:invitation_login' 'yandex' %}">Продолжить через Яндекс</a>
+        {% endif %}
+        {% if "vk" in providers %}
+          <a class="btn btn-secondary" href="{% url 'external_auth:invitation_login' 'vk' %}">Продолжить через VK ID</a>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="empty-state">Внешний вход недоступен для текущего staff/manager аккаунта.</p>
+    {% endif %}
   {% else %}
     <p class="empty-state">Внешние провайдеры входа пока не настроены.</p>
   {% endif %}
