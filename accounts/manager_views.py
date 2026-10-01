@@ -23,7 +23,7 @@ from .forms import (
     StudentAccessForm,
     StudentForm,
 )
-from .models import AccountInvitation, CoachProfile, ExternalIdentity, Student, StudentAccess
+from .models import AccountInvitation, CoachProfile, ExternalIdentity, Student, StudentAccess, User
 from .onboarding import (
     create_account_invitation,
     deactivate_external_user_for_recovery,
