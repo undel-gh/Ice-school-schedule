@@ -13,6 +13,12 @@
 {% if perms.audit.view_auditevent %} · <a href="{% url 'audit_manager:events' %}?aggregate_type=CoachProfile&aggregate_id={{ coach.id }}">Журнал</a>{% endif %}
 {% if coach.user.external_identities.all %}
   <div class="toolbar">
+    {% if coach.user.is_active and perms.accounts.change_externalidentity %}
+      <form method="post" action="{% url 'accounts_manager:external_user_deactivate_for_recovery' coach.user.id %}">
+        {% csrf_token %}
+        <button class="btn-absent" type="submit">Деактивировать для восстановления</button>
+      </form>
+    {% endif %}
     {% for identity in coach.user.external_identities.all %}
       <span class="badge">{{ identity.get_provider_display }}</span>
       {% if perms.accounts.change_externalidentity %}
