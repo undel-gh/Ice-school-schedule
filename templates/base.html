@@ -23,7 +23,7 @@
           <a class="site-nav__manager" href="{% url 'subscriptions:manager_operations' %}">Менеджер</a>
         {% endif %}
         <a href="{% url 'external_auth:identities' %}">Способы входа</a>
-        <span class="site-nav__user">{{ request.user.username }}</span>
+        <span class="site-nav__user">{{ request.user.display_label }}</span>
         <form method="post" action="{% url 'logout' %}">
           {% csrf_token %}
           <button type="submit">Выйти</button>
