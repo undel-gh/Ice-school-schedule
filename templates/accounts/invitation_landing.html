@@ -8,8 +8,14 @@
       Доступ к ученику <strong>{{ invitation.student.display_name }}</strong>
       {% if invitation.student_access_role == "guardian" %}как родителю / представителю{% else %}как самому ученику{% endif %}.
     </p>
-  {% else %}
+  {% elif invitation.kind == "coach" %}
     <p>Профиль тренера: <strong>{{ invitation.coach_display_name }}</strong>.</p>
+  {% else %}
+    <p>
+      Восстановление существующего аккаунта:
+      <strong>{{ invitation.recovery_user.display_label }}</strong>.
+      После успешного входа будет реактивирован именно этот аккаунт со всей прежней историей и доступами.
+    </p>
   {% endif %}
   <p>Аккаунт будет подписан как <strong>{{ invitation.account_display_name }}</strong>.</p>
   <p>Ссылка действует до {{ invitation.expires_at|date:"d.m.Y H:i" }}.</p>
@@ -17,7 +23,9 @@
   {% if request.user.is_authenticated %}
     <div class="report-card">
       <strong>Вы уже вошли как {{ request.user.display_label }}.</strong>
-      {% if signed_in_external_auth_allowed %}
+      {% if invitation_requires_signed_out %}
+        <p>Для восстановления существующего аккаунта необходимо сначала выйти из текущей сессии.</p>
+      {% elif signed_in_external_auth_allowed %}
         <p>Доступ по этому приглашению будет добавлен именно к этому аккаунту.</p>
       {% else %}
         <p>Для staff/manager аккаунтов внешний вход и принятие таких приглашений запрещены. Выйдите из служебного аккаунта.</p>
@@ -38,7 +46,7 @@
     </div>
   {% endif %}
 
-  {% if providers and signed_in_external_auth_allowed %}
+  {% if providers and signed_in_external_auth_allowed and not invitation_requires_signed_out or providers and not request.user.is_authenticated %}
     <div class="toolbar">
       {% if "yandex" in providers %}
         <a class="btn btn-primary" href="{% url 'external_auth:invitation_login' 'yandex' %}">Продолжить через Яндекс</a>
