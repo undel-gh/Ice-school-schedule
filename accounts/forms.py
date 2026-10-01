@@ -11,7 +11,7 @@ User = get_user_model()
 
 class UserChoiceField(forms.ModelChoiceField):
     def label_from_instance(self, obj):
-        return obj.get_full_name().strip() or obj.username
+        return obj.display_label
 
 
 class StudentForm(forms.Form):
@@ -91,6 +91,12 @@ class AccountInvitationForm(forms.Form):
             (StudentAccess.Role.GUARDIAN, "Родитель / представитель"),
         ),
     )
+    account_display_name = forms.CharField(
+        label="Как подписать аккаунт",
+        max_length=100,
+        required=False,
+        help_text="Например: «Мама Ани» или «Папа Ильи».",
+    )
     coach_display_name = forms.CharField(
         label="Имя тренера",
         max_length=100,
@@ -121,10 +127,17 @@ class AccountInvitationForm(forms.Form):
                 self.add_error("student", "Выберите ученика.")
             if cleaned.get("student_access_role") not in StudentAccess.Role.values:
                 self.add_error("student_access_role", "Выберите роль доступа.")
+            if not (cleaned.get("account_display_name") or "").strip():
+                self.add_error(
+                    "account_display_name",
+                    "Укажите понятную подпись аккаунта.",
+                )
             cleaned["coach_display_name"] = ""
         elif kind == AccountInvitation.Kind.COACH:
-            if not (cleaned.get("coach_display_name") or "").strip():
+            coach_name = (cleaned.get("coach_display_name") or "").strip()
+            if not coach_name:
                 self.add_error("coach_display_name", "Укажите имя тренера.")
+            cleaned["account_display_name"] = coach_name
             cleaned["student"] = None
             cleaned["student_access_role"] = ""
         return cleaned
