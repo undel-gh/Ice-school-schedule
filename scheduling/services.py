@@ -187,7 +187,7 @@ def _school_date_datetime_bounds(
     ends_on: date,
 ) -> tuple[datetime, datetime]:
     start = datetime.combine(starts_on, datetime.min.time())
-    end = datetime.combine(ends_on + timedelta(days=1), datetime.min.time())
+    end = datetime.combine(ends_on, datetime.min.time())
     if settings.USE_TZ:
         start = make_school_aware(start)
         end = make_school_aware(end)
@@ -242,99 +242,359 @@ def _suppress_group_rosters_for_reservation(
     return updated
 
 
-def _restore_group_rosters_after_reservation(
+def _active_enrollment_lesson_ids(
     *,
-    reservation: GroupSeatReservation,
-    actor: User | None,
-) -> int:
-    start, end = _school_date_datetime_bounds(
-        starts_on=reservation.starts_on,
-        ends_on=reservation.ends_on,
+    student_id: UUID,
+    group_id: UUID,
+    starts_at: datetime,
+    ends_at: datetime | None = None,
+):
+    enrollments = LessonEnrollment.objects.filter(
+        student_id=student_id,
+        cancelled_at__isnull=True,
+        lesson__group_id=group_id,
+        lesson__starts_at__gte=starts_at,
     )
-    lessons = (
-        Lesson.objects.filter(
-            group_id=reservation.group_id,
-            starts_at__gte=start,
-            starts_at__lt=end,
-            status__in=[
+    if ends_at is not None:
+        enrollments = enrollments.filter(lesson__starts_at__lt=ends_at)
+    return enrollments.values_list("lesson_id", flat=True)
+
+
+def _deactivate_membership_rosters_from(
+    *,
+    membership: GroupMembership,
+    starts_on: date,
+    actor: User | None,
+    at: datetime,
+) -> int:
+    start = datetime.combine(starts_on, datetime.min.time())
+    if settings.USE_TZ:
+        start = make_school_aware(start)
+    explicit_lesson_ids = _active_enrollment_lesson_ids(
+        student_id=membership.student_id,
+        group_id=membership.group_id,
+        starts_at=start,
+    )
+    updated = (
+        LessonRosterEntry.objects.filter(
+            group_membership=membership,
+            student_id=membership.student_id,
+            lesson__group_id=membership.group_id,
+            lesson__starts_at__gte=start,
+            lesson__status__in=[
                 Lesson.Status.RSVP_OPEN,
                 Lesson.Status.CONFIRMED,
             ],
+            source=LessonRosterEntry.Source.GROUP,
+            is_active=True,
         )
-        .order_by("starts_at", "id")
+        .exclude(lesson_id__in=explicit_lesson_ids)
+        .update(
+            is_active=False,
+            deactivated_at=at,
+            deactivated_by_id=actor.id if actor is not None else None,
+        )
     )
+    return updated
 
-    restored = 0
+
+def _materialize_membership_rosters_from(
+    *,
+    membership: GroupMembership,
+    actor: User | None,
+) -> int:
+    start = datetime.combine(membership.starts_on, datetime.min.time())
+    if settings.USE_TZ:
+        start = make_school_aware(start)
+    lessons = Lesson.objects.filter(
+        group_id=membership.group_id,
+        starts_at__gte=start,
+        status__in=[
+            Lesson.Status.RSVP_OPEN,
+            Lesson.Status.CONFIRMED,
+        ],
+    ).order_by("starts_at", "id")
+    if membership.ends_on is not None:
+        end = datetime.combine(
+            membership.ends_on + timedelta(days=1),
+            datetime.min.time(),
+        )
+        if settings.USE_TZ:
+            end = make_school_aware(end)
+        lessons = lessons.filter(starts_at__lt=end)
+
+    created_or_restored = 0
     for lesson in lessons:
         lesson_date = get_school_date(lesson.starts_at)
         if GroupSeatReservation.objects.filter(
-            group_id=reservation.group_id,
-            student_id=reservation.student_id,
+            group_id=membership.group_id,
+            student_id=membership.student_id,
             starts_on__lte=lesson_date,
-            ends_on__gte=lesson_date,
+            ends_on__gt=lesson_date,
             cancelled_at__isnull=True,
         ).exists():
-            continue
-
-        membership = (
-            GroupMembership.objects.filter(
-                group_id=reservation.group_id,
-                student_id=reservation.student_id,
-                student__is_active=True,
-                starts_on__lte=lesson_date,
-            )
-            .filter(Q(ends_on__isnull=True) | Q(ends_on__gte=lesson_date))
-            .order_by("-starts_on", "id")
-            .first()
-        )
-        if membership is None:
             continue
 
         roster = (
             LessonRosterEntry.objects.select_for_update()
             .filter(
                 lesson=lesson,
-                student_id=reservation.student_id,
+                student_id=membership.student_id,
             )
             .first()
         )
         if roster is None:
             LessonRosterEntry.objects.create(
                 lesson=lesson,
-                student_id=reservation.student_id,
+                student_id=membership.student_id,
                 source=LessonRosterEntry.Source.GROUP,
                 group_membership=membership,
                 added_by=actor,
                 is_active=True,
             )
-            restored += 1
+            created_or_restored += 1
             continue
-        if roster.is_active or roster.source != LessonRosterEntry.Source.GROUP:
+        if roster.is_active:
+            continue
+        if LessonEnrollment.objects.filter(
+            lesson=lesson,
+            student_id=membership.student_id,
+            cancelled_at__isnull=True,
+        ).exists():
             continue
 
+        roster.source = LessonRosterEntry.Source.GROUP
         roster.group_membership = membership
+        roster.lesson_enrollment = None
         roster.is_active = True
         roster.deactivated_at = None
         roster.deactivated_by = None
         roster.save(
             update_fields=[
+                "source",
                 "group_membership",
+                "lesson_enrollment",
                 "is_active",
                 "deactivated_at",
                 "deactivated_by",
             ]
         )
-        restored += 1
+        created_or_restored += 1
+    return created_or_restored
 
-    if restored:
-        record_event(
-            event_type="GroupSeatReservationRosterRestored",
-            aggregate_type="GroupSeatReservation",
-            aggregate_id=reservation.id,
-            actor=actor,
-            payload={"roster_entries": restored},
+
+@transaction.atomic
+def suspend_group_membership_with_seat_reservation(
+    *,
+    membership_id: UUID,
+    starts_on: date,
+    return_on: date,
+    actor: User | None,
+    at: datetime,
+) -> tuple[GroupMembership, GroupSeatReservation]:
+    if return_on <= starts_on:
+        raise ValidationError(
+            {"return_on": "Return date must be after the hold start date."}
         )
-    return restored
+
+    membership_ref = GroupMembership.objects.only(
+        "id",
+        "group_id",
+        "student_id",
+    ).get(pk=membership_id)
+    group = TrainingGroup.objects.select_for_update().get(
+        pk=membership_ref.group_id
+    )
+    membership = GroupMembership.objects.select_for_update().get(
+        pk=membership_id
+    )
+    Student.objects.select_for_update().get(pk=membership.student_id)
+
+    if membership.starts_on >= starts_on:
+        raise ValidationError(
+            {
+                "membership": (
+                    "Place hold requires membership to start before the "
+                    "hold period."
+                )
+            }
+        )
+    if membership.ends_on is not None and membership.ends_on < starts_on:
+        raise ValidationError(
+            {"membership": "Membership does not cover the hold start date."}
+        )
+
+    existing_reservation = (
+        GroupSeatReservation.objects.select_for_update()
+        .filter(
+            student_id=membership.student_id,
+            group_id=membership.group_id,
+            starts_on=starts_on,
+            ends_on=return_on,
+            cancelled_at__isnull=True,
+        )
+        .first()
+    )
+    if existing_reservation is not None:
+        return membership, existing_reservation
+
+    ensure_group_capacity_available(
+        group=group,
+        student_id=membership.student_id,
+        starts_on=starts_on,
+        ends_on=return_on,
+    )
+    reservation = GroupSeatReservation.objects.create(
+        student_id=membership.student_id,
+        group=group,
+        starts_on=starts_on,
+        ends_on=return_on,
+        created_by=actor,
+    )
+
+    previous_ends_on = membership.ends_on
+    membership.ends_on = starts_on - timedelta(days=1)
+    membership.save(update_fields=["ends_on"])
+    deactivated = _deactivate_membership_rosters_from(
+        membership=membership,
+        starts_on=starts_on,
+        actor=actor,
+        at=at,
+    )
+    record_event(
+        event_type="GroupMembershipSuspendedForSeatReservation",
+        aggregate_type="GroupMembership",
+        aggregate_id=membership.id,
+        actor=actor,
+        payload={
+            "reservation_id": str(reservation.id),
+            "previous_ends_on": (
+                previous_ends_on.isoformat()
+                if previous_ends_on is not None
+                else None
+            ),
+            "ends_on": membership.ends_on.isoformat(),
+            "roster_entries_deactivated": deactivated,
+        },
+    )
+    record_event(
+        event_type="GroupSeatReserved",
+        aggregate_type="GroupSeatReservation",
+        aggregate_id=reservation.id,
+        actor=actor,
+        payload={
+            "student_id": str(membership.student_id),
+            "group_id": str(membership.group_id),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": return_on.isoformat(),
+        },
+    )
+    return membership, reservation
+
+
+@transaction.atomic
+def restore_group_membership_from_reservation(
+    *,
+    reservation_id: UUID,
+    actor: User | None,
+) -> GroupMembership:
+    reservation_ref = GroupSeatReservation.objects.only(
+        "id",
+        "group_id",
+        "student_id",
+    ).get(pk=reservation_id)
+    group = TrainingGroup.objects.select_for_update().get(
+        pk=reservation_ref.group_id
+    )
+    reservation = GroupSeatReservation.objects.select_for_update().get(
+        pk=reservation_id
+    )
+    student = Student.objects.select_for_update().get(
+        pk=reservation.student_id
+    )
+    if reservation.cancelled_at is not None:
+        raise ValidationError(
+            {"reservation": "Cancelled seat reservation cannot be restored."}
+        )
+    if not student.is_active:
+        raise ValidationError(
+            {"student": "Inactive students cannot be restored to a group."}
+        )
+    if not group.is_active:
+        raise ValidationError(
+            {"group": "Students cannot be restored to an inactive group."}
+        )
+
+    starts_on = reservation.ends_on
+    existing = (
+        GroupMembership.objects.select_for_update()
+        .filter(
+            student_id=reservation.student_id,
+            group_id=reservation.group_id,
+            starts_on=starts_on,
+        )
+        .first()
+    )
+    if existing is not None:
+        if existing.ends_on is not None:
+            raise ValidationError(
+                {
+                    "membership": (
+                        "Existing return membership is not open-ended."
+                    )
+                }
+            )
+        return existing
+
+    others = list(
+        GroupMembership.objects.select_for_update().filter(
+            student_id=reservation.student_id,
+            group_id=reservation.group_id,
+        )
+    )
+    if any(
+        _membership_overlaps(
+            starts_on=starts_on,
+            ends_on=None,
+            other=other,
+        )
+        for other in others
+    ):
+        raise ValidationError(
+            {"membership": "Return membership overlaps existing membership."}
+        )
+
+    ensure_group_capacity_available(
+        group=group,
+        student_id=reservation.student_id,
+        starts_on=starts_on,
+        ends_on=None,
+    )
+    membership = GroupMembership.objects.create(
+        student_id=reservation.student_id,
+        group=group,
+        starts_on=starts_on,
+        ends_on=None,
+        created_by=actor,
+    )
+    roster_entries = _materialize_membership_rosters_from(
+        membership=membership,
+        actor=actor,
+    )
+    record_event(
+        event_type="GroupMembershipRestoredFromSeatReservation",
+        aggregate_type="GroupMembership",
+        aggregate_id=membership.id,
+        actor=actor,
+        payload={
+            "reservation_id": str(reservation.id),
+            "student_id": str(reservation.student_id),
+            "group_id": str(reservation.group_id),
+            "starts_on": starts_on.isoformat(),
+            "roster_entries_materialized": roster_entries,
+        },
+    )
+    return membership
 
 
 @transaction.atomic
@@ -402,10 +662,6 @@ def cancel_group_seat_reservation(
     reservation.cancelled_at = at
     reservation.cancelled_by = actor
     reservation.save(update_fields=["cancelled_at", "cancelled_by"])
-    _restore_group_rosters_after_reservation(
-        reservation=reservation,
-        actor=actor,
-    )
     record_event(
         event_type="GroupSeatReservationCancelled",
         aggregate_type="GroupSeatReservation",
