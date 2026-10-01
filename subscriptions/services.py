@@ -3121,7 +3121,7 @@ def create_group_place_hold(
         )
         .filter(
             Q(ends_on__isnull=True)
-            | Q(ends_on__gte=period_from - timedelta(days=1))
+            | Q(ends_on__gte=period_until)
         )
         .order_by("-starts_on", "id")
         .first()
@@ -3131,7 +3131,7 @@ def create_group_place_hold(
             {
                 "membership": (
                     "Place hold requires an existing group membership that "
-                    "covers the hold start or ends on the preceding day."
+                    "covers the full hold period."
                 )
             }
         )
@@ -3210,7 +3210,7 @@ def confirm_group_place_hold_fee(
         )
         .filter(
             Q(ends_on__isnull=True)
-            | Q(ends_on__gte=hold.period_from - timedelta(days=1))
+            | Q(ends_on__gte=hold.period_until)
         )
         .order_by("-starts_on", "id")
         .first()
@@ -3220,7 +3220,7 @@ def confirm_group_place_hold_fee(
             {
                 "membership": (
                     "Place hold activation requires a group membership that "
-                    "covers the hold start or ends on the preceding day."
+                    "covers the full hold period."
                 )
             }
         )
@@ -3231,7 +3231,7 @@ def confirm_group_place_hold_fee(
             student_id=hold.student_id,
             group_id=hold.group_id,
             starts_on=hold.period_from,
-            ends_on=hold.period_until + timedelta(days=1),
+            ends_on=hold.period_until,
             actor=actor,
         )
         hold.seat_reservation = reservation
