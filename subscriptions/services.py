@@ -3029,8 +3029,8 @@ def create_group_place_hold(
         "subscriptions.add_groupplacehold",
         "Group place hold permission is required.",
     )
-    student = Student.objects.select_for_update().get(pk=student_id)
     group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    student = Student.objects.select_for_update().get(pk=student_id)
     scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
         pk=period_scheme_id
     )
