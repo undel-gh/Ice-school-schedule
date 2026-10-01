@@ -116,3 +116,26 @@ def test_group_capacity_cannot_be_lowered_below_future_claims(capacity_manager):
         )
 
     assert "capacity" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_group_capacity_cannot_be_lower_than_minimum_attendees(capacity_manager):
+    group = TrainingGroup.objects.create(
+        code="capacity-minimum",
+        name="Capacity minimum",
+        default_minimum_attendees=2,
+        capacity=2,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        update_training_group(
+            group_id=group.id,
+            code=group.code,
+            name=group.name,
+            default_minimum_attendees=3,
+            is_active=True,
+            actor=capacity_manager,
+            capacity=2,
+        )
+
+    assert "capacity" in exc.value.message_dict
