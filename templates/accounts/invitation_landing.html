@@ -11,9 +11,34 @@
   {% else %}
     <p>Профиль тренера: <strong>{{ invitation.coach_display_name }}</strong>.</p>
   {% endif %}
+  <p>Аккаунт будет подписан как <strong>{{ invitation.account_display_name }}</strong>.</p>
   <p>Ссылка действует до {{ invitation.expires_at|date:"d.m.Y H:i" }}.</p>
 
-  {% if providers %}
+  {% if request.user.is_authenticated %}
+    <div class="report-card">
+      <strong>Вы уже вошли как {{ request.user.display_label }}.</strong>
+      {% if signed_in_external_auth_allowed %}
+        <p>Доступ по этому приглашению будет добавлен именно к этому аккаунту.</p>
+      {% else %}
+        <p>Для staff/manager аккаунтов внешний вход и принятие таких приглашений запрещены. Выйдите из служебного аккаунта.</p>
+      {% endif %}
+      <form method="post" action="{% url 'logout' %}">
+        {% csrf_token %}
+        <button type="submit">Выйти</button>
+      </form>
+    </div>
+  {% else %}
+    <div class="report-card">
+      <strong>Уже есть аккаунт Ice School?</strong>
+      <p>
+        Сначала войдите в существующий аккаунт, затем снова откройте эту ссылку.
+        Иначе вход через другой провайдер может быть воспринят как новый аккаунт.
+      </p>
+      <a href="{% url 'login' %}">Перейти ко входу</a>
+    </div>
+  {% endif %}
+
+  {% if providers and signed_in_external_auth_allowed %}
     <div class="toolbar">
       {% if "yandex" in providers %}
         <a class="btn btn-primary" href="{% url 'external_auth:invitation_login' 'yandex' %}">Продолжить через Яндекс</a>
