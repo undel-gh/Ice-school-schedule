@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import Group, Permission
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.utils import timezone
 
@@ -715,3 +715,28 @@ def test_recovery_invitation_requires_old_identities_removed(manager):
         recovery_user_id=user.id,
     )
     assert created.invitation.recovery_user_id == user.id
+
+
+
+@pytest.mark.django_db
+def test_inactive_group_manager_cannot_receive_recovery_invitation(manager):
+    group = Group.objects.create(name="recovery-manager-role")
+    group.permissions.add(
+        Permission.objects.get(
+            codename="view_student",
+            content_type__app_label="accounts",
+        )
+    )
+    user = User.objects.create_user(
+        username="inactive-group-manager",
+        display_name="Менеджер",
+        is_active=False,
+    )
+    user.groups.add(group)
+
+    with pytest.raises(ValidationError):
+        create_account_invitation(
+            kind=AccountInvitation.Kind.RECOVERY,
+            actor=manager,
+            recovery_user_id=user.id,
+        )
