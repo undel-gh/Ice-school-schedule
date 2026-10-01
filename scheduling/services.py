@@ -22,6 +22,7 @@ from accounts.models import CoachProfile, Student
 from audit.services import event_exists_with_payload, record_event
 from .models import (
     GroupMembership,
+    GroupSeatReservation,
     TrainingGroup,
     ScheduleTemplate,
     Lesson,
@@ -68,6 +69,216 @@ def _membership_overlaps(
     effective_end = ends_on or date.max
     other_end = other.ends_on or date.max
     return starts_on <= other_end and other.starts_on <= effective_end
+
+
+def _interval_contains(*, starts_on: date, ends_on: date | None, on_date: date) -> bool:
+    return starts_on <= on_date and (ends_on is None or ends_on >= on_date)
+
+
+def group_occupied_student_ids(
+    *,
+    group_id: UUID,
+    on_date: date,
+    exclude_membership_id: UUID | None = None,
+    exclude_reservation_id: UUID | None = None,
+) -> set[UUID]:
+    memberships = GroupMembership.objects.filter(
+        group_id=group_id,
+        starts_on__lte=on_date,
+    ).filter(Q(ends_on__isnull=True) | Q(ends_on__gte=on_date))
+    if exclude_membership_id is not None:
+        memberships = memberships.exclude(pk=exclude_membership_id)
+
+    reservations = GroupSeatReservation.objects.filter(
+        group_id=group_id,
+        starts_on__lte=on_date,
+        ends_on__gte=on_date,
+        cancelled_at__isnull=True,
+    )
+    if exclude_reservation_id is not None:
+        reservations = reservations.exclude(pk=exclude_reservation_id)
+
+    return set(memberships.values_list("student_id", flat=True)) | set(
+        reservations.values_list("student_id", flat=True)
+    )
+
+
+def _capacity_boundary_dates(
+    *,
+    group_id: UUID,
+    starts_on: date,
+    ends_on: date | None,
+    exclude_membership_id: UUID | None = None,
+    exclude_reservation_id: UUID | None = None,
+) -> tuple[date, ...]:
+    membership_starts = GroupMembership.objects.filter(
+        group_id=group_id,
+        starts_on__gte=starts_on,
+    )
+    reservation_starts = GroupSeatReservation.objects.filter(
+        group_id=group_id,
+        starts_on__gte=starts_on,
+        cancelled_at__isnull=True,
+    )
+    if ends_on is not None:
+        membership_starts = membership_starts.filter(starts_on__lte=ends_on)
+        reservation_starts = reservation_starts.filter(starts_on__lte=ends_on)
+    if exclude_membership_id is not None:
+        membership_starts = membership_starts.exclude(pk=exclude_membership_id)
+    if exclude_reservation_id is not None:
+        reservation_starts = reservation_starts.exclude(pk=exclude_reservation_id)
+
+    return tuple(
+        sorted(
+            {
+                starts_on,
+                *membership_starts.values_list("starts_on", flat=True),
+                *reservation_starts.values_list("starts_on", flat=True),
+            }
+        )
+    )
+
+
+def ensure_group_capacity_available(
+    *,
+    group: TrainingGroup,
+    student_id: UUID,
+    starts_on: date,
+    ends_on: date | None,
+    exclude_membership_id: UUID | None = None,
+    exclude_reservation_id: UUID | None = None,
+) -> None:
+    """Validate one seat claim against memberships and seat reservations."""
+    if group.capacity is None:
+        return
+
+    for on_date in _capacity_boundary_dates(
+        group_id=group.id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+        exclude_membership_id=exclude_membership_id,
+        exclude_reservation_id=exclude_reservation_id,
+    ):
+        occupied = group_occupied_student_ids(
+            group_id=group.id,
+            on_date=on_date,
+            exclude_membership_id=exclude_membership_id,
+            exclude_reservation_id=exclude_reservation_id,
+        )
+        occupied.add(student_id)
+        if len(occupied) > group.capacity:
+            raise ValidationError(
+                {
+                    "capacity": (
+                        f"Group capacity of {group.capacity} would be exceeded "
+                        f"on {on_date.isoformat()}."
+                    )
+                }
+            )
+
+
+def _ensure_capacity_not_below_existing_claims(
+    *,
+    group: TrainingGroup,
+    capacity: int | None,
+) -> None:
+    if capacity is None:
+        return
+
+    today = get_school_date(timezone.now())
+    dates = {today}
+    dates.update(
+        GroupMembership.objects.filter(
+            group=group,
+            starts_on__gte=today,
+        ).values_list("starts_on", flat=True)
+    )
+    dates.update(
+        GroupSeatReservation.objects.filter(
+            group=group,
+            starts_on__gte=today,
+            cancelled_at__isnull=True,
+        ).values_list("starts_on", flat=True)
+    )
+    for on_date in sorted(dates):
+        if len(group_occupied_student_ids(group_id=group.id, on_date=on_date)) > capacity:
+            raise ValidationError(
+                {
+                    "capacity": (
+                        "Capacity cannot be lower than existing current or "
+                        f"future seat claims (first conflict: {on_date.isoformat()})."
+                    )
+                }
+            )
+
+
+@transaction.atomic
+def create_group_seat_reservation(
+    *,
+    student_id: UUID,
+    group_id: UUID,
+    starts_on: date,
+    ends_on: date,
+    actor: User | None,
+) -> GroupSeatReservation:
+    if ends_on < starts_on:
+        raise ValidationError(
+            {"ends_on": "Seat reservation end date cannot precede start date."}
+        )
+    group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    Student.objects.select_for_update().get(pk=student_id)
+    ensure_group_capacity_available(
+        group=group,
+        student_id=student_id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+    )
+    reservation = GroupSeatReservation.objects.create(
+        student_id=student_id,
+        group=group,
+        starts_on=starts_on,
+        ends_on=ends_on,
+        created_by=actor,
+    )
+    record_event(
+        event_type="GroupSeatReserved",
+        aggregate_type="GroupSeatReservation",
+        aggregate_id=reservation.id,
+        actor=actor,
+        payload={
+            "student_id": str(student_id),
+            "group_id": str(group_id),
+            "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat(),
+        },
+    )
+    return reservation
+
+
+@transaction.atomic
+def cancel_group_seat_reservation(
+    *,
+    reservation_id: UUID,
+    actor: User | None,
+    at: datetime,
+) -> GroupSeatReservation:
+    reservation = GroupSeatReservation.objects.select_for_update().get(
+        pk=reservation_id
+    )
+    TrainingGroup.objects.select_for_update().get(pk=reservation.group_id)
+    if reservation.cancelled_at is not None:
+        return reservation
+    reservation.cancelled_at = at
+    reservation.cancelled_by = actor
+    reservation.save(update_fields=["cancelled_at", "cancelled_by"])
+    record_event(
+        event_type="GroupSeatReservationCancelled",
+        aggregate_type="GroupSeatReservation",
+        aggregate_id=reservation.id,
+        actor=actor,
+        payload={"cancelled_at": at.isoformat()},
+    )
+    return reservation
 
 
 @transaction.atomic
@@ -122,6 +333,13 @@ def create_group_membership(
             }
         )
 
+    ensure_group_capacity_available(
+        group=group,
+        student_id=student_id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+    )
+
     membership = GroupMembership.objects.create(
         student_id=student_id,
         group_id=group_id,
@@ -166,6 +384,7 @@ def update_group_membership(
         pk=membership_id
     )
     Student.objects.select_for_update().get(pk=membership.student_id)
+    group = TrainingGroup.objects.select_for_update().get(pk=membership.group_id)
     others = list(
         GroupMembership.objects.select_for_update()
         .filter(
@@ -190,6 +409,14 @@ def update_group_membership(
                 )
             }
         )
+
+    ensure_group_capacity_available(
+        group=group,
+        student_id=membership.student_id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+        exclude_membership_id=membership.id,
+    )
 
     previous_starts_on = membership.starts_on
     previous_ends_on = membership.ends_on
@@ -1788,6 +2015,7 @@ def create_training_group(
     code: str,
     name: str,
     default_minimum_attendees: int,
+    capacity: int | None,
     is_active: bool,
     actor: User,
 ) -> TrainingGroup:
@@ -1802,6 +2030,8 @@ def create_training_group(
         raise ValidationError(
             {"default_minimum_attendees": "Minimum attendees must be at least 1."}
         )
+    if capacity is not None and capacity < 1:
+        raise ValidationError({"capacity": "Capacity must be at least 1."})
     if TrainingGroup.objects.filter(code=code).exists():
         raise ValidationError({"code": "A group with this code already exists."})
     try:
@@ -1809,6 +2039,7 @@ def create_training_group(
             code=code,
             name=name,
             default_minimum_attendees=default_minimum_attendees,
+            capacity=capacity,
             is_active=is_active,
         )
     except IntegrityError as exc:
@@ -1824,6 +2055,7 @@ def create_training_group(
             "code": group.code,
             "name": group.name,
             "default_minimum_attendees": group.default_minimum_attendees,
+            "capacity": group.capacity,
             "is_active": group.is_active,
         },
     )
@@ -1837,6 +2069,7 @@ def update_training_group(
     code: str,
     name: str,
     default_minimum_attendees: int,
+    capacity: int | None,
     is_active: bool,
     actor: User,
 ) -> TrainingGroup:
@@ -1852,12 +2085,16 @@ def update_training_group(
         raise ValidationError(
             {"default_minimum_attendees": "Minimum attendees must be at least 1."}
         )
+    if capacity is not None and capacity < 1:
+        raise ValidationError({"capacity": "Capacity must be at least 1."})
+    _ensure_capacity_not_below_existing_claims(group=group, capacity=capacity)
     if TrainingGroup.objects.filter(code=code).exclude(pk=group.id).exists():
         raise ValidationError({"code": "A group with this code already exists."})
     previous = {
         "code": group.code,
         "name": group.name,
         "default_minimum_attendees": group.default_minimum_attendees,
+        "capacity": group.capacity,
         "is_active": group.is_active,
     }
     if group.is_active and not is_active:
@@ -1895,6 +2132,7 @@ def update_training_group(
     group.code = code
     group.name = name
     group.default_minimum_attendees = default_minimum_attendees
+    group.capacity = capacity
     group.is_active = is_active
     try:
         group.save(
@@ -1902,6 +2140,7 @@ def update_training_group(
                 "code",
                 "name",
                 "default_minimum_attendees",
+                "capacity",
                 "is_active",
                 "updated_at",
             ]
@@ -1920,6 +2159,7 @@ def update_training_group(
             "code": group.code,
             "name": group.name,
             "default_minimum_attendees": group.default_minimum_attendees,
+            "capacity": group.capacity,
             "is_active": group.is_active,
         },
     )
