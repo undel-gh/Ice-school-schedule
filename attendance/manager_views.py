@@ -100,7 +100,8 @@ def manager_coverage_report(request: HttpRequest) -> HttpResponse:
     rows = manager_attendance_coverage_rows(page_obj.object_list)
     students = Student.objects.order_by("display_name", "id")
     pagination_query = request.GET.copy()
-    pagination_query.pop("page", None)
+    if "page" in pagination_query:
+        pagination_query.pop("page")
 
     return render(
         request,
