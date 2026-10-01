@@ -7,6 +7,7 @@ import secrets
 import uuid
 from uuid import UUID
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -26,7 +27,10 @@ from .models import (
 User = get_user_model()
 
 
-DEFAULT_INVITATION_TTL = timedelta(days=7)
+def _default_invitation_ttl() -> timedelta:
+    return timedelta(
+        hours=getattr(settings, "ACCOUNT_INVITATION_TTL_HOURS", 168)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +92,7 @@ def create_account_invitation(
         raise ValidationError({"kind": "Unsupported invitation kind."})
 
     now = timezone.now()
-    expires_at = expires_at or now + DEFAULT_INVITATION_TTL
+    expires_at = expires_at or now + _default_invitation_ttl()
     if expires_at <= now:
         raise ValidationError({"expires_at": "Invitation must expire in the future."})
 
