@@ -14,7 +14,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from audit.services import record_event
-from core.permissions import require_permission
+from core.permissions import has_manager_operations_access, require_permission
 
 from .models import (
     AccountInvitation,
@@ -25,6 +25,28 @@ from .models import (
 )
 
 User = get_user_model()
+
+
+def external_auth_allowed(user: User) -> bool:
+    if not user.is_active:
+        return False
+    if user.is_staff or user.is_superuser:
+        return False
+    if has_manager_operations_access(user):
+        return False
+    return True
+
+
+def _require_external_auth_allowed(user: User) -> None:
+    if not external_auth_allowed(user):
+        raise ValidationError(
+            {
+                "external_identity": (
+                    "External login is disabled for staff and manager accounts. "
+                    "Use the local password login."
+                )
+            }
+        )
 
 
 def _default_invitation_ttl() -> timedelta:
@@ -80,6 +102,7 @@ def create_account_invitation(
     actor: User,
     student_id: UUID | None = None,
     student_access_role: str = "",
+    account_display_name: str = "",
     coach_display_name: str = "",
     expires_at=None,
 ) -> CreatedInvitation:
@@ -99,6 +122,7 @@ def create_account_invitation(
     student = None
     cleaned_role = ""
     cleaned_coach_name = ""
+    cleaned_account_name = account_display_name.strip()
 
     if kind == AccountInvitation.Kind.STUDENT_ACCESS:
         require_permission(
@@ -110,6 +134,10 @@ def create_account_invitation(
             raise ValidationError({"student": "Student is required."})
         if student_access_role not in StudentAccess.Role.values:
             raise ValidationError({"student_access_role": "Student access role is required."})
+        if not cleaned_account_name:
+            raise ValidationError(
+                {"account_display_name": "Account display name is required."}
+            )
         student = Student.objects.select_for_update().get(pk=student_id)
         if not student.is_active:
             raise ValidationError({"student": "Cannot invite access to an inactive student."})
@@ -123,6 +151,7 @@ def create_account_invitation(
         cleaned_coach_name = coach_display_name.strip()
         if not cleaned_coach_name:
             raise ValidationError({"coach_display_name": "Coach display name is required."})
+        cleaned_account_name = cleaned_coach_name
 
     token = secrets.token_urlsafe(32)
     invitation = AccountInvitation.objects.create(
@@ -131,6 +160,7 @@ def create_account_invitation(
         student=student,
         student_access_role=cleaned_role,
         coach_display_name=cleaned_coach_name,
+        account_display_name=cleaned_account_name,
         expires_at=expires_at,
         created_by=actor,
     )
@@ -144,6 +174,7 @@ def create_account_invitation(
             "student_id": str(student.id) if student is not None else None,
             "student_access_role": invitation.student_access_role,
             "coach_display_name": invitation.coach_display_name,
+            "account_display_name": invitation.account_display_name,
             "expires_at": invitation.expires_at.isoformat(),
         },
     )
@@ -192,6 +223,10 @@ def _accept_invitation_locked(
     accepted_at,
 ) -> None:
     _validate_invitation_pending(invitation, now=accepted_at)
+
+    if not user.display_name.strip():
+        user.display_name = invitation.account_display_name
+        user.save(update_fields=["display_name"])
 
     if invitation.kind == AccountInvitation.Kind.STUDENT_ACCESS:
         student = Student.objects.select_for_update().get(pk=invitation.student_id)
@@ -353,8 +388,7 @@ def authenticate_external_identity(
                 }
             )
         identity, user = locked
-        if not user.is_active:
-            raise ValidationError({"user": "This account is inactive."})
+        _require_external_auth_allowed(user)
         identity.last_used_at = authenticated_at
         identity.save(update_fields=["last_used_at"])
         return user
@@ -374,12 +408,15 @@ def authenticate_external_identity(
     created_identity = False
     if locked is not None:
         identity, user = locked
-        if not user.is_active:
-            raise ValidationError({"user": "This account is inactive."})
+        _require_external_auth_allowed(user)
     else:
         try:
             with transaction.atomic():
-                user = User(username=_technical_username(), is_active=True)
+                user = User(
+                    username=_technical_username(),
+                    display_name=invitation.account_display_name,
+                    is_active=True,
+                )
                 user.set_unusable_password()
                 user.save()
                 identity = ExternalIdentity.objects.create(
@@ -397,8 +434,7 @@ def authenticate_external_identity(
             if locked is None:
                 raise
             identity, user = locked
-            if not user.is_active:
-                raise ValidationError({"user": "This account is inactive."})
+            _require_external_auth_allowed(user)
 
     _accept_invitation_locked(
         invitation=invitation,
@@ -436,8 +472,7 @@ def link_external_identity(
     linked_at = now or timezone.now()
     subject = str(provider_subject).strip()
     locked_user = User.objects.select_for_update().get(pk=user.id)
-    if not locked_user.is_active:
-        raise ValidationError({"user": "Inactive accounts cannot link providers."})
+    _require_external_auth_allowed(locked_user)
     existing_subject = (
         ExternalIdentity.objects.select_for_update()
         .filter(provider=provider, provider_subject=subject)
@@ -519,8 +554,7 @@ def accept_account_invitation_for_existing_user(
     _validate_invitation_pending(invitation, now=accepted_at)
 
     locked_user = User.objects.select_for_update().get(pk=user.id)
-    if not locked_user.is_active:
-        raise ValidationError({"user": "This account is inactive."})
+    _require_external_auth_allowed(locked_user)
 
     link_external_identity(
         user=locked_user,
@@ -535,3 +569,77 @@ def accept_account_invitation_for_existing_user(
     )
     return locked_user
 
+
+
+
+@transaction.atomic
+def unlink_external_identity(
+    *,
+    identity_id: UUID,
+    actor: User,
+    self_service: bool,
+) -> None:
+    reference = (
+        ExternalIdentity.objects.filter(pk=identity_id)
+        .values("id", "user_id", "provider")
+        .first()
+    )
+    if reference is None:
+        raise ExternalIdentity.DoesNotExist
+
+    target_user = User.objects.select_for_update().get(pk=reference["user_id"])
+    identity = ExternalIdentity.objects.select_for_update().get(pk=identity_id)
+
+    if self_service:
+        if actor.id != target_user.id:
+            raise ValidationError(
+                {"external_identity": "You can unlink only your own identity."}
+            )
+        alternatives = ExternalIdentity.objects.filter(
+            user=target_user
+        ).exclude(pk=identity.id)
+        if not alternatives.exists():
+            raise ValidationError(
+                {
+                    "external_identity": (
+                        "You cannot remove the last external login provider. "
+                        "Ask the school manager for help."
+                    )
+                }
+            )
+        source = "self"
+    else:
+        require_permission(
+            actor,
+            "accounts.change_externalidentity",
+            "External identity change permission is required.",
+        )
+        has_alternative = ExternalIdentity.objects.filter(
+            user=target_user
+        ).exclude(pk=identity.id).exists()
+        if not has_alternative and not target_user.has_usable_password():
+            raise ValidationError(
+                {
+                    "external_identity": (
+                        "This is the user's last login method. Link a replacement "
+                        "provider or deactivate the account before removing it."
+                    )
+                }
+            )
+        source = "manager"
+
+    identity_id_value = identity.id
+    provider = identity.provider
+    target_user_id = target_user.id
+    identity.delete()
+    record_event(
+        event_type="ExternalIdentityUnlinked",
+        aggregate_type="ExternalIdentity",
+        aggregate_id=identity_id_value,
+        actor=actor,
+        payload={
+            "provider": provider,
+            "user_id": str(target_user_id),
+            "source": source,
+        },
+    )
