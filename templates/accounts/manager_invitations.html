@@ -14,7 +14,7 @@
     <div class="lesson-card__top">
       <strong>
         {% if invitation.kind == "student_access" %}
-          {{ invitation.student.display_name }} · {{ invitation.get_student_access_role_display }}
+          {{ invitation.student.display_name }} · {{ invitation.account_display_name }} · {{ invitation.get_student_access_role_display }}
         {% else %}
           Тренер · {{ invitation.coach_display_name }}
         {% endif %}
@@ -30,7 +30,7 @@
       {% endif %}
     </div>
     <p>Создано {{ invitation.created_at|date:"d.m.Y H:i" }} · действует до {{ invitation.expires_at|date:"d.m.Y H:i" }}</p>
-    {% if invitation.accepted_by %}<p>Принято пользователем {{ invitation.accepted_by.username }}</p>{% endif %}
+    {% if invitation.accepted_by %}<p>Принято пользователем {{ invitation.accepted_by.display_label }}</p>{% endif %}
     {% if not invitation.accepted_at and not invitation.revoked_at and invitation.expires_at > now %}
       <form method="post" action="{% url 'accounts_manager:invitation_revoke' invitation.id %}">
         {% csrf_token %}
