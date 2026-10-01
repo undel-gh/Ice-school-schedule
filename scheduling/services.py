@@ -226,8 +226,8 @@ def _suppress_group_rosters_for_reservation(
         )
         .exclude(lesson_id__in=explicit_lesson_ids)
         .update(
-        is_active=False,
-        deactivated_at=at,
+            is_active=False,
+            deactivated_at=at,
             deactivated_by_id=actor.id if actor is not None else None,
         )
     )
