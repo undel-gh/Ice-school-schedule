@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied
 from django.db.models import Q
 
@@ -85,9 +86,8 @@ def has_manager_operations_assignment(actor) -> bool:
         return False
     if actor.user_permissions.filter(permission_query).exists():
         return True
-    return actor.groups.filter(permissions__in=actor.user_permissions.model.objects.filter(
-        permission_query
-    )).exists()
+    manager_permissions = Permission.objects.filter(permission_query)
+    return actor.groups.filter(permissions__in=manager_permissions).exists()
 
 
 def has_manager_operations_access(actor) -> bool:
