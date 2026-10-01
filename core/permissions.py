@@ -41,6 +41,8 @@ MANAGER_OPERATION_PERMISSIONS = (
     "subscriptions.add_absencecompensationpolicywindow",
     "subscriptions.change_absencecompensationpolicywindow",
     "subscriptions.view_subscription",
+    "subscriptions.view_attendancecoverage",
+    "subscriptions.change_attendancecoverage",
     "subscriptions.view_absencecompensationcase",
     "subscriptions.add_absencecompensationcase",
     "subscriptions.change_absencecompensationcase",

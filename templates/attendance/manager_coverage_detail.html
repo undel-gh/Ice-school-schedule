@@ -1,0 +1,98 @@
+{% load manager_labels %}
+{% extends "base.html" %}
+{% block title %}Покрытие {{ attendance.student.display_name }}{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>{{ attendance.student.display_name }}</h1>
+  <p class="page-header__meta">
+    {{ attendance.lesson.starts_at|date:"d.m.Y H:i" }}
+    · {{ attendance.lesson.lesson_type.name }}
+    · {{ attendance.lesson.group.name }}
+  </p>
+</header>
+
+<p><a href="{% url 'attendance_manager:coverage_report' %}">← К отчёту покрытия</a></p>
+
+<article class="report-card">
+  <h2>Attendance</h2>
+  <p>
+    Статус: <strong>{{ attendance.get_status_display }}</strong>
+    · занятие: {{ attendance.lesson.status|manager_label:"lesson_status" }}
+  </p>
+  {% if perms.audit.view_auditevent %}
+    <p>
+      <a href="{% url 'audit_manager:events' %}?aggregate_type=Attendance&aggregate_id={{ attendance.id }}">
+        Журнал Attendance
+      </a>
+    </p>
+  {% endif %}
+</article>
+
+<article class="report-card">
+  <h2>Текущее покрытие</h2>
+  {% if coverage %}
+    {% if coverage.one_time_entitlement %}
+      <p>Разовое право · {{ coverage.one_time_entitlement.entitlement_type|manager_label:"one_time_entitlement" }}</p>
+    {% elif coverage.makeup_entitlement %}
+      <p>
+        Отработка · {{ coverage.makeup_entitlement.get_reason_display }}
+        · {{ coverage.subscription_allowance.subscription.plan_name_snapshot }}
+      </p>
+    {% else %}
+      <p>
+        Абонемент · {{ coverage.subscription_allowance.subscription.plan_name_snapshot }}
+        · {{ coverage.subscription_allowance.category|manager_label:"subscription_category" }}
+      </p>
+    {% endif %}
+    {% if perms.audit.view_auditevent %}
+      <p>
+        <a href="{% url 'audit_manager:events' %}?aggregate_type=AttendanceCoverage&aggregate_id={{ coverage.id }}">
+          Журнал AttendanceCoverage
+        </a>
+      </p>
+    {% endif %}
+  {% else %}
+    <p><span class="badge badge--cancelled">Без активного покрытия</span></p>
+    <p class="muted">
+      Recovery повторяет обычный порядок покрытия: разовое право → отработка →
+      действующий абонемент → активация подходящего rolling-абонемента.
+    </p>
+    {% if perms.subscriptions.change_attendancecoverage %}
+      {% if lesson_is_completed and attendance.status == "present" %}
+        <form method="post" action="{% url 'attendance_manager:coverage_recover' attendance.id %}">
+          {% csrf_token %}
+          <button class="btn-secondary" type="submit">Повторить автоматическое покрытие</button>
+        </form>
+      {% elif attendance.lesson.status == "closed" %}
+        <p class="empty-state">
+          Для восстановления сначала переоткройте CLOSED занятие.
+        </p>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+</article>
+
+{% if targets %}
+<article class="report-card">
+  <h2>Доступные альтернативы</h2>
+  <ul>
+    {% for target in targets %}
+      <li>{{ target.label }}</li>
+    {% endfor %}
+  </ul>
+
+  {% if coverage and lesson_is_completed and perms.subscriptions.change_attendancecoverage %}
+    <form method="post" action="{% url 'attendance_manager:coverage_rebind' attendance.id %}">
+      {% csrf_token %}
+      <div class="field">
+        {{ rebind_form.source.label_tag }}
+        {{ rebind_form.source }}
+      </div>
+      <button class="btn-secondary" type="submit">Сменить источник покрытия</button>
+    </form>
+  {% endif %}
+</article>
+{% elif coverage %}
+  <p class="empty-state">Других допустимых источников покрытия сейчас нет.</p>
+{% endif %}
+{% endblock %}

@@ -1059,3 +1059,75 @@ def revoke_medical_absence(
         )
     return justification
 
+
+
+
+@transaction.atomic
+def recover_attendance_coverage(
+    *,
+    attendance_id: UUID,
+    actor: User,
+    now: datetime,
+) -> AttendanceCoverage:
+    require_permission(
+        actor,
+        "subscriptions.change_attendancecoverage",
+        "Attendance coverage recovery permission is required.",
+    )
+
+    attendance_ref = Attendance.objects.only("lesson_id").get(
+        pk=attendance_id
+    )
+    lesson = Lesson.objects.select_for_update().get(
+        pk=attendance_ref.lesson_id
+    )
+    if lesson.status != Lesson.Status.COMPLETED:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Attendance coverage can only be recovered while the "
+                    "lesson is COMPLETED. Reopen CLOSED attendance first."
+                )
+            }
+        )
+
+    attendance = (
+        Attendance.objects.select_for_update()
+        .select_related("lesson__lesson_type")
+        .get(pk=attendance_id)
+    )
+    if attendance.status != Attendance.Status.PRESENT:
+        raise ValidationError(
+            {"attendance": "Only PRESENT attendance can be recovered."}
+        )
+
+    existing = _active_coverage(attendance.id)
+    if existing is not None:
+        return existing
+
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=now,
+    )
+    if coverage is None:
+        raise ValidationError(
+            {
+                "attendance": (
+                    "No eligible coverage source is currently available. "
+                    "Create or restore an applicable right and retry."
+                )
+            }
+        )
+
+    _audit(
+        event_type="AttendanceCoverageRecovered",
+        attendance=attendance,
+        actor=actor,
+        payload={
+            "lesson_id": str(attendance.lesson_id),
+            "student_id": str(attendance.student_id),
+            "coverage_id": str(coverage.id),
+        },
+    )
+    return coverage
