@@ -14,6 +14,7 @@ from attendance.models import AbsenceJustification, Attendance
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
     AttendanceCoverage,
+    MakeupEntitlement,
     OneTimeEntitlement,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
@@ -306,3 +307,63 @@ def test_manager_coverage_change_checks_permission_before_lookup(client):
     )
 
     assert response.status_code == 403
+
+
+
+@pytest.mark.django_db
+def test_manager_rebind_uses_restore_credit_for_same_allowance_makeup(
+    client,
+):
+    manager = User.objects.create_user(
+        username="coverage-same-allowance-manager",
+        password="test",
+        is_staff=True,
+        is_superuser=True,
+    )
+    attendance = _make_completed_present_attendance(
+        actor=manager,
+        suffix="same-allowance",
+    )
+    subscription = _issue_ice_subscription(
+        student=attendance.student,
+        actor=manager,
+        starts_at=attendance.lesson.starts_at,
+        suffix="same-allowance",
+    )
+    allowance = subscription.allowances.get()
+    old_coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=manager,
+    )
+    assert old_coverage.subscription_allowance_id == allowance.id
+
+    lesson_date = school_date(attendance.lesson.starts_at)
+    makeup = MakeupEntitlement.objects.create(
+        student=attendance.student,
+        source_lesson=attendance.lesson,
+        source_subscription_allowance=allowance,
+        category="ice",
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=lesson_date - timedelta(days=1),
+        valid_until=lesson_date + timedelta(days=1),
+        created_by=manager,
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "attendance_manager:coverage_rebind",
+            kwargs={"attendance_id": attendance.id},
+        ),
+        {"source": f"makeup:{makeup.id}"},
+    )
+
+    assert response.status_code == 302
+    old_coverage.refresh_from_db()
+    assert old_coverage.reversed_at is not None
+    active = AttendanceCoverage.objects.get(
+        attendance=attendance,
+        reversed_at__isnull=True,
+    )
+    assert active.subscription_allowance_id == allowance.id
+    assert active.makeup_entitlement_id == makeup.id
