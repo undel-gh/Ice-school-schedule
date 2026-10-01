@@ -361,28 +361,46 @@ def _materialize_membership_rosters_from(
             end = make_school_aware(end)
         lessons = lessons.filter(starts_at__lt=end)
 
+    lessons = list(lessons)
+    if not lessons:
+        return 0
+
+    lesson_ids = [lesson.id for lesson in lessons]
+    existing_rosters = {
+        roster.lesson_id: roster
+        for roster in LessonRosterEntry.objects.select_for_update().filter(
+            lesson_id__in=lesson_ids,
+            student_id=membership.student_id,
+        )
+    }
+    explicit_enrollment_lesson_ids = set(
+        LessonEnrollment.objects.filter(
+            lesson_id__in=lesson_ids,
+            student_id=membership.student_id,
+            cancelled_at__isnull=True,
+        ).values_list("lesson_id", flat=True)
+    )
+    reservation_intervals = list(
+        GroupSeatReservation.objects.filter(
+            group_id=membership.group_id,
+            student_id=membership.student_id,
+            cancelled_at__isnull=True,
+            ends_on__gte=membership.starts_on,
+        ).values_list("starts_on", "ends_on")
+    )
+
     created_or_restored = 0
     for lesson in lessons:
         lesson_date = get_school_date(lesson.starts_at)
-        if GroupSeatReservation.objects.filter(
-            group_id=membership.group_id,
-            student_id=membership.student_id,
-            starts_on__lte=lesson_date,
-            ends_on__gt=lesson_date,
-            cancelled_at__isnull=True,
-        ).exists():
+        if any(
+            starts_on <= lesson_date < ends_on
+            for starts_on, ends_on in reservation_intervals
+        ):
             continue
 
-        roster = (
-            LessonRosterEntry.objects.select_for_update()
-            .filter(
-                lesson=lesson,
-                student_id=membership.student_id,
-            )
-            .first()
-        )
+        roster = existing_rosters.get(lesson.id)
         if roster is None:
-            LessonRosterEntry.objects.create(
+            roster = LessonRosterEntry.objects.create(
                 lesson=lesson,
                 student_id=membership.student_id,
                 source=LessonRosterEntry.Source.GROUP,
@@ -390,15 +408,12 @@ def _materialize_membership_rosters_from(
                 added_by=actor,
                 is_active=True,
             )
+            existing_rosters[lesson.id] = roster
             created_or_restored += 1
             continue
         if roster.is_active:
             continue
-        if LessonEnrollment.objects.filter(
-            lesson=lesson,
-            student_id=membership.student_id,
-            cancelled_at__isnull=True,
-        ).exists():
+        if lesson.id in explicit_enrollment_lesson_ids:
             continue
 
         roster.source = LessonRosterEntry.Source.GROUP
