@@ -5,13 +5,22 @@ from datetime import datetime, time, timedelta
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from django.utils import timezone
 
 from accounts.models import CoachProfile, Student, StudentAccess
+from accounts.services import update_student
 from audit.models import AuditEvent
 from core.time import make_school_aware, school_date
-from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
+from scheduling.models import (
+    GroupMembership,
+    Lesson,
+    LessonType,
+    ScheduleTemplate,
+    TrainingGroup,
+    Venue,
+)
 from scheduling.services import generate_lessons, reassign_lesson_coach
 
 User = get_user_model()
@@ -57,6 +66,52 @@ def test_manager_creates_and_updates_student(client, manager):
         event_type="StudentChanged",
         aggregate_id=student.id,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_student_reactivation_rejects_membership_when_group_is_full(manager):
+    today = school_date(timezone.now())
+    group = TrainingGroup.objects.create(
+        code="student-reactivation-full",
+        name="Full group",
+        capacity=2,
+    )
+    returning = Student.objects.create(
+        display_name="Returning",
+        is_active=False,
+    )
+    first = Student.objects.create(display_name="First")
+    second = Student.objects.create(display_name="Second")
+
+    GroupMembership.objects.create(
+        student=returning,
+        group=group,
+        starts_on=today - timedelta(days=30),
+        ends_on=None,
+        created_by=manager,
+    )
+    for student in (first, second):
+        GroupMembership.objects.create(
+            student=student,
+            group=group,
+            starts_on=today,
+            ends_on=None,
+            created_by=manager,
+        )
+
+    with pytest.raises(ValidationError) as exc:
+        update_student(
+            student_id=returning.id,
+            display_name=returning.display_name,
+            is_active=True,
+            actor=manager,
+        )
+
+    returning.refresh_from_db()
+    assert returning.is_active is False
+    assert "is_active" in exc.value.message_dict
+    assert "Full group" in exc.value.message_dict["is_active"][0]
+    assert "End or move the membership first" in exc.value.message_dict["is_active"][0]
 
 
 @pytest.mark.django_db
