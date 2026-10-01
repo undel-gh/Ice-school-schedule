@@ -115,6 +115,49 @@ def test_student_reactivation_rejects_membership_when_group_is_full(manager):
 
 
 @pytest.mark.django_db
+def test_student_reactivation_checks_future_membership_capacity(manager):
+    today = school_date(timezone.now())
+    group = TrainingGroup.objects.create(
+        code="student-reactivation-future-full",
+        name="Future full group",
+        capacity=1,
+    )
+    returning = Student.objects.create(
+        display_name="Future returning",
+        is_active=False,
+    )
+    occupier = Student.objects.create(display_name="Future occupier")
+    return_starts_on = today + timedelta(days=10)
+
+    GroupMembership.objects.create(
+        student=returning,
+        group=group,
+        starts_on=return_starts_on,
+        ends_on=None,
+        created_by=manager,
+    )
+    GroupMembership.objects.create(
+        student=occupier,
+        group=group,
+        starts_on=today + timedelta(days=5),
+        ends_on=None,
+        created_by=manager,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        update_student(
+            student_id=returning.id,
+            display_name=returning.display_name,
+            is_active=True,
+            actor=manager,
+        )
+
+    returning.refresh_from_db()
+    assert returning.is_active is False
+    assert "Future full group" in exc.value.message_dict["is_active"][0]
+
+
+@pytest.mark.django_db
 def test_manager_creates_and_disables_student_access(client, manager):
     student = Student.objects.create(display_name="Ученик")
     guardian = User.objects.create_user(
