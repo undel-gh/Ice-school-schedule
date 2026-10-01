@@ -79,6 +79,7 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.manager_operations",
                 "core.context_processors.student_navigation",
+                "accounts.context_processors.external_auth",
             ],
         },
     },
