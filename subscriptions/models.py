@@ -937,6 +937,10 @@ class GroupPlaceHold(UUIDModel):
         on_delete=models.PROTECT,
         related_name="suspending_place_hold",
     )
+    suspended_membership_ends_on_snapshot = models.DateField(
+        null=True,
+        blank=True,
+    )
     restored_membership = models.OneToOneField(
         GroupMembership,
         null=True,
