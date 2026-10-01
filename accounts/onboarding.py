@@ -632,7 +632,20 @@ def unlink_external_identity(
                     )
                 }
             )
+        sessions_invalidated = False
+        if not target_user.has_usable_password():
+            # External-only accounts use Django's password hash solely as the
+            # session authentication hash. Rotating the unusable value makes
+            # already-issued sessions fail their auth-hash check, so a stolen
+            # provider cannot keep an old authenticated session after manager
+            # unlink.
+            target_user.set_unusable_password()
+            target_user.save(update_fields=["password"])
+            sessions_invalidated = True
         source = "manager"
+
+    if self_service:
+        sessions_invalidated = False
 
     identity_id_value = identity.id
     provider = identity.provider
@@ -647,5 +660,6 @@ def unlink_external_identity(
             "provider": provider,
             "user_id": str(target_user_id),
             "source": source,
+            "sessions_invalidated": sessions_invalidated,
         },
     )
