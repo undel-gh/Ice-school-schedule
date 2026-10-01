@@ -23,6 +23,13 @@ class TrainingGroup(UUIDModel, TimeStampedModel):
                 condition=models.Q(capacity__isnull=True) | models.Q(capacity__gte=1),
                 name="training_group_capacity_gte_1",
             ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(capacity__isnull=True)
+                    | models.Q(capacity__gte=models.F("default_minimum_attendees"))
+                ),
+                name="training_group_capacity_gte_minimum",
+            ),
         ]
         indexes = [models.Index(fields=["is_active", "name"], name="training_group_active_name_idx")]
 
