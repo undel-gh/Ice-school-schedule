@@ -11,13 +11,21 @@
     <article class="report-card">
       <h2>{{ identity.get_provider_display }}</h2>
       <p>Подключён {% if identity.last_used_at %}· последний вход {{ identity.last_used_at|date:"d.m.Y H:i" }}{% endif %}</p>
+      {% if identities|length > 1 %}
+        <form method="post" action="{% url 'external_auth:unlink' identity.id %}">
+          {% csrf_token %}
+          <button class="btn-absent" type="submit">Отвязать {{ identity.get_provider_display }}</button>
+        </form>
+      {% else %}
+        <p class="muted">Последний внешний способ входа можно отключить только после подключения другого.</p>
+      {% endif %}
     </article>
   {% empty %}
     <p class="empty-state">Внешние способы входа пока не подключены.</p>
   {% endfor %}
 </div>
 
-{% if available_providers %}
+{% if external_auth_link_allowed and available_providers %}
 <section class="report-card">
   <h2>Подключить ещё один способ входа</h2>
   <div class="toolbar">
