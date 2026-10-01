@@ -49,4 +49,15 @@ class Migration(migrations.Migration):
             backfill_active_place_hold_reservations,
             noop_reverse,
         ),
+        migrations.AddConstraint(
+            model_name="groupplacehold",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    ("status", "active"),
+                    _negated=True,
+                )
+                | models.Q(("seat_reservation__isnull", False)),
+                name="grouphold_active_has_seat_ck",
+            ),
+        ),
     ]
