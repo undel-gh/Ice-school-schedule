@@ -14,7 +14,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from audit.services import record_event
-from core.permissions import has_manager_operations_access, require_permission
+from core.permissions import has_manager_operations_assignment, require_permission
 
 from .models import (
     AccountInvitation,
@@ -30,7 +30,7 @@ User = get_user_model()
 def external_auth_role_allowed(user: User) -> bool:
     if user.is_staff or user.is_superuser:
         return False
-    if has_manager_operations_access(user):
+    if has_manager_operations_assignment(user):
         return False
     return True
 
