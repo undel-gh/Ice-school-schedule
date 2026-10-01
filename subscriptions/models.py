@@ -6,7 +6,12 @@ from accounts.models import Student
 from attendance.models import AbsenceJustification, Attendance
 from core.choices import SubscriptionCategory
 from core.models import TimeStampedModel, UUIDModel
-from scheduling.models import GroupSeatReservation, Lesson, TrainingGroup
+from scheduling.models import (
+    GroupMembership,
+    GroupSeatReservation,
+    Lesson,
+    TrainingGroup,
+)
 
 
 class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
@@ -904,6 +909,7 @@ class GroupPlaceHold(UUIDModel):
     class Status(models.TextChoices):
         PENDING_PAYMENT = "pending_payment", "Pending payment"
         ACTIVE = "active", "Active"
+        RESTORED = "restored", "Restored"
         CANCELLED = "cancelled", "Cancelled"
         EXPIRED = "expired", "Expired"
 
@@ -923,6 +929,20 @@ class GroupPlaceHold(UUIDModel):
         blank=True,
         on_delete=models.PROTECT,
         related_name="place_hold",
+    )
+    suspended_membership = models.OneToOneField(
+        GroupMembership,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="suspending_place_hold",
+    )
+    restored_membership = models.OneToOneField(
+        GroupMembership,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="restored_from_place_hold",
     )
     period_scheme = models.ForeignKey(
         SubscriptionPeriodScheme,
@@ -964,6 +984,14 @@ class GroupPlaceHold(UUIDModel):
         blank=True,
         default="",
     )
+    restored_at = models.DateTimeField(null=True, blank=True)
+    restored_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
 
     class Meta:
         constraints = [
@@ -973,10 +1001,10 @@ class GroupPlaceHold(UUIDModel):
             ),
             models.CheckConstraint(
                 condition=(
-                    ~models.Q(status="active")
+                    ~models.Q(status__in=["active", "restored"])
                     | models.Q(seat_reservation__isnull=False)
                 ),
-                name="grouphold_active_has_seat_ck",
+                name="grouphold_effective_has_seat_ck",
             ),
             models.UniqueConstraint(
                 fields=["student", "group", "period_from"],
@@ -989,6 +1017,11 @@ class GroupPlaceHold(UUIDModel):
                         status="pending_payment",
                         fee_confirmed_at__isnull=True,
                         fee_confirmed_by__isnull=True,
+                        seat_reservation__isnull=True,
+                        suspended_membership__isnull=True,
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
                         cancellation_reason="",
@@ -997,18 +1030,40 @@ class GroupPlaceHold(UUIDModel):
                         status="active",
                         fee_confirmed_at__isnull=False,
                         fee_confirmed_by__isnull=False,
+                        seat_reservation__isnull=False,
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                    | models.Q(
+                        status="restored",
+                        fee_confirmed_at__isnull=False,
+                        fee_confirmed_by__isnull=False,
+                        seat_reservation__isnull=False,
+                        restored_membership__isnull=False,
+                        restored_at__isnull=False,
+                        restored_by__isnull=False,
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
                         cancellation_reason="",
                     )
                     | models.Q(
                         status="cancelled",
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
                         cancelled_at__isnull=False,
                         cancellation_reason__gt="",
                     )
                     | models.Q(
                         status="expired",
                         fee_confirmed_at__isnull=False,
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
                         cancelled_at__isnull=True,
                         cancelled_by__isnull=True,
                         cancellation_reason="",
