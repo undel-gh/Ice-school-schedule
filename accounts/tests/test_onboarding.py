@@ -675,3 +675,43 @@ def test_recovery_invitation_requires_inactive_nonprivileged_target(manager):
             actor=manager,
             recovery_user_id=privileged.id,
         )
+
+
+
+@pytest.mark.django_db
+def test_recovery_invitation_requires_old_identities_removed(manager):
+    user = User.objects.create_user(
+        username="dirty-recovery-target",
+        display_name="Родитель",
+        is_active=False,
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    identity = ExternalIdentity.objects.create(
+        user=user,
+        provider=ExternalIdentity.Provider.VK,
+        provider_subject="still-linked-vk",
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        create_account_invitation(
+            kind=AccountInvitation.Kind.RECOVERY,
+            actor=manager,
+            recovery_user_id=user.id,
+        )
+
+    assert "Remove all old external identities" in exc.value.message_dict[
+        "recovery_user"
+    ][0]
+
+    unlink_external_identity(
+        identity_id=identity.id,
+        actor=manager,
+        self_service=False,
+    )
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.RECOVERY,
+        actor=manager,
+        recovery_user_id=user.id,
+    )
+    assert created.invitation.recovery_user_id == user.id
