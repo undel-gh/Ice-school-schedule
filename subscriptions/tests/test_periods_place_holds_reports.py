@@ -472,13 +472,15 @@ def test_group_place_hold_expires_after_period(actor, student, context):
     from subscriptions.services import process_subscription_lifecycle
 
     result = process_subscription_lifecycle(
-        as_of=date(2026, 11, 1),
+        as_of=date(2026, 11, 2),
         actor=actor,
     )
 
     hold.refresh_from_db()
+    hold.seat_reservation.refresh_from_db()
     assert result["group_place_hold_expired"] == 1
     assert hold.status == GroupPlaceHold.Status.EXPIRED
+    assert hold.seat_reservation.cancelled_at is not None
 
 
 @pytest.mark.django_db
