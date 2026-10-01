@@ -13,6 +13,9 @@
 {% for access in accesses %}
 <article class="lesson-card"><div class="lesson-card__top"><div><strong>{{ access.user.display_label }}</strong><p class="lesson-card__meta">{% if access.role == "self" %}Сам ученик{% else %}Родитель / представитель{% endif %}</p></div>{% if access.is_active %}<span class="badge badge--covered">активен</span>{% else %}<span class="badge badge--cancelled">отключён</span>{% endif %}</div>
 {% if perms.accounts.change_studentaccess %}<a href="{% url 'accounts_manager:student_access_edit' access.id %}">Изменить доступ</a>{% endif %}
+{% if not access.user.is_active and perms.accounts.add_accountinvitation %}
+  · <a href="{% url 'accounts_manager:invitation_create' %}?recovery_user={{ access.user.id }}">Восстановить внешний вход</a>
+{% endif %}
 {% if access.user.external_identities.all %}
   <div class="toolbar">
     {% for identity in access.user.external_identities.all %}
