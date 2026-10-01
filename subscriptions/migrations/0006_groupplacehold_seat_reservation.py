@@ -105,6 +105,7 @@ def noop_reverse(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
+        ("attendance", "0001_initial"),
         ("scheduling", "0002_group_capacity_seat_reservation"),
         ("subscriptions", "0005_pending_subscription_dates"),
     ]
