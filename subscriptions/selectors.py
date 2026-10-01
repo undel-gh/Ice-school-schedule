@@ -19,6 +19,7 @@ from .models import (
     GroupPlaceHold,
     Subscription,
     SubscriptionPeriod,
+    SubscriptionPeriodScheme,
     MakeupEntitlement,
     OneTimeEntitlement,
     SubscriptionAllowance,
@@ -86,6 +87,14 @@ class ResolvedCompensationAction:
     requirement: str
     target_from: date | None
     target_until: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class NextStudentPeriodResolution:
+    subscription: Subscription
+    starts_on: date | None
+    ends_on: date | None
+    pending_activation: bool
 
 
 def get_applicable_absence_policy(
@@ -191,6 +200,107 @@ def resolve_compensation_actions(
             )
         )
     return tuple(resolved)
+
+
+def resolve_next_student_period(
+    *,
+    source_subscription: Subscription,
+    category: str,
+) -> NextStudentPeriodResolution | None:
+    """
+    Resolve the student's immediate next non-cancelled subscription period.
+
+    Dated subscriptions are ordered by valid_from. A pending rolling
+    subscription participates by billing_period.reference_date because its
+    actual dates are unknown until the first covered lesson.
+    """
+    if source_subscription.valid_until is None:
+        raise ValidationError(
+            {
+                "source_subscription": (
+                    "Source subscription has no resolved end date."
+                )
+            }
+        )
+
+    source_end = source_subscription.valid_until
+    base = Subscription.objects.filter(
+        student_id=source_subscription.student_id,
+        cancelled_at__isnull=True,
+        allowances__category=category,
+    ).exclude(pk=source_subscription.pk)
+
+    dated = tuple(
+        base.filter(
+            valid_from__isnull=False,
+            valid_until__isnull=False,
+            valid_from__gt=source_end,
+        ).order_by("valid_from", "created_at", "id")
+    )
+    pending_rolling = tuple(
+        base.filter(
+            valid_from__isnull=True,
+            valid_until__isnull=True,
+            billing_period__state=SubscriptionPeriod.State.PENDING,
+            billing_period__mode_snapshot=(
+                SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+            ),
+            billing_period__reference_date__gt=source_end,
+        )
+        .select_related("billing_period")
+        .order_by(
+            "billing_period__reference_date",
+            "created_at",
+            "id",
+        )
+    )
+
+    candidates: list[tuple[date, NextStudentPeriodResolution]] = []
+    for subscription in dated:
+        candidates.append(
+            (
+                subscription.valid_from,
+                NextStudentPeriodResolution(
+                    subscription=subscription,
+                    starts_on=subscription.valid_from,
+                    ends_on=subscription.valid_until,
+                    pending_activation=False,
+                ),
+            )
+        )
+    for subscription in pending_rolling:
+        candidates.append(
+            (
+                subscription.billing_period.reference_date,
+                NextStudentPeriodResolution(
+                    subscription=subscription,
+                    starts_on=None,
+                    ends_on=None,
+                    pending_activation=True,
+                ),
+            )
+        )
+
+    if not candidates:
+        return None
+
+    earliest_date = min(item[0] for item in candidates)
+    earliest = [
+        resolution
+        for ordering_date, resolution in candidates
+        if ordering_date == earliest_date
+    ]
+    if len(earliest) > 1:
+        raise ValidationError(
+            {
+                "target_subscription": (
+                    "Multiple subscriptions match the next student period "
+                    f"starting from {earliest_date.isoformat()}. Resolve the "
+                    "duplicate/overlap before issuing compensation."
+                )
+            }
+        )
+    return earliest[0]
 
 
 def allowance_balance(allowance_id: UUID) -> int:

@@ -17,6 +17,7 @@ from attendance.models import Attendance
 from core.choices import SubscriptionCategory
 from core.time import make_school_aware, school_date
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from subscriptions.catalog_forms import ACTION_TYPE_CHOICES
 from subscriptions.models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
@@ -681,3 +682,46 @@ def test_plan_allowance_validation_tracks_subscription_category_values(
     assert set(
         plan.allowances.values_list("category", flat=True)
     ) == set(SubscriptionCategory.values)
+
+
+
+@pytest.mark.django_db
+def test_billing_recalculation_is_outside_manager_catalog_and_services(manager):
+    assert (
+        AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        not in {value for value, _label in ACTION_TYPE_CHOICES}
+    )
+    policy = AbsenceCompensationPolicy.objects.create(
+        code="no-billing-recalculation",
+        version=1,
+        name="No billing recalculation",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.OTHER,
+        justification_requirement=(
+            AbsenceCompensationPolicy.JustificationRequirement.NONE
+        ),
+        max_eligible_absences=None,
+        limit_scope=AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD,
+        effective_from=date(2026, 1, 1),
+        is_active=True,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="outside the scheduling system",
+    ):
+        create_absence_compensation_policy_action(
+            policy_id=policy.id,
+            action_type=(
+                AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+            ),
+            target_period_rule=(
+                AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+            ),
+            requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+            validity_days=None,
+            priority=100,
+            is_active=True,
+            actor=manager,
+        )
+
+    assert not policy.actions.exists()

@@ -2801,7 +2801,7 @@ def test_used_compensation_makeup_does_not_block_source_subscription_cancellatio
 
 
 @pytest.mark.django_db
-def test_next_period_paid_makeup_requires_target_before_authorization(
+def test_next_period_paid_makeup_waits_until_next_subscription_exists(
     actor,
     context,
 ):
@@ -2824,7 +2824,7 @@ def test_next_period_paid_makeup_requires_target_before_authorization(
 
     with pytest.raises(
         ValidationError,
-        match="requires an explicit target subscription before authorization",
+        match="No next student period subscription is available yet",
     ):
         authorize_paid_makeup_from_case(
             case_id=case.id,
@@ -2960,7 +2960,6 @@ def test_paid_makeup_accepts_pending_rolling_target_subscription(actor, context)
     grant = authorize_paid_makeup_from_case(
         case_id=case.id,
         actor=actor,
-        target_subscription_id=target.id,
         fee_confirmed=True,
         now=attendance.marked_at + timedelta(hours=1),
     )
@@ -3190,3 +3189,315 @@ def test_rolling_activation_revert_is_blocked_by_active_compensation_case_and_gr
     assert event.payload["reason"] == "dependent_rights_exist"
     assert event.payload["dependencies"]["active_compensation_cases"] is True
     assert event.payload["dependencies"]["active_compensation_grants"] is True
+
+
+
+@pytest.mark.django_db
+def test_free_makeup_resolves_next_calendar_period_automatically(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy(code="free-next-calendar-policy")
+    action = policy.actions.get(
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP
+    )
+    action.target_period_rule = (
+        AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+    )
+    action.save(update_fields=["target_period_rule"])
+
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="free-next-calendar-scheme",
+        name="Calendar",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="free-next-calendar-plan",
+        name="Calendar plan",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    source = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 20),
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 10),
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    assert case.source_subscription_allowance.subscription_id == source.id
+
+    grant = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    entitlement = grant.makeup_entitlement
+    assert grant.target_subscription_id == target.id
+    assert entitlement is not None
+    assert entitlement.valid_from == date(2026, 10, 1)
+    assert entitlement.valid_until == date(2026, 10, 31)
+
+
+@pytest.mark.django_db
+def test_paid_makeup_resolves_next_fixed_28_period_automatically(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy(code="paid-next-fixed-policy")
+    add_paid_action(policy)
+
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="paid-next-fixed-scheme",
+        name="Fixed 28",
+        mode=SubscriptionPeriodScheme.Mode.FIXED_28_DAYS,
+        fixed_anchor_date=date(2026, 9, 1),
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="paid-next-fixed-plan",
+        name="Fixed plan",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    source = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 20),
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 29),
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    assert source.valid_until == date(2026, 9, 28)
+    assert target.valid_from == date(2026, 9, 29)
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    assert grant.target_subscription_id == target.id
+
+
+@pytest.mark.django_db
+def test_free_next_period_waits_for_pending_rolling_activation(actor, context):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy(code="free-next-rolling-policy")
+    action = policy.actions.get(
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP
+    )
+    action.target_period_rule = (
+        AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+    )
+    action.save(update_fields=["target_period_rule"])
+
+    source = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="free-next-rolling-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="free-next-rolling-scheme",
+        name="Rolling target",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="free-next-rolling-plan",
+        name="Rolling target",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    assert case.source_subscription_allowance.subscription_id == source.id
+
+    with pytest.raises(
+        ValidationError,
+        match="pending rolling subscription",
+    ):
+        materialize_free_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert not case.action_grants.exists()
+
+    activation_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=school_dt(2026, 10, 5, 18, 0),
+        ends_at=school_dt(2026, 10, 5, 19, 0),
+        minimum_attendees=1,
+        rsvp_deadline=school_dt(2026, 10, 5, 16, 0),
+        decision_deadline=school_dt(2026, 10, 5, 17, 0),
+        status=Lesson.Status.COMPLETED,
+    )
+    activate_rolling_subscription_period(
+        subscription_id=target.id,
+        lesson_id=activation_lesson.id,
+        actor=actor,
+        now=school_dt(2026, 10, 5, 19, 0),
+    )
+
+    grant = materialize_free_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        now=school_dt(2026, 10, 5, 19, 30),
+    )
+    entitlement = grant.makeup_entitlement
+    assert grant.target_subscription_id == target.id
+    assert entitlement is not None
+    assert entitlement.valid_from == date(2026, 10, 5)
+    assert entitlement.valid_until == date(2026, 11, 1)
+
+
+@pytest.mark.django_db
+def test_next_period_resolution_rejects_ambiguous_earliest_subscription(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy(code="ambiguous-next-policy")
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="ambiguous-next-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    for code in ("ambiguous-next-a", "ambiguous-next-b"):
+        issue_ice_subscription_range(
+            actor=actor,
+            context=context,
+            code=code,
+            valid_from=date(2026, 10, 1),
+            valid_until=date(2026, 10, 31),
+        )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="Multiple subscriptions match the next student period",
+    ):
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert not case.action_grants.exists()
+
+
+@pytest.mark.django_db
+def test_explicit_paid_target_cannot_override_resolved_next_period(
+    actor,
+    context,
+):
+    attendance = make_absence(context=context, actor=actor)
+    policy = make_policy(code="explicit-wrong-next-policy")
+    add_paid_action(policy)
+    issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="explicit-wrong-next-source",
+        valid_from=date(2026, 9, 1),
+        valid_until=date(2026, 9, 30),
+    )
+    immediate = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="explicit-wrong-next-october",
+        valid_from=date(2026, 10, 1),
+        valid_until=date(2026, 10, 31),
+    )
+    later = issue_ice_subscription_range(
+        actor=actor,
+        context=context,
+        code="explicit-wrong-next-november",
+        valid_from=date(2026, 11, 1),
+        valid_until=date(2026, 11, 30),
+    )
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="not the resolved next student period",
+    ):
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            target_subscription_id=later.id,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert immediate.id != later.id
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert not case.action_grants.exists()

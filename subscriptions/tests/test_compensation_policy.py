@@ -104,7 +104,7 @@ def test_policy_code_can_disambiguate_variants():
 
 
 @pytest.mark.django_db
-def test_policy_can_offer_makeup_and_recalculation_together():
+def test_legacy_billing_action_remains_readable_in_policy_resolution():
     policy = make_policy(
         code="medical",
         absence_reason=AbsenceCompensationPolicy.AbsenceReason.MEDICAL,
