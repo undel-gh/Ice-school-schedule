@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Новое приглашение{% endblock %}
+{% block content %}
+<header class="page-header">
+  <h1>Новое приглашение</h1>
+  <p class="page-header__meta">Ссылка одноразовая. Отправьте её пользователю по вашему обычному каналу связи.</p>
+</header>
+<form class="report-card manager-form" method="post">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <button class="btn-primary" type="submit">Создать ссылку</button>
+</form>
+{% endblock %}
