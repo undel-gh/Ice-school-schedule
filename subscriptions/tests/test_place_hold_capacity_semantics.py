@@ -20,7 +20,11 @@ from scheduling.models import (
     TrainingGroup,
     Venue,
 )
-from scheduling.services import create_group_membership, publish_lesson
+from scheduling.services import (
+    add_lesson_enrollment,
+    create_group_membership,
+    publish_lesson,
+)
 from subscriptions.models import GroupPlaceHold, SubscriptionPeriodScheme
 from subscriptions.services import (
     cancel_group_place_hold,
@@ -211,6 +215,127 @@ def test_active_place_hold_suppresses_roster_and_membership_resumes_after_period
         student=holder,
         is_active=True,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_hold_activation_reconciles_already_published_group_roster(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, period_until = _hold_window()
+    group = TrainingGroup.objects.create(
+        code="hold-published-roster",
+        name="Hold published roster",
+        capacity=2,
+    )
+    holder = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Published holder",
+    )
+    hold = create_group_place_hold(
+        student_id=holder.id,
+        group_id=group.id,
+        period_scheme_id=rolling_scheme.id,
+        period_from=period_from,
+        period_until=period_until,
+        actor=hold_manager,
+    )
+
+    lesson = _lesson(
+        group=group,
+        actor=hold_manager,
+        lesson_date=period_from,
+        suffix="published-before-hold",
+    )
+    publish_lesson(
+        lesson_id=lesson.id,
+        actor=hold_manager,
+        now=lesson.rsvp_deadline - timedelta(minutes=1),
+    )
+    roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=holder,
+    )
+    assert roster.source == LessonRosterEntry.Source.GROUP
+    assert roster.is_active is True
+
+    activated_at = timezone.now()
+    confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=hold_manager,
+        now=activated_at,
+    )
+    roster.refresh_from_db()
+    assert roster.is_active is False
+    assert roster.deactivated_at == activated_at
+
+    cancel_group_place_hold(
+        hold_id=hold.id,
+        actor=hold_manager,
+        reason="Return to regular training",
+        now=activated_at + timedelta(minutes=1),
+    )
+    roster.refresh_from_db()
+    assert roster.is_active is True
+    assert roster.deactivated_at is None
+
+
+@pytest.mark.django_db
+def test_hold_does_not_suppress_explicit_lesson_enrollment(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, period_until = _hold_window()
+    group = TrainingGroup.objects.create(
+        code="hold-explicit-enrollment",
+        name="Hold explicit enrollment",
+        capacity=2,
+    )
+    holder = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Explicit holder",
+    )
+    hold = create_group_place_hold(
+        student_id=holder.id,
+        group_id=group.id,
+        period_scheme_id=rolling_scheme.id,
+        period_from=period_from,
+        period_until=period_until,
+        actor=hold_manager,
+    )
+
+    lesson = _lesson(
+        group=group,
+        actor=hold_manager,
+        lesson_date=period_from,
+        suffix="explicit",
+    )
+    publish_lesson(
+        lesson_id=lesson.id,
+        actor=hold_manager,
+        now=lesson.rsvp_deadline - timedelta(minutes=1),
+    )
+    add_lesson_enrollment(
+        lesson_id=lesson.id,
+        student_id=holder.id,
+        reason="administrative",
+        actor=hold_manager,
+    )
+
+    confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=hold_manager,
+        now=timezone.now(),
+    )
+
+    roster = LessonRosterEntry.objects.get(
+        lesson=lesson,
+        student=holder,
+    )
+    assert roster.source == LessonRosterEntry.Source.ENROLLMENT
+    assert roster.is_active is True
 
 
 @pytest.mark.django_db
