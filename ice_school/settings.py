@@ -200,3 +200,25 @@ AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"], "ip_address"]
 # Trust X-Real-IP only when REMOTE_ADDR is an explicitly configured proxy.
 # Direct clients cannot self-assert X-Real-IP.
 AXES_CLIENT_IP_CALLABLE = "ice_school.security.get_axes_client_ip"
+
+
+# External identity providers. OAuth tokens are used only during callback
+# processing and are never persisted by the application.
+YANDEX_OAUTH_CLIENT_ID = os.environ.get("YANDEX_OAUTH_CLIENT_ID", "").strip()
+YANDEX_OAUTH_CLIENT_SECRET = os.environ.get(
+    "YANDEX_OAUTH_CLIENT_SECRET", ""
+).strip()
+YANDEX_OAUTH_SCOPE = os.environ.get(
+    "YANDEX_OAUTH_SCOPE", "login:info"
+).strip()
+VKID_CLIENT_ID = os.environ.get("VKID_CLIENT_ID", "").strip()
+VKID_SCOPE = os.environ.get("VKID_SCOPE", "").strip()
+EXTERNAL_AUTH_FLOW_TTL_SECONDS = int(
+    os.environ.get("EXTERNAL_AUTH_FLOW_TTL_SECONDS", "600")
+)
+EXTERNAL_AUTH_HTTP_TIMEOUT_SECONDS = int(
+    os.environ.get("EXTERNAL_AUTH_HTTP_TIMEOUT_SECONDS", "10")
+)
+ACCOUNT_INVITATION_TTL_HOURS = int(
+    os.environ.get("ACCOUNT_INVITATION_TTL_HOURS", "168")
+)
