@@ -38,6 +38,18 @@
           {% endif %}
         </p>
 
+        {% if hold.seat_reservation %}
+          <p class="lesson-card__meta">
+            Место удерживается до {{ hold.seat_reservation.ends_on|date:"d.m.Y" }}
+            {% if hold.status == "active" %}· возврат ещё не оформлен{% endif %}
+          </p>
+        {% endif %}
+        {% if hold.restored_membership %}
+          <p class="lesson-card__meta">
+            Возврат в состав с {{ hold.restored_membership.starts_on|date:"d.m.Y" }}
+          </p>
+        {% endif %}
+
         {% if hold.status == "pending_payment" %}
           <div class="action-row">
             <form method="post" action="{% url 'subscriptions:manager_place_hold_confirm' hold.id %}">
@@ -57,6 +69,12 @@
             </form>
           </div>
         {% elif hold.status == "active" %}
+          <div class="action-row">
+            <form method="post" action="{% url 'subscriptions:manager_place_hold_restore' hold.id %}">
+              {% csrf_token %}
+              <button class="btn-present" type="submit">Восстановить в группе</button>
+            </form>
+          </div>
           <form method="post" action="{% url 'subscriptions:manager_place_hold_cancel' hold.id %}">
             {% csrf_token %}
             <div class="field">
