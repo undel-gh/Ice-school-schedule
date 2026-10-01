@@ -10,7 +10,7 @@ from uuid import UUID
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from audit.services import record_event
@@ -288,31 +288,62 @@ def authenticate_external_identity(
     invitation = AccountInvitation.objects.select_for_update().get(pk=invitation_id)
     _validate_invitation_pending(invitation, now=authenticated_at)
 
-    user = User(username=_technical_username(), is_active=True)
-    user.set_unusable_password()
-    user.save()
-    identity = ExternalIdentity.objects.create(
-        user=user,
-        provider=provider,
-        provider_subject=subject,
-        last_used_at=authenticated_at,
+    # Re-check after locking the invitation. Another invitation for the same
+    # provider subject may have completed between the first lookup and now.
+    identity = (
+        ExternalIdentity.objects.select_for_update()
+        .select_related("user")
+        .filter(provider=provider, provider_subject=subject)
+        .first()
     )
+    created_identity = False
+    if identity is not None:
+        user = identity.user
+        if not user.is_active:
+            raise ValidationError({"user": "This account is inactive."})
+    else:
+        try:
+            with transaction.atomic():
+                user = User(username=_technical_username(), is_active=True)
+                user.set_unusable_password()
+                user.save()
+                identity = ExternalIdentity.objects.create(
+                    user=user,
+                    provider=provider,
+                    provider_subject=subject,
+                    last_used_at=authenticated_at,
+                )
+                created_identity = True
+        except IntegrityError:
+            identity = (
+                ExternalIdentity.objects.select_for_update()
+                .select_related("user")
+                .get(provider=provider, provider_subject=subject)
+            )
+            user = identity.user
+            if not user.is_active:
+                raise ValidationError({"user": "This account is inactive."})
+
     _accept_invitation_locked(
         invitation=invitation,
         user=user,
         accepted_at=authenticated_at,
     )
-    record_event(
-        event_type="ExternalIdentityLinked",
-        aggregate_type="ExternalIdentity",
-        aggregate_id=identity.id,
-        actor=user,
-        payload={
-            "provider": provider,
-            "user_id": str(user.id),
-            "source": "invitation",
-        },
-    )
+    if not created_identity:
+        identity.last_used_at = authenticated_at
+        identity.save(update_fields=["last_used_at"])
+    else:
+        record_event(
+            event_type="ExternalIdentityLinked",
+            aggregate_type="ExternalIdentity",
+            aggregate_id=identity.id,
+            actor=user,
+            payload={
+                "provider": provider,
+                "user_id": str(user.id),
+                "source": "invitation",
+            },
+        )
     return user
 
 
@@ -331,6 +362,7 @@ def link_external_identity(
 
     linked_at = now or timezone.now()
     subject = str(provider_subject).strip()
+    locked_user = User.objects.select_for_update().get(pk=user.id)
     existing_subject = (
         ExternalIdentity.objects.select_for_update()
         .filter(provider=provider, provider_subject=subject)
@@ -347,7 +379,7 @@ def link_external_identity(
 
     existing_provider = (
         ExternalIdentity.objects.select_for_update()
-        .filter(user=user, provider=provider)
+        .filter(user=locked_user, provider=provider)
         .first()
     )
     if existing_provider is not None:
@@ -355,12 +387,26 @@ def link_external_identity(
             {"external_identity": "This provider is already linked to the account."}
         )
 
-    identity = ExternalIdentity.objects.create(
-        user=user,
-        provider=provider,
-        provider_subject=subject,
-        last_used_at=linked_at,
-    )
+    try:
+        with transaction.atomic():
+            identity = ExternalIdentity.objects.create(
+                user=locked_user,
+                provider=provider,
+                provider_subject=subject,
+                last_used_at=linked_at,
+            )
+    except IntegrityError as exc:
+        conflict = ExternalIdentity.objects.filter(
+            provider=provider,
+            provider_subject=subject,
+        ).first()
+        if conflict is not None and conflict.user_id == locked_user.id:
+            conflict.last_used_at = linked_at
+            conflict.save(update_fields=["last_used_at"])
+            return conflict
+        raise ValidationError(
+            {"external_identity": "This external account is linked to another user."}
+        ) from exc
     record_event(
         event_type="ExternalIdentityLinked",
         aggregate_type="ExternalIdentity",
@@ -368,7 +414,7 @@ def link_external_identity(
         actor=user,
         payload={
             "provider": provider,
-            "user_id": str(user.id),
+            "user_id": str(locked_user.id),
             "source": "account_link",
         },
     )
