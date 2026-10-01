@@ -3239,16 +3239,21 @@ def confirm_group_place_hold_fee(
         )
 
     if hold.seat_reservation_id is None:
-        suspended_membership, reservation = (
-            suspend_group_membership_with_seat_reservation(
-                membership_id=membership_basis.id,
-                starts_on=hold.period_from,
-                return_on=hold.period_until + timedelta(days=1),
-                actor=actor,
-                at=confirmed_at,
-            )
+        (
+            suspended_membership,
+            reservation,
+            previous_membership_ends_on,
+        ) = suspend_group_membership_with_seat_reservation(
+            membership_id=membership_basis.id,
+            starts_on=hold.period_from,
+            return_on=hold.period_until + timedelta(days=1),
+            actor=actor,
+            at=confirmed_at,
         )
         hold.suspended_membership = suspended_membership
+        hold.suspended_membership_ends_on_snapshot = (
+            previous_membership_ends_on
+        )
         hold.seat_reservation = reservation
     hold.status = GroupPlaceHold.Status.ACTIVE
     hold.fee_confirmed_at = hold.fee_confirmed_at or confirmed_at
@@ -3257,6 +3262,7 @@ def confirm_group_place_hold_fee(
         update_fields=[
             "seat_reservation",
             "suspended_membership",
+            "suspended_membership_ends_on_snapshot",
             "status",
             "fee_confirmed_at",
             "fee_confirmed_by",
@@ -3336,9 +3342,21 @@ def restore_group_place_hold(
             {"hold": "Place hold return window has already ended."}
         )
 
+    original_ends_on = hold.suspended_membership_ends_on_snapshot
+    if original_ends_on is not None and original_ends_on < return_on:
+        raise ValidationError(
+            {
+                "hold": (
+                    "Original membership ended before the planned return "
+                    "date and cannot be restored."
+                )
+            }
+        )
+
     membership = restore_group_membership_from_reservation(
         reservation_id=hold.seat_reservation_id,
         actor=actor,
+        ends_on=original_ends_on,
     )
     hold.status = GroupPlaceHold.Status.RESTORED
     hold.restored_membership = membership
@@ -3363,6 +3381,11 @@ def restore_group_place_hold(
             "seat_reservation_id": str(hold.seat_reservation_id),
             "restored_membership_id": str(membership.id),
             "return_on": return_on.isoformat(),
+            "restored_membership_ends_on": (
+                membership.ends_on.isoformat()
+                if membership.ends_on is not None
+                else None
+            ),
             "restored_at": restored_at.isoformat(),
         },
     )
