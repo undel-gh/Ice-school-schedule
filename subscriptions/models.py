@@ -6,7 +6,7 @@ from accounts.models import Student
 from attendance.models import AbsenceJustification, Attendance
 from core.choices import SubscriptionCategory
 from core.models import TimeStampedModel, UUIDModel
-from scheduling.models import Lesson, TrainingGroup
+from scheduling.models import GroupSeatReservation, Lesson, TrainingGroup
 
 
 class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
@@ -916,6 +916,13 @@ class GroupPlaceHold(UUIDModel):
         TrainingGroup,
         on_delete=models.PROTECT,
         related_name="place_holds",
+    )
+    seat_reservation = models.OneToOneField(
+        GroupSeatReservation,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="place_hold",
     )
     period_scheme = models.ForeignKey(
         SubscriptionPeriodScheme,
