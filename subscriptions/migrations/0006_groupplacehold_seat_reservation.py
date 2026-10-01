@@ -10,6 +10,7 @@ from django.db import migrations, models
 
 def backfill_active_place_hold_reservations(apps, schema_editor):
     GroupPlaceHold = apps.get_model("subscriptions", "GroupPlaceHold")
+    GroupMembership = apps.get_model("scheduling", "GroupMembership")
     GroupSeatReservation = apps.get_model("scheduling", "GroupSeatReservation")
     LessonEnrollment = apps.get_model("scheduling", "LessonEnrollment")
     LessonRosterEntry = apps.get_model("scheduling", "LessonRosterEntry")
@@ -19,50 +20,68 @@ def backfill_active_place_hold_reservations(apps, schema_editor):
         status="active",
         seat_reservation__isnull=True,
     ).iterator():
+        return_on = hold.period_until + timedelta(days=1)
         reservation = GroupSeatReservation.objects.create(
             student_id=hold.student_id,
             group_id=hold.group_id,
             starts_on=hold.period_from,
-            ends_on=hold.period_until,
-            created_by_id=hold.created_by_id,
+            ends_on=return_on,
+            created_by_id=(
+                hold.fee_confirmed_by_id or hold.created_by_id
+            ),
         )
         hold.seat_reservation_id = reservation.id
-        hold.save(update_fields=["seat_reservation"])
 
-        starts_at = datetime.combine(
-            hold.period_from,
-            time.min,
-            tzinfo=school_tz,
-        )
-        ends_at = datetime.combine(
-            hold.period_until + timedelta(days=1),
-            time.min,
-            tzinfo=school_tz,
-        )
-        explicit_lesson_ids = LessonEnrollment.objects.filter(
-            student_id=hold.student_id,
-            cancelled_at__isnull=True,
-            lesson__group_id=hold.group_id,
-            lesson__starts_at__gte=starts_at,
-            lesson__starts_at__lt=ends_at,
-        ).values_list("lesson_id", flat=True)
-        (
-            LessonRosterEntry.objects.filter(
+        membership = (
+            GroupMembership.objects.filter(
                 student_id=hold.student_id,
+                group_id=hold.group_id,
+                starts_on__lt=hold.period_from,
+            )
+            .filter(
+                models.Q(ends_on__isnull=True)
+                | models.Q(ends_on__gte=hold.period_from)
+            )
+            .order_by("-starts_on", "id")
+            .first()
+        )
+        update_fields = ["seat_reservation"]
+        if membership is not None:
+            membership.ends_on = hold.period_from - timedelta(days=1)
+            membership.save(update_fields=["ends_on"])
+            hold.suspended_membership_id = membership.id
+            update_fields.append("suspended_membership")
+
+            starts_at = datetime.combine(
+                hold.period_from,
+                time.min,
+                tzinfo=school_tz,
+            )
+            explicit_lesson_ids = LessonEnrollment.objects.filter(
+                student_id=hold.student_id,
+                cancelled_at__isnull=True,
                 lesson__group_id=hold.group_id,
                 lesson__starts_at__gte=starts_at,
-                lesson__starts_at__lt=ends_at,
-                lesson__status__in=["rsvp_open", "confirmed"],
-                source="group",
-                is_active=True,
+            ).values_list("lesson_id", flat=True)
+            (
+                LessonRosterEntry.objects.filter(
+                    group_membership_id=membership.id,
+                    student_id=hold.student_id,
+                    lesson__group_id=hold.group_id,
+                    lesson__starts_at__gte=starts_at,
+                    lesson__status__in=["rsvp_open", "confirmed"],
+                    source="group",
+                    is_active=True,
+                )
+                .exclude(lesson_id__in=explicit_lesson_ids)
+                .update(
+                    is_active=False,
+                    deactivated_at=hold.fee_confirmed_at,
+                    deactivated_by_id=hold.fee_confirmed_by_id,
+                )
             )
-            .exclude(lesson_id__in=explicit_lesson_ids)
-            .update(
-                is_active=False,
-                deactivated_at=hold.fee_confirmed_at,
-                deactivated_by_id=hold.fee_confirmed_by_id,
-            )
-        )
+
+        hold.save(update_fields=update_fields)
 
 
 def noop_reverse(apps, schema_editor):
@@ -77,6 +96,25 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RemoveConstraint(
+            model_name="groupplacehold",
+            name="grouphold_status_ck",
+        ),
+        migrations.AlterField(
+            model_name="groupplacehold",
+            name="status",
+            field=models.CharField(
+                choices=[
+                    ("pending_payment", "Pending payment"),
+                    ("active", "Active"),
+                    ("restored", "Restored"),
+                    ("cancelled", "Cancelled"),
+                    ("expired", "Expired"),
+                ],
+                default="pending_payment",
+                max_length=24,
+            ),
+        ),
         migrations.AddField(
             model_name="groupplacehold",
             name="seat_reservation",
@@ -88,6 +126,44 @@ class Migration(migrations.Migration):
                 to="scheduling.groupseatreservation",
             ),
         ),
+        migrations.AddField(
+            model_name="groupplacehold",
+            name="suspended_membership",
+            field=models.OneToOneField(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="suspending_place_hold",
+                to="scheduling.groupmembership",
+            ),
+        ),
+        migrations.AddField(
+            model_name="groupplacehold",
+            name="restored_membership",
+            field=models.OneToOneField(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="restored_from_place_hold",
+                to="scheduling.groupmembership",
+            ),
+        ),
+        migrations.AddField(
+            model_name="groupplacehold",
+            name="restored_at",
+            field=models.DateTimeField(blank=True, null=True),
+        ),
+        migrations.AddField(
+            model_name="groupplacehold",
+            name="restored_by",
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="+",
+                to=settings.AUTH_USER_MODEL,
+            ),
+        ),
         migrations.RunPython(
             backfill_active_place_hold_reservations,
             noop_reverse,
@@ -95,12 +171,74 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="groupplacehold",
             constraint=models.CheckConstraint(
-                condition=models.Q(
-                    ("status", "active"),
-                    _negated=True,
-                )
-                | models.Q(("seat_reservation__isnull", False)),
-                name="grouphold_active_has_seat_ck",
+                condition=(
+                    ~models.Q(status__in=["active", "restored"])
+                    | models.Q(seat_reservation__isnull=False)
+                ),
+                name="grouphold_effective_has_seat_ck",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="groupplacehold",
+            constraint=models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        status="pending_payment",
+                        fee_confirmed_at__isnull=True,
+                        fee_confirmed_by__isnull=True,
+                        seat_reservation__isnull=True,
+                        suspended_membership__isnull=True,
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                    | models.Q(
+                        status="active",
+                        fee_confirmed_at__isnull=False,
+                        fee_confirmed_by__isnull=False,
+                        seat_reservation__isnull=False,
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                    | models.Q(
+                        status="restored",
+                        fee_confirmed_at__isnull=False,
+                        fee_confirmed_by__isnull=False,
+                        seat_reservation__isnull=False,
+                        restored_membership__isnull=False,
+                        restored_at__isnull=False,
+                        restored_by__isnull=False,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                    | models.Q(
+                        status="cancelled",
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
+                        cancelled_at__isnull=False,
+                        cancellation_reason__gt="",
+                    )
+                    | models.Q(
+                        status="expired",
+                        fee_confirmed_at__isnull=False,
+                        restored_membership__isnull=True,
+                        restored_at__isnull=True,
+                        restored_by__isnull=True,
+                        cancelled_at__isnull=True,
+                        cancelled_by__isnull=True,
+                        cancellation_reason="",
+                    )
+                ),
+                name="grouphold_status_ck",
             ),
         ),
     ]
