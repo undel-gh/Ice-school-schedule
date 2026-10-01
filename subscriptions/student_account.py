@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from uuid import UUID
 
 from django.db.models import Exists, OuterRef, Prefetch, Sum
@@ -144,7 +144,6 @@ def _subscription_views(
 def _one_time_rights(
     *,
     student_id: UUID,
-    now: datetime,
 ) -> tuple[StudentOneTimeRight, ...]:
     active_usage = AttendanceCoverage.objects.filter(
         one_time_entitlement_id=OuterRef("pk"),
@@ -203,7 +202,6 @@ def _makeup_rights(
     *,
     student_id: UUID,
     as_of: date,
-    now: datetime,
 ) -> tuple[StudentMakeupRight, ...]:
     active_usage = AttendanceCoverage.objects.filter(
         makeup_entitlement_id=OuterRef("pk"),
@@ -308,7 +306,6 @@ def student_account_snapshot(
     *,
     student_id: UUID,
     as_of: date,
-    now: datetime,
 ) -> StudentAccountSnapshot:
     return StudentAccountSnapshot(
         subscriptions=_subscription_views(
@@ -317,12 +314,10 @@ def student_account_snapshot(
         ),
         one_time_rights=_one_time_rights(
             student_id=student_id,
-            now=now,
         ),
         makeup_rights=_makeup_rights(
             student_id=student_id,
             as_of=as_of,
-            now=now,
         ),
     )
 
