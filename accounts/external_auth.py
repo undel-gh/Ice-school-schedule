@@ -219,7 +219,7 @@ def exchange_authorization_code(
             data={"code": code},
         )
         returned_state = token.get("state")
-        if returned_state is not None and returned_state != state:
+        if returned_state != state:
             raise ValidationError({"provider": "VK ID state validation failed."})
         access_token = token.get("access_token")
         if not access_token:
