@@ -18,6 +18,12 @@
 {% endif %}
 {% if access.user.external_identities.all %}
   <div class="toolbar">
+    {% if access.user.is_active and perms.accounts.change_externalidentity %}
+      <form method="post" action="{% url 'accounts_manager:external_user_deactivate_for_recovery' access.user.id %}">
+        {% csrf_token %}
+        <button class="btn-absent" type="submit">Деактивировать для восстановления</button>
+      </form>
+    {% endif %}
     {% for identity in access.user.external_identities.all %}
       <span class="badge">{{ identity.get_provider_display }}</span>
       {% if perms.accounts.change_externalidentity %}
