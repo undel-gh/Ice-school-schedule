@@ -3390,8 +3390,8 @@ read-only in Django Admin; changes require a new version.
 
 # 38. GroupPlaceHold and capacity semantics
 
-A paid one-period group-place reservation is a separate domain concept.
-It does not grant AttendanceCoverage or ICE/HALL visits.
+A paid one-period group-place hold is a separate domain concept. It grants no
+AttendanceCoverage and no ICE/HALL visits.
 
 ```text
 GroupPlaceHold
@@ -3399,10 +3399,24 @@ GroupPlaceHold
     group
     period_scheme
     period_from / period_until
-    status
+    status:
+        PENDING_PAYMENT
+        ACTIVE
+        RESTORED
+        CANCELLED
+        EXPIRED
     seat_reservation -> GroupSeatReservation
+    suspended_membership -> GroupMembership
+    restored_membership -> GroupMembership
     fee confirmation metadata
+    restore metadata
     cancellation metadata
+```
+
+The protected return date is:
+
+```text
+return_on = period_until + 1 day
 ```
 
 Scheduling owns the generic seat claim:
@@ -3411,37 +3425,82 @@ Scheduling owns the generic seat claim:
 GroupSeatReservation
     student
     group
-    starts_on / ends_on
+    starts_on
+    ends_on        # protected return date
     cancelled_at / cancelled_by
 ```
 
-A non-cancelled seat reservation and an active GroupMembership are combined by
-student identity when calculating occupancy. Therefore one student with both
-records consumes one seat.
+## Capacity invariant
 
-A GroupPlaceHold can be created only when an existing membership for the same
-student/group covers the full hold period. Confirmation of payment atomically
-materializes the GroupSeatReservation. The TrainingGroup row is the
-serialization lock for capacity-changing writers.
+One occupied place is a distinct Student present in the union of:
+
+```text
+active GroupMembership
+UNION
+non-cancelled GroupSeatReservation
+```
+
+A reservation and a membership for the same Student therefore consume one
+place, not two. `TrainingGroup.capacity = NULL` means no hard cap is enforced.
+
+All capacity-changing writers serialize on the TrainingGroup row. This includes
+ordinary membership admission/update, hold activation/restore and hard-cap
+changes.
 
 A TrainingGroup cannot be deactivated while it has a non-cancelled current or
-future GroupSeatReservation; the related hold must be cancelled or allowed to
-expire first.
+future GroupSeatReservation.
 
-During the reservation interval, `publish_lesson(...)` excludes that student
-from membership-derived roster entries. If the reservation is materialized
-after future lessons were already published, active GROUP-derived roster rows
-inside the interval are deactivated immediately. Explicit ENROLLMENT/MANUAL
-participation is preserved. Cancelling the reservation restores eligible
-GROUP-derived roster rows for still-open/confirmed lessons when no other
-reservation covers the date.
+## Hold activation
 
-The underlying membership remains intact. After the reservation interval the
-membership automatically becomes roster-eligible again without rewriting
-historical membership intervals.
+A hold may be created only when an existing membership for the same
+student/group is active on `period_from` and started before that date.
 
-Cancelling the hold cancels its reservation. Expiry keeps the reservation as
-history; its date interval is no longer active.
+Confirming payment atomically performs:
+
+```text
+old GroupMembership.ends_on = period_from - 1 day
+
+GroupSeatReservation:
+    starts_on = period_from
+    ends_on   = return_on
+
+GroupPlaceHold:
+    PENDING_PAYMENT -> ACTIVE
+    suspended_membership = old membership
+    seat_reservation = reservation
+```
+
+The reservation owns the seat while the membership is suspended. GROUP-derived
+roster entries from `period_from` onward are deactivated if lessons were
+already published. Active explicit LessonEnrollment participation is preserved.
+
+## Restore
+
+Ordinary membership creation/update is rejected when the same student's
+interval overlaps an active seat reservation. The caller must use the explicit
+place-hold restore flow.
+
+`restore_group_place_hold(...)` creates an open membership starting on
+`return_on` and moves the hold from ACTIVE to RESTORED. The reservation still
+protects `return_on`; because occupancy is deduplicated by Student, the
+returning membership is allowed even when the group is otherwise at its
+formal capacity. Other students remain blocked from taking the protected seat.
+
+Already-published open/confirmed lessons from the new membership start are
+materialized into the roster immediately.
+
+## Cancel and expiry
+
+Cancelling an ACTIVE hold cancels its seat reservation and does not
+automatically restore membership.
+
+If an ACTIVE hold is not restored, lifecycle processing preserves the
+reservation through the whole protected return date. Only after that date does
+the hold move to EXPIRED and the reservation get cancelled. No membership is
+created automatically.
+
+RESTORED is a consumed terminal state for the paid hold and is not handled by
+the normal cancellation flow.
 
 
 ---
