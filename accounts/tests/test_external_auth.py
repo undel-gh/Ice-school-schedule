@@ -28,7 +28,7 @@ def test_yandex_authorization_url_uses_state_and_pkce(settings):
     assert params["response_type"] == ["code"]
     assert params["client_id"] == ["ya-client"]
     assert params["state"] == ["state-value"]
-    assert params["code_challenge_method"] == ["S256"]
+    assert params["code_challenge_method"] == ["s256"]
     assert params["code_challenge"][0] != "v" * 64
 
 
