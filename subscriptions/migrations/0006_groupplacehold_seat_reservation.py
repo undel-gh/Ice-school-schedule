@@ -11,6 +11,7 @@ from django.db import migrations, models
 def backfill_active_place_hold_reservations(apps, schema_editor):
     GroupPlaceHold = apps.get_model("subscriptions", "GroupPlaceHold")
     GroupSeatReservation = apps.get_model("scheduling", "GroupSeatReservation")
+    LessonEnrollment = apps.get_model("scheduling", "LessonEnrollment")
     LessonRosterEntry = apps.get_model("scheduling", "LessonRosterEntry")
     school_tz = ZoneInfo(settings.SCHOOL_TIME_ZONE)
 
@@ -38,18 +39,29 @@ def backfill_active_place_hold_reservations(apps, schema_editor):
             time.min,
             tzinfo=school_tz,
         )
-        LessonRosterEntry.objects.filter(
+        explicit_lesson_ids = LessonEnrollment.objects.filter(
             student_id=hold.student_id,
+            cancelled_at__isnull=True,
             lesson__group_id=hold.group_id,
             lesson__starts_at__gte=starts_at,
             lesson__starts_at__lt=ends_at,
-            lesson__status__in=["rsvp_open", "confirmed"],
-            source="group",
-            is_active=True,
-        ).update(
-            is_active=False,
-            deactivated_at=hold.fee_confirmed_at,
-            deactivated_by_id=hold.fee_confirmed_by_id,
+        ).values_list("lesson_id", flat=True)
+        (
+            LessonRosterEntry.objects.filter(
+                student_id=hold.student_id,
+                lesson__group_id=hold.group_id,
+                lesson__starts_at__gte=starts_at,
+                lesson__starts_at__lt=ends_at,
+                lesson__status__in=["rsvp_open", "confirmed"],
+                source="group",
+                is_active=True,
+            )
+            .exclude(lesson_id__in=explicit_lesson_ids)
+            .update(
+                is_active=False,
+                deactivated_at=hold.fee_confirmed_at,
+                deactivated_by_id=hold.fee_confirmed_by_id,
+            )
         )
 
 
