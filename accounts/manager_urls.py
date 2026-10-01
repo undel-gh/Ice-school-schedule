@@ -5,6 +5,9 @@ from . import manager_views
 app_name = "accounts_manager"
 
 urlpatterns = [
+    path("invitations/", manager_views.manager_account_invitations, name="invitations"),
+    path("invitations/new/", manager_views.manager_account_invitation_create, name="invitation_create"),
+    path("invitations/<uuid:invitation_id>/revoke/", manager_views.manager_account_invitation_revoke, name="invitation_revoke"),
     path("students/", manager_views.manager_students, name="students"),
     path("students/new/", manager_views.manager_student_create, name="student_create"),
     path("students/<uuid:student_id>/", manager_views.manager_student_detail, name="student_detail"),
