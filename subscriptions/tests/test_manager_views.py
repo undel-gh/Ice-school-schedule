@@ -191,14 +191,14 @@ def test_manager_can_manage_group_place_hold_from_web(client):
             "student": str(student.id),
             "group": str(group.id),
             "period_scheme": str(scheme.id),
-            "reference_date": "2026-10-10",
+            "reference_date": "2026-11-10",
         },
     )
     assert created.status_code == 302
 
     hold = GroupPlaceHold.objects.get(student=student, group=group)
-    assert hold.period_from == date(2026, 10, 1)
-    assert hold.period_until == date(2026, 10, 31)
+    assert hold.period_from == date(2026, 11, 1)
+    assert hold.period_until == date(2026, 11, 30)
     assert hold.status == GroupPlaceHold.Status.PENDING_PAYMENT
 
     confirmed = client.post(
@@ -263,7 +263,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
             "student": str(student.id),
             "group": str(group.id),
             "period_scheme": str(scheme.id),
-            "reference_date": "2026-10-10",
+            "reference_date": "2026-11-10",
         },
     )
     assert created.status_code == 302
@@ -279,7 +279,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
 
     original_membership.refresh_from_db()
     hold.refresh_from_db()
-    assert original_membership.ends_on == date(2026, 9, 30)
+    assert original_membership.ends_on == date(2026, 10, 31)
     assert hold.status == GroupPlaceHold.Status.ACTIVE
 
     restored = client.post(
@@ -294,7 +294,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
     assert hold.status == GroupPlaceHold.Status.RESTORED
     assert hold.restored_at is not None
     assert hold.restored_membership_id is not None
-    assert hold.restored_membership.starts_on == date(2026, 11, 1)
+    assert hold.restored_membership.starts_on == date(2026, 12, 1)
     assert hold.restored_membership.ends_on is None
 
 
