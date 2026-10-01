@@ -414,12 +414,11 @@ def link_external_identity(
 ) -> ExternalIdentity:
     if provider not in ExternalIdentity.Provider.values:
         raise ValidationError({"provider": "Unsupported external identity provider."})
-    if not user.is_active:
-        raise ValidationError({"user": "Inactive accounts cannot link providers."})
-
     linked_at = now or timezone.now()
     subject = str(provider_subject).strip()
     locked_user = User.objects.select_for_update().get(pk=user.id)
+    if not locked_user.is_active:
+        raise ValidationError({"user": "Inactive accounts cannot link providers."})
     existing_subject = (
         ExternalIdentity.objects.select_for_update()
         .filter(provider=provider, provider_subject=subject)
@@ -476,3 +475,42 @@ def link_external_identity(
         },
     )
     return identity
+
+
+
+@transaction.atomic
+def accept_account_invitation_for_existing_user(
+    *,
+    user: User,
+    provider: str,
+    provider_subject: str,
+    invitation_id: UUID,
+    now=None,
+) -> User:
+    """
+    Link/authenticate a provider and consume an invitation for the signed-in User
+    as one transaction. A failed invitation acceptance must not leave a partial
+    provider link behind.
+    """
+    accepted_at = now or timezone.now()
+    locked_user = User.objects.select_for_update().get(pk=user.id)
+    if not locked_user.is_active:
+        raise ValidationError({"user": "This account is inactive."})
+
+    link_external_identity(
+        user=locked_user,
+        provider=provider,
+        provider_subject=provider_subject,
+        now=accepted_at,
+    )
+    authenticated = authenticate_external_identity(
+        provider=provider,
+        provider_subject=provider_subject,
+        invitation_id=invitation_id,
+        now=accepted_at,
+    )
+    if authenticated.id != locked_user.id:
+        raise ValidationError(
+            {"external_identity": "External identity resolved to another user."}
+        )
+    return locked_user
