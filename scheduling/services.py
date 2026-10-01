@@ -429,7 +429,7 @@ def suspend_group_membership_with_seat_reservation(
     return_on: date,
     actor: User | None,
     at: datetime,
-) -> tuple[GroupMembership, GroupSeatReservation]:
+) -> tuple[GroupMembership, GroupSeatReservation, date | None]:
     if return_on <= starts_on:
         raise ValidationError(
             {"return_on": "Return date must be after the hold start date."}
@@ -474,7 +474,7 @@ def suspend_group_membership_with_seat_reservation(
         .first()
     )
     if existing_reservation is not None:
-        return membership, existing_reservation
+        return membership, existing_reservation, membership.ends_on
 
     ensure_group_capacity_available(
         group=group,
@@ -527,7 +527,7 @@ def suspend_group_membership_with_seat_reservation(
             "ends_on": return_on.isoformat(),
         },
     )
-    return membership, reservation
+    return membership, reservation, previous_ends_on
 
 
 @transaction.atomic
@@ -535,6 +535,7 @@ def restore_group_membership_from_reservation(
     *,
     reservation_id: UUID,
     actor: User | None,
+    ends_on: date | None = None,
 ) -> GroupMembership:
     reservation_ref = GroupSeatReservation.objects.only(
         "id",
@@ -574,11 +575,11 @@ def restore_group_membership_from_reservation(
         .first()
     )
     if existing is not None:
-        if existing.ends_on is not None:
+        if existing.ends_on != ends_on:
             raise ValidationError(
                 {
                     "membership": (
-                        "Existing return membership is not open-ended."
+                        "Existing return membership has a different end date."
                     )
                 }
             )
@@ -593,7 +594,7 @@ def restore_group_membership_from_reservation(
     if any(
         _membership_overlaps(
             starts_on=starts_on,
-            ends_on=None,
+            ends_on=ends_on,
             other=other,
         )
         for other in others
@@ -606,13 +607,13 @@ def restore_group_membership_from_reservation(
         group=group,
         student_id=reservation.student_id,
         starts_on=starts_on,
-        ends_on=None,
+        ends_on=ends_on,
     )
     membership = GroupMembership.objects.create(
         student_id=reservation.student_id,
         group=group,
         starts_on=starts_on,
-        ends_on=None,
+        ends_on=ends_on,
         created_by=actor,
     )
     roster_entries = _materialize_membership_rosters_from(
@@ -629,6 +630,7 @@ def restore_group_membership_from_reservation(
             "student_id": str(reservation.student_id),
             "group_id": str(reservation.group_id),
             "starts_on": starts_on.isoformat(),
+            "ends_on": ends_on.isoformat() if ends_on is not None else None,
             "roster_entries_materialized": roster_entries,
         },
     )
