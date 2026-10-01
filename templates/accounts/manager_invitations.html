@@ -15,8 +15,10 @@
       <strong>
         {% if invitation.kind == "student_access" %}
           {{ invitation.student.display_name }} · {{ invitation.account_display_name }} · {{ invitation.get_student_access_role_display }}
-        {% else %}
+        {% elif invitation.kind == "coach" %}
           Тренер · {{ invitation.coach_display_name }}
+        {% else %}
+          Восстановление · {{ invitation.recovery_user.display_label }}
         {% endif %}
       </strong>
       {% if invitation.accepted_at %}
