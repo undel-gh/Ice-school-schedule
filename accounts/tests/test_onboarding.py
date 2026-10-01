@@ -45,6 +45,7 @@ def test_student_invitation_provisions_external_only_user(manager):
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
     )
 
     assert created.token not in created.invitation.token_hash
@@ -90,6 +91,7 @@ def test_invitation_is_one_time_even_for_existing_identity(manager):
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.SELF,
+        account_display_name="Ученик",
     )
     user = authenticate_external_identity(
         provider=ExternalIdentity.Provider.YANDEX,
@@ -116,6 +118,7 @@ def test_existing_identity_can_accept_another_student_invitation(manager):
         actor=manager,
         student_id=first_student.id,
         student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
     )
     user = authenticate_external_identity(
         provider=ExternalIdentity.Provider.VK,
@@ -127,6 +130,7 @@ def test_existing_identity_can_accept_another_student_invitation(manager):
         actor=manager,
         student_id=second_student.id,
         student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
     )
 
     same_user = authenticate_external_identity(
@@ -215,6 +219,7 @@ def test_revoked_and_expired_invitation_cannot_be_used(manager):
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.SELF,
+        account_display_name="Ученик",
     )
     revoke_account_invitation(
         invitation_id=revoked.invitation.id,
@@ -228,6 +233,7 @@ def test_revoked_and_expired_invitation_cannot_be_used(manager):
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.SELF,
+        account_display_name="Ученик",
         expires_at=timezone.now() + timedelta(seconds=1),
     )
     with pytest.raises(ValidationError):
@@ -267,6 +273,7 @@ def test_invitation_provisioning_emits_role_audit_events(manager):
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.SELF,
+        account_display_name="Ученик",
     )
     student_user = authenticate_external_identity(
         provider=ExternalIdentity.Provider.YANDEX,
@@ -308,6 +315,7 @@ def test_existing_user_invitation_acceptance_rolls_back_provider_link_on_failure
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
     )
     revoke_account_invitation(
         invitation_id=created.invitation.id,
