@@ -3,6 +3,20 @@
 {% block content %}
 <section class="auth-card">
   <h1>Вход</h1>
+
+  {% if yandex_external_auth_available or vk_external_auth_available %}
+  <div class="toolbar">
+    {% if yandex_external_auth_available %}
+      <a class="btn btn-primary" href="{% url 'external_auth:login' 'yandex' %}">Войти через Яндекс</a>
+    {% endif %}
+    {% if vk_external_auth_available %}
+      <a class="btn btn-secondary" href="{% url 'external_auth:login' 'vk' %}">Войти через VK ID</a>
+    {% endif %}
+  </div>
+  <p class="muted">Первый вход ученика, родителя или тренера выполняется по приглашению школы.</p>
+  {% endif %}
+
+  <h2>Служебный вход</h2>
   <form method="post">
     {% csrf_token %}
     {{ form.as_p }}
