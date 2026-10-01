@@ -28,8 +28,10 @@ from .models import AccountInvitation, ExternalIdentity
 from .onboarding import (
     accept_account_invitation_for_existing_user,
     authenticate_external_identity,
+    external_auth_allowed,
     link_external_identity,
     resolve_invitation_token,
+    unlink_external_identity,
 )
 
 
@@ -91,6 +93,14 @@ def external_login(request, *, provider: str):
 @require_POST
 def external_link(request, *, provider: str):
     try:
+        if not external_auth_allowed(request.user):
+            raise ValidationError(
+                {
+                    "external_identity": (
+                        "External login is disabled for staff and manager accounts."
+                    )
+                }
+            )
         return _start_flow(request, provider=provider, mode="link")
     except ValidationError as exc:
         messages.error(request, validation_message(exc))
@@ -119,6 +129,11 @@ def invitation_landing(request, *, token: str):
         {
             "invitation": invitation,
             "providers": configured_providers(),
+            "signed_in_external_auth_allowed": (
+                external_auth_allowed(request.user)
+                if request.user.is_authenticated
+                else True
+            ),
         },
     )
 
@@ -131,6 +146,15 @@ def invitation_external_login(request, *, provider: str):
     try:
         invitation_id = UUID(raw_invitation_id)
         invitation = AccountInvitation.objects.get(pk=invitation_id)
+        if request.user.is_authenticated and not external_auth_allowed(request.user):
+            raise ValidationError(
+                {
+                    "external_identity": (
+                        "Staff and manager accounts cannot accept external "
+                        "identity invitations. Sign out first."
+                    )
+                }
+            )
         now = timezone.now()
         if (
             invitation.accepted_at is not None
@@ -311,3 +335,22 @@ def external_identities(request):
             "available_providers": available,
         },
     )
+
+
+
+@login_required
+@require_POST
+def external_identity_unlink(request, *, identity_id: UUID):
+    try:
+        unlink_external_identity(
+            identity_id=identity_id,
+            actor=request.user,
+            self_service=True,
+        )
+    except ExternalIdentity.DoesNotExist:
+        messages.error(request, "Внешний аккаунт не найден.")
+    except ValidationError as exc:
+        messages.error(request, validation_message(exc))
+    else:
+        messages.success(request, "Внешний аккаунт отвязан.")
+    return redirect("external_auth:identities")
