@@ -259,6 +259,12 @@ ExternalIdentity. Authenticated users can connect the other configured
 provider at `/accounts/external/identities/`; one internal User may have at
 most one identity per provider.
 
+If an already authenticated User opens another invitation and chooses a
+provider that is not linked yet, that provider is linked to the **same User**
+before the invitation is consumed. This prevents a parent who uses Yandex for
+the first child and VK ID for the second invitation from accidentally creating
+two school accounts.
+
 Local username/password login remains available for staff and emergency
 administration.
 
