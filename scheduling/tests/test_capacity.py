@@ -60,6 +60,119 @@ def test_membership_admission_rejects_full_group(capacity_manager):
 
 
 @pytest.mark.django_db
+def test_inactive_student_membership_does_not_claim_group_capacity(
+    capacity_manager,
+):
+    today = school_date(timezone.now())
+    group = TrainingGroup.objects.create(
+        code="capacity-inactive-student",
+        name="Capacity inactive student",
+        capacity=2,
+    )
+    active = Student.objects.create(display_name="Active")
+    inactive = Student.objects.create(
+        display_name="Inactive",
+        is_active=False,
+    )
+    newcomer = Student.objects.create(display_name="Newcomer")
+    GroupMembership.objects.create(
+        student=active,
+        group=group,
+        starts_on=today,
+        created_by=capacity_manager,
+    )
+    GroupMembership.objects.create(
+        student=inactive,
+        group=group,
+        starts_on=today,
+        created_by=capacity_manager,
+    )
+
+    membership = create_group_membership(
+        student_id=newcomer.id,
+        group_id=group.id,
+        starts_on=today,
+        ends_on=None,
+        actor=capacity_manager,
+    )
+
+    assert membership.student_id == newcomer.id
+
+
+@pytest.mark.django_db
+def test_inactive_student_paid_reservation_still_claims_group_capacity(
+    capacity_manager,
+):
+    today = school_date(timezone.now())
+    group = TrainingGroup.objects.create(
+        code="capacity-inactive-reserved",
+        name="Capacity inactive reserved",
+        capacity=1,
+    )
+    inactive = Student.objects.create(
+        display_name="Inactive reserved",
+        is_active=False,
+    )
+    newcomer = Student.objects.create(display_name="Newcomer")
+    GroupSeatReservation.objects.create(
+        student=inactive,
+        group=group,
+        starts_on=today,
+        ends_on=today + timedelta(days=10),
+        created_by=capacity_manager,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        create_group_membership(
+            student_id=newcomer.id,
+            group_id=group.id,
+            starts_on=today,
+            ends_on=None,
+            actor=capacity_manager,
+        )
+
+    assert "capacity" in exc.value.message_dict
+
+
+@pytest.mark.django_db
+def test_group_occupancy_uses_single_union_query(
+    capacity_manager,
+    django_assert_num_queries,
+):
+    from scheduling.capacity import group_occupied_student_ids
+
+    today = school_date(timezone.now())
+    group = TrainingGroup.objects.create(
+        code="capacity-query-count",
+        name="Capacity query count",
+        capacity=3,
+    )
+    member = Student.objects.create(display_name="Member")
+    reserved = Student.objects.create(display_name="Reserved")
+    GroupMembership.objects.create(
+        student=member,
+        group=group,
+        starts_on=today,
+        created_by=capacity_manager,
+    )
+    GroupSeatReservation.objects.create(
+        student=reserved,
+        group=group,
+        starts_on=today,
+        ends_on=today + timedelta(days=2),
+        created_by=capacity_manager,
+    )
+
+    with django_assert_num_queries(1):
+        occupied = group_occupied_student_ids(
+            group_id=group.id,
+            on_date=today,
+        )
+
+    assert occupied == {member.id, reserved.id}
+
+
+@pytest.mark.django_db
 def test_membership_capacity_checks_future_overlap(capacity_manager):
     today = school_date(timezone.now())
     group = TrainingGroup.objects.create(
