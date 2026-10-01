@@ -26,6 +26,7 @@ from .forms import (
 from .models import AccountInvitation, CoachProfile, ExternalIdentity, Student, StudentAccess
 from .onboarding import (
     create_account_invitation,
+    deactivate_external_user_for_recovery,
     revoke_account_invitation,
     unlink_external_identity,
 )
@@ -349,6 +350,7 @@ def manager_account_invitations(request: HttpRequest) -> HttpResponse:
             "created_by",
             "accepted_by",
             "revoked_by",
+            "recovery_user",
         )
         .order_by("-created_at", "id")[:300]
     )
@@ -491,6 +493,48 @@ def manager_external_identity_unlink(
         messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Внешний аккаунт отвязан.")
+
+    if student_access is not None:
+        return redirect(
+            "accounts_manager:student_detail",
+            student_id=student_access.student_id,
+        )
+    if hasattr(target_user, "coach_profile"):
+        return redirect("accounts_manager:coaches")
+    return redirect("accounts_manager:invitations")
+
+
+
+@login_required
+@require_POST
+def manager_external_user_deactivate_for_recovery(
+    request: HttpRequest,
+    *,
+    user_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.change_externalidentity",
+        "External identity change permission is required.",
+    )
+    target_user = get_object_or_404(User, pk=user_id)
+    student_access = (
+        target_user.student_accesses.order_by("-is_active", "created_at")
+        .select_related("student")
+        .first()
+    )
+    try:
+        deactivate_external_user_for_recovery(
+            user_id=target_user.id,
+            actor=request.user,
+        )
+    except ValidationError as exc:
+        messages.error(request, validation_message(exc))
+    else:
+        messages.success(
+            request,
+            "Аккаунт деактивирован. Теперь можно отвязать скомпрометированный provider.",
+        )
 
     if student_access is not None:
         return redirect(
