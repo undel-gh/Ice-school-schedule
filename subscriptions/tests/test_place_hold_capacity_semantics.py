@@ -11,6 +11,7 @@ from accounts.models import CoachProfile, Student
 from core.choices import SubscriptionCategory
 from core.testing import school_dt
 from core.time import school_date
+from scheduling.capacity import group_occupied_student_ids
 from scheduling.models import (
     GroupMembership,
     GroupSeatReservation,
@@ -30,6 +31,8 @@ from subscriptions.services import (
     cancel_group_place_hold,
     confirm_group_place_hold_fee,
     create_group_place_hold,
+    process_subscription_lifecycle,
+    restore_group_place_hold,
 )
 
 
@@ -61,20 +64,20 @@ def _hold_window():
     return period_from, period_from + timedelta(days=27)
 
 
-def _student_with_membership(*, group, actor, name):
+def _student_with_membership(*, group, actor, name, ends_on=None):
     period_from, _ = _hold_window()
     student = Student.objects.create(display_name=name)
-    GroupMembership.objects.create(
+    membership = GroupMembership.objects.create(
         student=student,
         group=group,
         starts_on=period_from - timedelta(days=30),
-        ends_on=None,
+        ends_on=ends_on,
         created_by=actor,
     )
-    return student
+    return student, membership
 
 
-def _lesson(*, group, actor, lesson_date, suffix):
+def _lesson(*, group, actor, lesson_date):
     coach = getattr(actor, "coach_profile", None)
     if coach is None:
         coach = CoachProfile.objects.create(
@@ -113,204 +116,272 @@ def _lesson(*, group, actor, lesson_date, suffix):
     )
 
 
+def _activate_hold(*, holder, group, scheme, actor):
+    period_from, period_until = _hold_window()
+    hold = create_group_place_hold(
+        student_id=holder.id,
+        group_id=group.id,
+        period_scheme_id=scheme.id,
+        period_from=period_from,
+        period_until=period_until,
+        actor=actor,
+    )
+    return confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=actor,
+        now=timezone.now(),
+    )
+
+
 @pytest.mark.django_db
-def test_active_place_hold_materializes_capacity_reservation(
+def test_activation_suspends_membership_and_reserves_return_seat(
     hold_manager,
     rolling_scheme,
 ):
     period_from, period_until = _hold_window()
+    return_on = period_until + timedelta(days=1)
     group = TrainingGroup.objects.create(
-        code="hold-capacity-one",
-        name="Hold capacity one",
+        code="hold-suspend",
+        name="Hold suspend",
         capacity=1,
     )
-    holder = _student_with_membership(
+    holder, membership = _student_with_membership(
         group=group,
         actor=hold_manager,
         name="Holder",
     )
 
-    hold = create_group_place_hold(
-        student_id=holder.id,
-        group_id=group.id,
-        period_scheme_id=rolling_scheme.id,
-        period_from=period_from,
-        period_until=period_until,
+    hold = _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
         actor=hold_manager,
-    )
-    hold = confirm_group_place_hold_fee(
-        hold_id=hold.id,
-        actor=hold_manager,
-        now=timezone.now(),
     )
 
-    reservation = GroupSeatReservation.objects.get(pk=hold.seat_reservation_id)
-    assert reservation.student_id == holder.id
-    assert reservation.group_id == group.id
+    membership.refresh_from_db()
+    hold.refresh_from_db()
+    reservation = GroupSeatReservation.objects.get(
+        pk=hold.seat_reservation_id
+    )
+
+    assert membership.ends_on == period_from - timedelta(days=1)
+    assert hold.suspended_membership_id == membership.id
     assert reservation.starts_on == period_from
-    assert reservation.ends_on == period_until
-    assert reservation.cancelled_at is None
+    assert reservation.ends_on == return_on
+    assert holder.id in group_occupied_student_ids(
+        group_id=group.id,
+        on_date=period_from,
+    )
+    assert holder.id in group_occupied_student_ids(
+        group_id=group.id,
+        on_date=return_on,
+    )
 
 
 @pytest.mark.django_db
-def test_active_place_hold_suppresses_roster_and_membership_resumes_after_period(
+def test_restore_consumes_hold_and_is_allowed_at_formal_capacity(
     hold_manager,
     rolling_scheme,
 ):
     period_from, period_until = _hold_window()
+    return_on = period_until + timedelta(days=1)
     group = TrainingGroup.objects.create(
-        code="hold-roster-overlay",
-        name="Hold roster overlay",
-        capacity=2,
+        code="hold-restore-full",
+        name="Hold restore full",
+        capacity=1,
     )
-    holder = _student_with_membership(
+    holder, _ = _student_with_membership(
         group=group,
         actor=hold_manager,
         name="Holder",
     )
-    hold = create_group_place_hold(
-        student_id=holder.id,
-        group_id=group.id,
-        period_scheme_id=rolling_scheme.id,
-        period_from=period_from,
-        period_until=period_until,
+    other = Student.objects.create(display_name="Other")
+    hold = _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
         actor=hold_manager,
     )
-    confirm_group_place_hold_fee(
+
+    with pytest.raises(ValidationError):
+        create_group_membership(
+            student_id=other.id,
+            group_id=group.id,
+            starts_on=return_on,
+            ends_on=None,
+            actor=hold_manager,
+        )
+
+    restored = restore_group_place_hold(
         hold_id=hold.id,
         actor=hold_manager,
         now=timezone.now(),
+    )
+
+    assert restored.status == GroupPlaceHold.Status.RESTORED
+    assert restored.restored_membership_id is not None
+    membership = GroupMembership.objects.get(
+        pk=restored.restored_membership_id
+    )
+    assert membership.starts_on == return_on
+    assert membership.ends_on is None
+    assert len(
+        group_occupied_student_ids(
+            group_id=group.id,
+            on_date=return_on,
+        )
+    ) == 1
+
+    with pytest.raises(ValidationError):
+        create_group_membership(
+            student_id=other.id,
+            group_id=group.id,
+            starts_on=return_on,
+            ends_on=None,
+            actor=hold_manager,
+        )
+
+
+@pytest.mark.django_db
+def test_direct_membership_create_cannot_bypass_place_hold_restore(
+    hold_manager,
+    rolling_scheme,
+):
+    _, period_until = _hold_window()
+    return_on = period_until + timedelta(days=1)
+    group = TrainingGroup.objects.create(
+        code="hold-no-bypass",
+        name="Hold no bypass",
+        capacity=2,
+    )
+    holder, _ = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Holder",
+    )
+    hold = _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
+        actor=hold_manager,
+    )
+
+    with pytest.raises(ValidationError, match="restore flow"):
+        create_group_membership(
+            student_id=holder.id,
+            group_id=group.id,
+            starts_on=return_on,
+            ends_on=None,
+            actor=hold_manager,
+        )
+
+    restored = restore_group_place_hold(
+        hold_id=hold.id,
+        actor=hold_manager,
+        now=timezone.now(),
+    )
+    assert restored.restored_membership.starts_on == return_on
+
+
+@pytest.mark.django_db
+def test_activation_and_restore_reconcile_already_published_rosters(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, period_until = _hold_window()
+    return_on = period_until + timedelta(days=1)
+    group = TrainingGroup.objects.create(
+        code="hold-roster-lifecycle",
+        name="Hold roster lifecycle",
+        capacity=2,
+    )
+    holder, old_membership = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Holder",
     )
 
     held_lesson = _lesson(
         group=group,
         actor=hold_manager,
         lesson_date=period_from,
-        suffix="held",
     )
-    publish_lesson(
-        lesson_id=held_lesson.id,
-        actor=hold_manager,
-        now=held_lesson.rsvp_deadline - timedelta(minutes=1),
-    )
-    assert not LessonRosterEntry.objects.filter(
-        lesson=held_lesson,
-        student=holder,
-        is_active=True,
-    ).exists()
-
     return_lesson = _lesson(
         group=group,
         actor=hold_manager,
-        lesson_date=period_until + timedelta(days=1),
-        suffix="return",
+        lesson_date=return_on,
     )
-    publish_lesson(
-        lesson_id=return_lesson.id,
-        actor=hold_manager,
-        now=return_lesson.rsvp_deadline - timedelta(minutes=1),
-    )
-    assert LessonRosterEntry.objects.filter(
+    for lesson in (held_lesson, return_lesson):
+        publish_lesson(
+            lesson_id=lesson.id,
+            actor=hold_manager,
+            now=lesson.rsvp_deadline - timedelta(minutes=1),
+        )
+
+    assert LessonRosterEntry.objects.get(
+        lesson=held_lesson,
+        student=holder,
+    ).is_active
+    assert LessonRosterEntry.objects.get(
         lesson=return_lesson,
         student=holder,
-        is_active=True,
-    ).exists()
+    ).is_active
 
-
-@pytest.mark.django_db
-def test_hold_activation_reconciles_already_published_group_roster(
-    hold_manager,
-    rolling_scheme,
-):
-    period_from, period_until = _hold_window()
-    group = TrainingGroup.objects.create(
-        code="hold-published-roster",
-        name="Hold published roster",
-        capacity=2,
-    )
-    holder = _student_with_membership(
+    hold = _activate_hold(
+        holder=holder,
         group=group,
-        actor=hold_manager,
-        name="Published holder",
-    )
-    hold = create_group_place_hold(
-        student_id=holder.id,
-        group_id=group.id,
-        period_scheme_id=rolling_scheme.id,
-        period_from=period_from,
-        period_until=period_until,
+        scheme=rolling_scheme,
         actor=hold_manager,
     )
 
-    lesson = _lesson(
-        group=group,
-        actor=hold_manager,
-        lesson_date=period_from,
-        suffix="published-before-hold",
-    )
-    publish_lesson(
-        lesson_id=lesson.id,
-        actor=hold_manager,
-        now=lesson.rsvp_deadline - timedelta(minutes=1),
-    )
-    roster = LessonRosterEntry.objects.get(
-        lesson=lesson,
+    held_roster = LessonRosterEntry.objects.get(
+        lesson=held_lesson,
         student=holder,
     )
-    assert roster.source == LessonRosterEntry.Source.GROUP
-    assert roster.is_active is True
+    return_roster = LessonRosterEntry.objects.get(
+        lesson=return_lesson,
+        student=holder,
+    )
+    assert held_roster.is_active is False
+    assert return_roster.is_active is False
+    assert held_roster.group_membership_id == old_membership.id
 
-    activated_at = timezone.now()
-    confirm_group_place_hold_fee(
+    restored = restore_group_place_hold(
         hold_id=hold.id,
         actor=hold_manager,
-        now=activated_at,
+        now=timezone.now(),
     )
-    roster.refresh_from_db()
-    assert roster.is_active is False
-    assert roster.deactivated_at == activated_at
+    held_roster.refresh_from_db()
+    return_roster.refresh_from_db()
 
-    cancel_group_place_hold(
-        hold_id=hold.id,
-        actor=hold_manager,
-        reason="Return to regular training",
-        now=activated_at + timedelta(minutes=1),
+    assert held_roster.is_active is False
+    assert return_roster.is_active is True
+    assert (
+        return_roster.group_membership_id
+        == restored.restored_membership_id
     )
-    roster.refresh_from_db()
-    assert roster.is_active is True
-    assert roster.deactivated_at is None
 
 
 @pytest.mark.django_db
-def test_hold_does_not_suppress_explicit_lesson_enrollment(
+def test_explicit_lesson_enrollment_survives_hold_suspension(
     hold_manager,
     rolling_scheme,
 ):
-    period_from, period_until = _hold_window()
+    period_from, _ = _hold_window()
     group = TrainingGroup.objects.create(
         code="hold-explicit-enrollment",
         name="Hold explicit enrollment",
         capacity=2,
     )
-    holder = _student_with_membership(
+    holder, _ = _student_with_membership(
         group=group,
         actor=hold_manager,
         name="Explicit holder",
     )
-    hold = create_group_place_hold(
-        student_id=holder.id,
-        group_id=group.id,
-        period_scheme_id=rolling_scheme.id,
-        period_from=period_from,
-        period_until=period_until,
-        actor=hold_manager,
-    )
-
     lesson = _lesson(
         group=group,
         actor=hold_manager,
         lesson_date=period_from,
-        suffix="explicit",
     )
     add_lesson_enrollment(
         lesson_id=lesson.id,
@@ -324,10 +395,11 @@ def test_hold_does_not_suppress_explicit_lesson_enrollment(
         now=lesson.rsvp_deadline - timedelta(minutes=1),
     )
 
-    confirm_group_place_hold_fee(
-        hold_id=hold.id,
+    _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
         actor=hold_manager,
-        now=timezone.now(),
     )
 
     roster = LessonRosterEntry.objects.get(
@@ -342,111 +414,144 @@ def test_hold_does_not_suppress_explicit_lesson_enrollment(
 
 
 @pytest.mark.django_db
-def test_active_hold_reservation_still_blocks_capacity_if_membership_is_ended(
+def test_cancelling_active_hold_frees_seat_without_restoring_membership(
     hold_manager,
     rolling_scheme,
 ):
-    period_from, period_until = _hold_window()
+    period_from, _ = _hold_window()
     group = TrainingGroup.objects.create(
-        code="hold-reservation-capacity",
-        name="Hold reservation capacity",
+        code="hold-cancel-free",
+        name="Hold cancel free",
         capacity=1,
     )
-    holder = _student_with_membership(
-        group=group,
-        actor=hold_manager,
-        name="Holder",
-    )
-    other = Student.objects.create(display_name="Other")
-    hold = create_group_place_hold(
-        student_id=holder.id,
-        group_id=group.id,
-        period_scheme_id=rolling_scheme.id,
-        period_from=period_from,
-        period_until=period_until,
-        actor=hold_manager,
-    )
-    confirm_group_place_hold_fee(
-        hold_id=hold.id,
-        actor=hold_manager,
-        now=timezone.now(),
-    )
-
-    membership = GroupMembership.objects.get(student=holder, group=group)
-    membership.ends_on = period_from - timedelta(days=1)
-    membership.save(update_fields=["ends_on"])
-
-    with pytest.raises(ValidationError):
-        create_group_membership(
-            student_id=other.id,
-            group_id=group.id,
-            starts_on=period_from,
-            ends_on=period_until,
-            actor=hold_manager,
-        )
-
-
-@pytest.mark.django_db
-def test_cancelling_active_hold_removes_roster_suppression(
-    hold_manager,
-    rolling_scheme,
-):
-    period_from, period_until = _hold_window()
-    group = TrainingGroup.objects.create(
-        code="cancelled-hold-overlay",
-        name="Cancelled hold overlay",
-        capacity=1,
-    )
-    holder = _student_with_membership(
+    holder, old_membership = _student_with_membership(
         group=group,
         actor=hold_manager,
         name="Cancelled holder",
     )
-    hold = create_group_place_hold(
-        student_id=holder.id,
-        group_id=group.id,
-        period_scheme_id=rolling_scheme.id,
-        period_from=period_from,
-        period_until=period_until,
+    other = Student.objects.create(display_name="Other")
+    hold = _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
         actor=hold_manager,
-    )
-    hold = confirm_group_place_hold_fee(
-        hold_id=hold.id,
-        actor=hold_manager,
-        now=timezone.now(),
     )
     reservation_id = hold.seat_reservation_id
 
-    cancel_group_place_hold(
+    cancelled = cancel_group_place_hold(
         hold_id=hold.id,
         actor=hold_manager,
         reason="No longer needed",
         now=timezone.now(),
     )
 
+    assert cancelled.status == GroupPlaceHold.Status.CANCELLED
     reservation = GroupSeatReservation.objects.get(pk=reservation_id)
     assert reservation.cancelled_at is not None
-
-    lesson = _lesson(
-        group=group,
-        actor=hold_manager,
-        lesson_date=period_from,
-        suffix="cancelled",
-    )
-    publish_lesson(
-        lesson_id=lesson.id,
-        actor=hold_manager,
-        now=lesson.rsvp_deadline - timedelta(minutes=1),
-    )
-    assert LessonRosterEntry.objects.filter(
-        lesson=lesson,
+    old_membership.refresh_from_db()
+    assert old_membership.ends_on == period_from - timedelta(days=1)
+    assert not GroupMembership.objects.filter(
         student=holder,
-        is_active=True,
+        group=group,
+        ends_on__isnull=True,
     ).exists()
+
+    admitted = create_group_membership(
+        student_id=other.id,
+        group_id=group.id,
+        starts_on=period_from,
+        ends_on=None,
+        actor=hold_manager,
+    )
+    assert admitted.student_id == other.id
 
 
 @pytest.mark.django_db
-def test_place_hold_requires_membership_covering_full_period(
+def test_expired_hold_frees_seat_and_does_not_restore_membership(
+    hold_manager,
+    rolling_scheme,
+):
+    _, period_until = _hold_window()
+    return_on = period_until + timedelta(days=1)
+    group = TrainingGroup.objects.create(
+        code="hold-expire-free",
+        name="Hold expire free",
+        capacity=1,
+    )
+    holder, _ = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Expired holder",
+    )
+    other = Student.objects.create(display_name="Other")
+    hold = _activate_hold(
+        holder=holder,
+        group=group,
+        scheme=rolling_scheme,
+        actor=hold_manager,
+    )
+
+    result = process_subscription_lifecycle(
+        as_of=return_on + timedelta(days=1),
+        actor=hold_manager,
+    )
+
+    hold.refresh_from_db()
+    hold.seat_reservation.refresh_from_db()
+    assert result["group_place_hold_expired"] == 1
+    assert hold.status == GroupPlaceHold.Status.EXPIRED
+    assert hold.seat_reservation.cancelled_at is not None
+    assert hold.restored_membership_id is None
+
+    admitted = create_group_membership(
+        student_id=other.id,
+        group_id=group.id,
+        starts_on=return_on + timedelta(days=1),
+        ends_on=None,
+        actor=hold_manager,
+    )
+    assert admitted.student_id == other.id
+
+
+@pytest.mark.django_db
+def test_place_hold_requires_membership_active_at_start_not_full_period(
+    hold_manager,
+    rolling_scheme,
+):
+    period_from, period_until = _hold_window()
+    group = TrainingGroup.objects.create(
+        code="hold-start-membership",
+        name="Hold start membership",
+        capacity=3,
+    )
+    student, membership = _student_with_membership(
+        group=group,
+        actor=hold_manager,
+        name="Short membership",
+        ends_on=period_from + timedelta(days=5),
+    )
+
+    hold = create_group_place_hold(
+        student_id=student.id,
+        group_id=group.id,
+        period_scheme_id=rolling_scheme.id,
+        period_from=period_from,
+        period_until=period_until,
+        actor=hold_manager,
+    )
+    activated = confirm_group_place_hold_fee(
+        hold_id=hold.id,
+        actor=hold_manager,
+        now=timezone.now(),
+    )
+
+    membership.refresh_from_db()
+    assert activated.status == GroupPlaceHold.Status.ACTIVE
+    assert membership.ends_on == period_from - timedelta(days=1)
+
+
+@pytest.mark.django_db
+def test_place_hold_rejects_student_without_membership_at_hold_start(
     hold_manager,
     rolling_scheme,
 ):
@@ -456,14 +561,7 @@ def test_place_hold_requires_membership_covering_full_period(
         name="Hold membership basis",
         capacity=3,
     )
-    student = Student.objects.create(display_name="Short membership")
-    GroupMembership.objects.create(
-        student=student,
-        group=group,
-        starts_on=period_from - timedelta(days=30),
-        ends_on=period_from + timedelta(days=5),
-        created_by=hold_manager,
-    )
+    student = Student.objects.create(display_name="No membership")
 
     with pytest.raises(ValidationError) as exc:
         create_group_place_hold(
