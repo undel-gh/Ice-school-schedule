@@ -221,6 +221,8 @@ def _suppress_group_rosters_for_reservation(
     actor: User | None,
     at: datetime,
 ) -> int:
+    from attendance.models import Attendance
+
     start, end = _school_date_datetime_bounds(
         starts_on=reservation.starts_on,
         ends_on=reservation.ends_on,
@@ -228,6 +230,12 @@ def _suppress_group_rosters_for_reservation(
     explicit_lesson_ids = LessonEnrollment.objects.filter(
         student_id=reservation.student_id,
         cancelled_at__isnull=True,
+        lesson__group_id=reservation.group_id,
+        lesson__starts_at__gte=start,
+        lesson__starts_at__lt=end,
+    ).values_list("lesson_id", flat=True)
+    attended_lesson_ids = Attendance.objects.filter(
+        student_id=reservation.student_id,
         lesson__group_id=reservation.group_id,
         lesson__starts_at__gte=start,
         lesson__starts_at__lt=end,
@@ -246,6 +254,7 @@ def _suppress_group_rosters_for_reservation(
             is_active=True,
         )
         .exclude(lesson_id__in=explicit_lesson_ids)
+        .exclude(lesson_id__in=attended_lesson_ids)
         .update(
             is_active=False,
             deactivated_at=at,
@@ -288,6 +297,8 @@ def _deactivate_membership_rosters_from(
     actor: User | None,
     at: datetime,
 ) -> int:
+    from attendance.models import Attendance
+
     start = datetime.combine(starts_on, datetime.min.time())
     if settings.USE_TZ:
         start = make_school_aware(start)
@@ -296,6 +307,11 @@ def _deactivate_membership_rosters_from(
         group_id=membership.group_id,
         starts_at=start,
     )
+    attended_lesson_ids = Attendance.objects.filter(
+        student_id=membership.student_id,
+        lesson__group_id=membership.group_id,
+        lesson__starts_at__gte=start,
+    ).values_list("lesson_id", flat=True)
     updated = (
         LessonRosterEntry.objects.filter(
             group_membership=membership,
@@ -310,6 +326,7 @@ def _deactivate_membership_rosters_from(
             is_active=True,
         )
         .exclude(lesson_id__in=explicit_lesson_ids)
+        .exclude(lesson_id__in=attended_lesson_ids)
         .update(
             is_active=False,
             deactivated_at=at,
