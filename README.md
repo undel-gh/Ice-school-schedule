@@ -219,7 +219,8 @@ the ordinary login page.
 Managers create one-time invitations in the web UI at
 `/manager/school/invitations/`. An invitation targets either:
 
-- one Student with SELF or GUARDIAN access; or
+- one Student with SELF or GUARDIAN access plus a human-readable account
+  label such as "Мама Ани"; or
 - a new CoachProfile with a fixed display name.
 
 The raw invitation token is shown only once. The database stores only its
@@ -227,9 +228,11 @@ SHA-256 hash, expiration and lifecycle metadata. When the invited person
 successfully authenticates, creation of the technical Django User,
 ExternalIdentity and StudentAccess/CoachProfile happens in one transaction.
 
-External-only users receive an unguessable technical username and an unusable
-Django password. No provider access token, refresh token, email, phone, avatar,
-first name or last name is persisted by this flow.
+External-only users receive an unguessable technical username, an unusable
+Django password and the human-readable display label from the invitation.
+User-facing and manager-facing UI must show that label instead of the technical
+username whenever possible. No provider access token, refresh token, email,
+phone, avatar, first name or last name is persisted by this flow.
 
 Configure either or both providers:
 
@@ -249,10 +252,15 @@ https://<school-host>/accounts/external/yandex/callback/
 https://<school-host>/accounts/external/vk/callback/
 ```
 
-Both providers use Authorization Code + PKCE (S256) and a one-time `state`.
-VK ID additionally returns a `device_id` with the authorization code; it is
-required for the token exchange. Yandex user identification prefers the
-pairwise `psuid` value and falls back to the provider user id.
+Both providers use Authorization Code + PKCE and a one-time `state`.
+Yandex uses `S256`; VK ID follows the current official SDK and sends
+`code_challenge_method=s256`. VK ID additionally returns a `device_id`
+with the authorization code; it is required for the token exchange.
+
+Yandex identity is **always** the pairwise `psuid`. If Yandex does not return
+`psuid`, authentication fails; the implementation never falls back to the
+global provider `id`, so one account cannot silently change subject format
+between logins.
 
 After onboarding, the ordinary login buttons resolve only an existing
 ExternalIdentity. Authenticated users can connect the other configured
@@ -265,8 +273,19 @@ before the invitation is consumed. This prevents a parent who uses Yandex for
 the first child and VK ID for the second invitation from accidentally creating
 two school accounts.
 
-Local username/password login remains available for staff and emergency
-administration.
+External authentication is deliberately disabled for `is_staff`,
+`is_superuser` and any account that has manager-operations permissions.
+Those accounts must use local username/password authentication, preserving the
+password/axes security boundary. Privileged signed-in sessions also cannot
+accept external invitations.
+
+Users may unlink one provider themselves only while another external provider
+remains. Managers with `change_externalidentity` may unlink a compromised
+provider; the service refuses to remove the final login method from an
+external-only User. Every unlink records `ExternalIdentityUnlinked`.
+
+Local username/password login remains the staff and emergency administration
+channel.
 
 ## Production checks
 
