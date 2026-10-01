@@ -165,7 +165,7 @@ def test_manager_can_manage_group_place_hold_from_web(client):
         is_staff=True,
     )
     student = Student.objects.create(display_name="Hold student")
-    from scheduling.models import TrainingGroup
+    from scheduling.models import GroupMembership, TrainingGroup
 
     group = TrainingGroup.objects.create(
         code="hold-web-group",
@@ -175,6 +175,13 @@ def test_manager_can_manage_group_place_hold_from_web(client):
         code="hold-web-calendar",
         name="Calendar",
         mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    GroupMembership.objects.create(
+        student=student,
+        group=group,
+        starts_on=date(2026, 9, 1),
+        ends_on=None,
+        created_by=manager,
     )
 
     client.force_login(manager)
