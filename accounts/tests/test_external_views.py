@@ -549,3 +549,116 @@ def test_privileged_user_cannot_start_external_link(client, settings):
     assert response.status_code == 302
     assert response.url == reverse("external_auth:identities")
     assert "external_auth_flow" not in client.session
+
+
+
+@pytest.mark.django_db
+def test_recovery_invitation_callback_reactivates_existing_user(
+    client,
+    manager,
+    settings,
+    monkeypatch,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    user = User.objects.create_user(
+        username="recovery-callback-parent",
+        display_name="Папа Саши",
+        is_active=False,
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    student = Student.objects.create(display_name="Саша")
+    access = StudentAccess.objects.create(
+        user=user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=True,
+    )
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.RECOVERY,
+        actor=manager,
+        recovery_user_id=user.id,
+    )
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+    body = landing.content.decode()
+    assert "Восстановление существующего аккаунта" in body
+    assert "Папа Саши" in body
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "yandex"},
+        )
+    )
+    assert begin.status_code == 302
+    flow = client.session["external_auth_flow"]
+
+    monkeypatch.setattr(
+        "accounts.external_views.exchange_authorization_code",
+        lambda **kwargs: ExternalProfile(
+            provider=ExternalIdentity.Provider.YANDEX,
+            subject="recovered-yandex-psuid",
+        ),
+    )
+    callback = client.get(
+        reverse("external_auth:callback", kwargs={"provider": "yandex"}),
+        {"code": "code", "state": flow["state"]},
+    )
+
+    assert callback.status_code == 302
+    user.refresh_from_db()
+    assert user.is_active is True
+    assert str(client.session["_auth_user_id"]) == str(user.id)
+    assert StudentAccess.objects.get(pk=access.id).user_id == user.id
+    assert ExternalIdentity.objects.filter(
+        user=user,
+        provider_subject="recovered-yandex-psuid",
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_recovery_invitation_requires_signed_out_session(
+    client,
+    manager,
+    settings,
+):
+    settings.YANDEX_OAUTH_CLIENT_ID = "ya-client"
+    target = User.objects.create_user(
+        username="recovery-target-signed-out",
+        display_name="Родитель",
+        is_active=False,
+    )
+    target.set_unusable_password()
+    target.save(update_fields=["password"])
+    created = create_account_invitation(
+        kind=AccountInvitation.Kind.RECOVERY,
+        actor=manager,
+        recovery_user_id=target.id,
+    )
+    other = User.objects.create_user(username="already-signed-in")
+    client.force_login(other)
+
+    landing = client.get(
+        reverse(
+            "external_auth:invitation",
+            kwargs={"token": created.token},
+        )
+    )
+    assert landing.status_code == 200
+    assert "необходимо сначала выйти" in landing.content.decode()
+
+    begin = client.get(
+        reverse(
+            "external_auth:invitation_login",
+            kwargs={"provider": "yandex"},
+        )
+    )
+    assert begin.status_code == 302
+    assert "external_auth_flow" not in client.session
