@@ -218,7 +218,7 @@ def _suppress_group_rosters_for_reservation(
     ).update(
         is_active=False,
         deactivated_at=at,
-        deactivated_by=actor,
+        deactivated_by_id=actor.id if actor is not None else None,
     )
     if updated:
         record_event(
@@ -241,8 +241,7 @@ def _restore_group_rosters_after_reservation(
         ends_on=reservation.ends_on,
     )
     lessons = (
-        Lesson.objects.select_for_update()
-        .filter(
+        Lesson.objects.filter(
             group_id=reservation.group_id,
             starts_at__gte=start,
             starts_at__lt=end,
