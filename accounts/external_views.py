@@ -327,12 +327,14 @@ def external_identities(request):
         for provider in configured_providers()
         if provider not in linked
     )
+    link_allowed = external_auth_allowed(request.user)
     return render(
         request,
         "accounts/external_identities.html",
         {
             "identities": identities,
-            "available_providers": available,
+            "available_providers": available if link_allowed else (),
+            "external_auth_link_allowed": link_allowed,
         },
     )
 
