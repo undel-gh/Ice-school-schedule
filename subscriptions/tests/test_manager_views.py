@@ -211,6 +211,8 @@ def test_manager_can_manage_group_place_hold_from_web(client):
     hold.refresh_from_db()
     assert hold.status == GroupPlaceHold.Status.ACTIVE
     assert hold.fee_confirmed_at is not None
+    assert hold.suspended_membership_id is not None
+    assert hold.seat_reservation_id is not None
 
     cancelled = client.post(
         reverse(
@@ -223,6 +225,77 @@ def test_manager_can_manage_group_place_hold_from_web(client):
     hold.refresh_from_db()
     assert hold.status == GroupPlaceHold.Status.CANCELLED
     assert hold.cancellation_reason == "family request"
+
+
+@pytest.mark.django_db
+def test_manager_can_restore_group_place_hold_from_web(client):
+    manager = User.objects.create_user(
+        username="hold-restore-manager",
+        password="test",
+        is_superuser=True,
+        is_staff=True,
+    )
+    student = Student.objects.create(display_name="Hold restore student")
+    from scheduling.models import GroupMembership, TrainingGroup
+
+    group = TrainingGroup.objects.create(
+        code="hold-restore-web-group",
+        name="Hold Restore Web Group",
+        capacity=1,
+    )
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="hold-restore-web-calendar",
+        name="Calendar restore",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    original_membership = GroupMembership.objects.create(
+        student=student,
+        group=group,
+        starts_on=date(2026, 9, 1),
+        ends_on=None,
+        created_by=manager,
+    )
+
+    client.force_login(manager)
+    created = client.post(
+        reverse("subscriptions:manager_place_hold_create"),
+        {
+            "student": str(student.id),
+            "group": str(group.id),
+            "period_scheme": str(scheme.id),
+            "reference_date": "2026-10-10",
+        },
+    )
+    assert created.status_code == 302
+
+    hold = GroupPlaceHold.objects.get(student=student, group=group)
+    confirmed = client.post(
+        reverse(
+            "subscriptions:manager_place_hold_confirm",
+            kwargs={"hold_id": hold.id},
+        )
+    )
+    assert confirmed.status_code == 302
+
+    original_membership.refresh_from_db()
+    hold.refresh_from_db()
+    assert original_membership.ends_on == date(2026, 9, 30)
+    assert hold.status == GroupPlaceHold.Status.ACTIVE
+
+    restored = client.post(
+        reverse(
+            "subscriptions:manager_place_hold_restore",
+            kwargs={"hold_id": hold.id},
+        )
+    )
+    assert restored.status_code == 302
+
+    hold.refresh_from_db()
+    assert hold.status == GroupPlaceHold.Status.RESTORED
+    assert hold.restored_at is not None
+    assert hold.restored_membership_id is not None
+    assert hold.restored_membership.starts_on == date(2026, 11, 1)
+    assert hold.restored_membership.ends_on is None
 
 
 @pytest.mark.django_db
