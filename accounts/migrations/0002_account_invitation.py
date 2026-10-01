@@ -14,6 +14,11 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.AddField(
+            model_name="user",
+            name="display_name",
+            field=models.CharField(blank=True, default="", max_length=100),
+        ),
         migrations.AddConstraint(
             model_name="externalidentity",
             constraint=models.UniqueConstraint(
@@ -57,6 +62,7 @@ class Migration(migrations.Migration):
                     "coach_display_name",
                     models.CharField(blank=True, default="", max_length=100),
                 ),
+                ("account_display_name", models.CharField(max_length=100)),
                 ("expires_at", models.DateTimeField()),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("accepted_at", models.DateTimeField(blank=True, null=True)),
@@ -111,20 +117,23 @@ class Migration(migrations.Migration):
                 "constraints": [
                     models.CheckConstraint(
                         condition=(
-                            models.Q(
-                                kind="student_access",
-                                student__isnull=False,
-                                student_access_role__in=["self", "guardian"],
-                                coach_display_name="",
-                            )
-                            | (
+                            (
                                 models.Q(
-                                    kind="coach",
-                                    student__isnull=True,
-                                    student_access_role="",
+                                    kind="student_access",
+                                    student__isnull=False,
+                                    student_access_role__in=["self", "guardian"],
+                                    coach_display_name="",
                                 )
-                                & ~models.Q(coach_display_name="")
+                                | (
+                                    models.Q(
+                                        kind="coach",
+                                        student__isnull=True,
+                                        student_access_role="",
+                                    )
+                                    & ~models.Q(coach_display_name="")
+                                )
                             )
+                            & ~models.Q(account_display_name="")
                         ),
                         name="account_invite_target_ck",
                     ),
