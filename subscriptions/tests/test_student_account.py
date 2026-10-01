@@ -516,3 +516,117 @@ def test_targeted_makeup_status_reflects_target_lesson_state(
         for item in response.context["account"].makeup_rights
     }
     assert statuses[right.id] == "target_cancelled"
+
+
+@pytest.mark.django_db
+def test_past_completed_one_time_right_remains_available_for_correction(
+    client,
+    account_context,
+    monkeypatch,
+):
+    ctx = account_context
+    fixed_now = make_school_aware(datetime(2026, 9, 30, 12, 0))
+    monkeypatch.setattr(timezone, "now", lambda: fixed_now)
+    lesson = make_lesson(
+        ctx=ctx,
+        starts_at=make_school_aware(datetime(2026, 9, 29, 18, 0)),
+        status=Lesson.Status.COMPLETED,
+    )
+    right = OneTimeEntitlement.objects.create(
+        student=ctx["student"],
+        lesson=lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=ctx["manager"],
+    )
+    closed_lesson = make_lesson(
+        ctx=ctx,
+        starts_at=make_school_aware(datetime(2026, 9, 28, 18, 0)),
+        status=Lesson.Status.CLOSED,
+    )
+    closed_right = OneTimeEntitlement.objects.create(
+        student=ctx["student"],
+        lesson=closed_lesson,
+        entitlement_type=OneTimeEntitlement.Type.SINGLE_ICE,
+        category=SubscriptionCategory.ICE,
+        created_by=ctx["manager"],
+    )
+    client.force_login(ctx["guardian"])
+
+    response = client.get(
+        reverse("student_account:account"),
+        {"student": str(ctx["student"].id)},
+    )
+
+    statuses = {
+        item.entitlement.id: item.status
+        for item in response.context["account"].one_time_rights
+    }
+    assert statuses[right.id] == "available"
+    assert statuses[closed_right.id] == "lesson_closed"
+
+
+@pytest.mark.django_db
+def test_past_completed_targeted_makeup_remains_targeted_until_closed(
+    client,
+    account_context,
+    monkeypatch,
+):
+    ctx = account_context
+    fixed_now = make_school_aware(datetime(2026, 9, 30, 12, 0))
+    monkeypatch.setattr(timezone, "now", lambda: fixed_now)
+    allowance = ctx["subscription"].allowances.get(
+        category=SubscriptionCategory.ICE
+    )
+    source_lesson = make_lesson(
+        ctx=ctx,
+        starts_at=make_school_aware(datetime(2026, 9, 15, 18, 0)),
+    )
+    completed_target = make_lesson(
+        ctx=ctx,
+        starts_at=make_school_aware(datetime(2026, 9, 29, 18, 0)),
+        status=Lesson.Status.COMPLETED,
+    )
+    targeted = MakeupEntitlement.objects.create(
+        student=ctx["student"],
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
+        valid_from=date(2026, 9, 20),
+        valid_until=date(2026, 10, 10),
+        target_lesson=completed_target,
+        created_by=ctx["manager"],
+    )
+    closed_target = make_lesson(
+        ctx=ctx,
+        starts_at=make_school_aware(datetime(2026, 9, 28, 18, 0)),
+        status=Lesson.Status.CLOSED,
+    )
+    closed = MakeupEntitlement.objects.create(
+        student=ctx["student"],
+        source_lesson=make_lesson(
+            ctx=ctx,
+            starts_at=make_school_aware(datetime(2026, 9, 14, 18, 0)),
+        ),
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.SCHOOL_RESCHEDULE,
+        valid_from=date(2026, 9, 20),
+        valid_until=date(2026, 10, 10),
+        target_lesson=closed_target,
+        created_by=ctx["manager"],
+    )
+    client.force_login(ctx["guardian"])
+
+    response = client.get(
+        reverse("student_account:account"),
+        {"student": str(ctx["student"].id)},
+    )
+
+    statuses = {
+        item.entitlement.id: item.status
+        for item in response.context["account"].makeup_rights
+    }
+    assert statuses[targeted.id] == "targeted"
+    assert statuses[closed.id] == "target_closed"
