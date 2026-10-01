@@ -34,6 +34,7 @@ def test_invitation_callback_creates_user_access_and_session(
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
     )
 
     landing = client.get(
@@ -271,6 +272,7 @@ def test_authenticated_invitation_with_new_provider_stays_on_same_user(
         actor=manager,
         student_id=second_student.id,
         student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
     )
     client.force_login(user)
 
@@ -346,6 +348,7 @@ def test_authenticated_invitation_rejects_provider_linked_to_other_user(
         actor=manager,
         student_id=student.id,
         student_access_role=StudentAccess.Role.GUARDIAN,
+        account_display_name="Родитель ученика",
     )
     client.force_login(signed_in)
     client.get(
