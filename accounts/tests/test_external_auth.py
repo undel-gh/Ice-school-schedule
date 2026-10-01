@@ -127,3 +127,27 @@ def test_vk_code_exchange_requires_device_and_fetches_user_info(
             code_verifier="verifier",
             device_id=None,
         )
+
+
+
+@pytest.mark.django_db
+def test_vk_code_exchange_rejects_missing_token_state(settings, monkeypatch):
+    settings.VKID_CLIENT_ID = "12345"
+
+    monkeypatch.setattr(
+        external_auth,
+        "_request_json",
+        lambda **kwargs: {"access_token": "vk-token"},
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        external_auth.exchange_authorization_code(
+            provider=ExternalIdentity.Provider.VK,
+            code="code",
+            redirect_uri="https://school.example/callback",
+            state="expected-state",
+            code_verifier="verifier",
+            device_id="device-1",
+        )
+
+    assert "state validation failed" in exc.value.message_dict["provider"][0]
