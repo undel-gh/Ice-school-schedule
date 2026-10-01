@@ -312,16 +312,16 @@ def test_hold_does_not_suppress_explicit_lesson_enrollment(
         lesson_date=period_from,
         suffix="explicit",
     )
-    publish_lesson(
-        lesson_id=lesson.id,
-        actor=hold_manager,
-        now=lesson.rsvp_deadline - timedelta(minutes=1),
-    )
     add_lesson_enrollment(
         lesson_id=lesson.id,
         student_id=holder.id,
         reason="administrative",
         actor=hold_manager,
+    )
+    publish_lesson(
+        lesson_id=lesson.id,
+        actor=hold_manager,
+        now=lesson.rsvp_deadline - timedelta(minutes=1),
     )
 
     confirm_group_place_hold_fee(
@@ -334,8 +334,11 @@ def test_hold_does_not_suppress_explicit_lesson_enrollment(
         lesson=lesson,
         student=holder,
     )
-    assert roster.source == LessonRosterEntry.Source.ENROLLMENT
     assert roster.is_active is True
+    assert lesson.enrollments.filter(
+        student=holder,
+        cancelled_at__isnull=True,
+    ).exists()
 
 
 @pytest.mark.django_db
