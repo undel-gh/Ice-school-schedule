@@ -16,7 +16,12 @@ from audit.services import event_exists, record_event
 from core.choices import SubscriptionCategory
 from core.permissions import require_permission
 from core.time import school_date
-from scheduling.models import Lesson, TrainingGroup
+from scheduling.models import GroupMembership, Lesson, TrainingGroup
+from scheduling.services import (
+    cancel_group_seat_reservation,
+    restore_group_membership_from_reservation,
+    suspend_group_membership_with_seat_reservation,
+)
 
 from .balances import (
     ledger_balance,
@@ -3025,11 +3030,19 @@ def create_group_place_hold(
         "subscriptions.add_groupplacehold",
         "Group place hold permission is required.",
     )
-    student = Student.objects.select_for_update().get(pk=student_id)
     group = TrainingGroup.objects.select_for_update().get(pk=group_id)
+    student = Student.objects.select_for_update().get(pk=student_id)
     scheme = SubscriptionPeriodScheme.objects.select_for_update().get(
         pk=period_scheme_id
     )
+    if not student.is_active:
+        raise ValidationError(
+            {"student": "Inactive students cannot reserve a group place."}
+        )
+    if not group.is_active:
+        raise ValidationError(
+            {"group": "A place cannot be reserved in an inactive group."}
+        )
     if not scheme.is_active:
         raise ValidationError(
             {"period_scheme": "Inactive period scheme cannot be used."}
@@ -3100,6 +3113,30 @@ def create_group_place_hold(
             }
         )
 
+    membership_basis = (
+        GroupMembership.objects.select_for_update()
+        .filter(
+            student=student,
+            group=group,
+            starts_on__lt=period_from,
+        )
+        .filter(
+            Q(ends_on__isnull=True)
+            | Q(ends_on__gte=period_from)
+        )
+        .order_by("-starts_on", "id")
+        .first()
+    )
+    if membership_basis is None:
+        raise ValidationError(
+            {
+                "membership": (
+                    "Place hold requires an existing group membership that "
+                    "is active when the hold period starts."
+                )
+            }
+        )
+
     hold = GroupPlaceHold.objects.create(
         student=student,
         group=group,
@@ -3137,20 +3174,95 @@ def confirm_group_place_hold_fee(
         "subscriptions.change_groupplacehold",
         "Group place hold change permission is required.",
     )
-    hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
-    if hold.status == GroupPlaceHold.Status.ACTIVE:
+    hold = (
+        GroupPlaceHold.objects.select_for_update(of=("self",))
+        .select_related("seat_reservation")
+        .get(pk=hold_id)
+    )
+    if (
+        hold.status == GroupPlaceHold.Status.ACTIVE
+        and hold.seat_reservation_id is not None
+    ):
         return hold
-    if hold.status != GroupPlaceHold.Status.PENDING_PAYMENT:
+    if hold.status not in {
+        GroupPlaceHold.Status.PENDING_PAYMENT,
+        GroupPlaceHold.Status.ACTIVE,
+    }:
         raise ValidationError(
             {"hold": "Only a pending place hold can confirm payment."}
         )
 
     confirmed_at = now or timezone.now()
+    today = school_date(confirmed_at)
+    if hold.period_from <= today:
+        raise ValidationError(
+            {
+                "period": (
+                    "Place hold payment must be confirmed before the hold "
+                    "start date."
+                )
+            }
+        )
+
+    group = TrainingGroup.objects.select_for_update().get(pk=hold.group_id)
+    student = Student.objects.select_for_update().get(pk=hold.student_id)
+    if not student.is_active:
+        raise ValidationError(
+            {"student": "Inactive students cannot activate a place hold."}
+        )
+    if not group.is_active:
+        raise ValidationError(
+            {"group": "A place hold cannot be activated in an inactive group."}
+        )
+    membership_basis = (
+        GroupMembership.objects.select_for_update()
+        .filter(
+            student_id=hold.student_id,
+            group_id=hold.group_id,
+            starts_on__lt=hold.period_from,
+        )
+        .filter(
+            Q(ends_on__isnull=True)
+            | Q(ends_on__gte=hold.period_from)
+        )
+        .order_by("-starts_on", "id")
+        .first()
+    )
+    if membership_basis is None:
+        raise ValidationError(
+            {
+                "membership": (
+                    "Place hold activation requires a group membership that "
+                    "is active when the hold period starts."
+                )
+            }
+        )
+
+    if hold.seat_reservation_id is None:
+        (
+            suspended_membership,
+            reservation,
+            previous_membership_ends_on,
+        ) = suspend_group_membership_with_seat_reservation(
+            membership_id=membership_basis.id,
+            starts_on=hold.period_from,
+            return_on=hold.period_until + timedelta(days=1),
+            actor=actor,
+            at=confirmed_at,
+        )
+        hold.suspended_membership = suspended_membership
+        hold.suspended_membership_ends_on_snapshot = (
+            previous_membership_ends_on
+        )
+        hold.seat_reservation = reservation
     hold.status = GroupPlaceHold.Status.ACTIVE
-    hold.fee_confirmed_at = confirmed_at
-    hold.fee_confirmed_by = actor
+    hold.fee_confirmed_at = hold.fee_confirmed_at or confirmed_at
+    hold.fee_confirmed_by = hold.fee_confirmed_by or actor
     hold.save(
         update_fields=[
+            "seat_reservation",
+            "suspended_membership",
+            "suspended_membership_ends_on_snapshot",
             "status",
             "fee_confirmed_at",
             "fee_confirmed_by",
@@ -3161,7 +3273,121 @@ def confirm_group_place_hold_fee(
         aggregate_type="GroupPlaceHold",
         aggregate_id=hold.id,
         actor=actor,
-        payload={"fee_confirmed_at": confirmed_at.isoformat()},
+        payload={
+            "fee_confirmed_at": confirmed_at.isoformat(),
+            "suspended_membership_id": (
+                str(hold.suspended_membership_id)
+                if hold.suspended_membership_id is not None
+                else None
+            ),
+            "seat_reservation_id": (
+                str(hold.seat_reservation_id)
+                if hold.seat_reservation_id is not None
+                else None
+            ),
+            "return_on": (hold.period_until + timedelta(days=1)).isoformat(),
+        },
+    )
+    return hold
+
+
+@transaction.atomic
+def restore_group_place_hold(
+    *,
+    hold_id: UUID,
+    actor: User,
+    now=None,
+) -> GroupPlaceHold:
+    require_permission(
+        actor,
+        "subscriptions.change_groupplacehold",
+        "Group place hold change permission is required.",
+    )
+    hold = (
+        GroupPlaceHold.objects.select_for_update(of=("self",))
+        .select_related(
+            "seat_reservation",
+            "suspended_membership",
+            "restored_membership",
+        )
+        .get(pk=hold_id)
+    )
+    if (
+        hold.status == GroupPlaceHold.Status.RESTORED
+        and hold.restored_membership_id is not None
+    ):
+        return hold
+    if hold.status != GroupPlaceHold.Status.ACTIVE:
+        raise ValidationError(
+            {"hold": "Only an active place hold can be restored."}
+        )
+    if hold.seat_reservation_id is None:
+        raise ValidationError(
+            {"hold": "Active place hold has no seat reservation."}
+        )
+    if hold.suspended_membership_id is None:
+        raise ValidationError(
+            {
+                "hold": (
+                    "Active place hold has no suspended membership and "
+                    "requires manager reconciliation before restore."
+                )
+            }
+        )
+
+    restored_at = now or timezone.now()
+    return_on = hold.period_until + timedelta(days=1)
+    if school_date(restored_at) > return_on:
+        raise ValidationError(
+            {"hold": "Place hold return window has already ended."}
+        )
+
+    original_ends_on = hold.suspended_membership_ends_on_snapshot
+    if original_ends_on is not None and original_ends_on < return_on:
+        raise ValidationError(
+            {
+                "hold": (
+                    "Original membership ended before the planned return "
+                    "date and cannot be restored."
+                )
+            }
+        )
+
+    membership = restore_group_membership_from_reservation(
+        reservation_id=hold.seat_reservation_id,
+        actor=actor,
+        ends_on=original_ends_on,
+    )
+    hold.status = GroupPlaceHold.Status.RESTORED
+    hold.restored_membership = membership
+    hold.restored_at = restored_at
+    hold.restored_by = actor
+    hold.save(
+        update_fields=[
+            "status",
+            "restored_membership",
+            "restored_at",
+            "restored_by",
+        ]
+    )
+    _audit(
+        event_type="GroupPlaceHoldRestored",
+        aggregate_type="GroupPlaceHold",
+        aggregate_id=hold.id,
+        actor=actor,
+        payload={
+            "student_id": str(hold.student_id),
+            "group_id": str(hold.group_id),
+            "seat_reservation_id": str(hold.seat_reservation_id),
+            "restored_membership_id": str(membership.id),
+            "return_on": return_on.isoformat(),
+            "restored_membership_ends_on": (
+                membership.ends_on.isoformat()
+                if membership.ends_on is not None
+                else None
+            ),
+            "restored_at": restored_at.isoformat(),
+        },
     )
     return hold
 
@@ -3187,12 +3413,21 @@ def cancel_group_place_hold(
     hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
     if hold.status == GroupPlaceHold.Status.CANCELLED:
         return hold
-    if hold.status == GroupPlaceHold.Status.EXPIRED:
+    if hold.status not in {
+        GroupPlaceHold.Status.PENDING_PAYMENT,
+        GroupPlaceHold.Status.ACTIVE,
+    }:
         raise ValidationError(
-            {"hold": "Expired place hold cannot be cancelled."}
+            {"hold": "Only pending or active place hold can be cancelled."}
         )
 
     cancelled_at = now or timezone.now()
+    if hold.seat_reservation_id is not None:
+        cancel_group_seat_reservation(
+            reservation_id=hold.seat_reservation_id,
+            actor=actor,
+            at=cancelled_at,
+        )
     hold.status = GroupPlaceHold.Status.CANCELLED
     hold.cancelled_at = cancelled_at
     hold.cancelled_by = actor
@@ -5397,12 +5632,19 @@ def _process_one_group_place_hold_expiry(
     actor: User | None,
 ) -> int:
     hold = GroupPlaceHold.objects.select_for_update().get(pk=hold_id)
+    return_on = hold.period_until + timedelta(days=1)
     if (
         hold.status != GroupPlaceHold.Status.ACTIVE
-        or hold.period_until >= as_of
+        or return_on >= as_of
     ):
         return 0
 
+    if hold.seat_reservation_id is not None:
+        cancel_group_seat_reservation(
+            reservation_id=hold.seat_reservation_id,
+            actor=actor,
+            at=timezone.now(),
+        )
     hold.status = GroupPlaceHold.Status.EXPIRED
     hold.save(update_fields=["status"])
     _audit(
@@ -5415,6 +5657,7 @@ def _process_one_group_place_hold_expiry(
             "group_id": str(hold.group_id),
             "period_from": hold.period_from.isoformat(),
             "period_until": hold.period_until.isoformat(),
+            "return_on": return_on.isoformat(),
             "as_of": as_of.isoformat(),
         },
     )
@@ -5542,7 +5785,7 @@ def process_subscription_lifecycle(
     active_hold_ids = list(
         GroupPlaceHold.objects.filter(
             status=GroupPlaceHold.Status.ACTIVE,
-            period_until__lt=as_of,
+            period_until__lt=as_of - timedelta(days=1),
         )
         .order_by("id")
         .values_list("id", flat=True)

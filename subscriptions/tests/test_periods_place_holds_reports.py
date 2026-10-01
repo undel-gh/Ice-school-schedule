@@ -11,7 +11,7 @@ from attendance.models import Attendance
 from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
 from core.testing import school_dt
-from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from scheduling.models import GroupMembership, Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.models import (
     GroupPlaceHold,
     MakeupEntitlement,
@@ -91,6 +91,19 @@ def make_plan(*, code: str, scheme=None, ice: int = 3):
         visit_limit=ice,
     )
     return plan
+
+
+def ensure_hold_membership(*, student, group, actor):
+    membership, _ = GroupMembership.objects.get_or_create(
+        student=student,
+        group=group,
+        starts_on=date(2026, 1, 1),
+        defaults={
+            "ends_on": None,
+            "created_by": actor,
+        },
+    )
+    return membership
 
 
 def make_lesson(*, context, starts_at):
@@ -196,6 +209,11 @@ def test_group_place_hold_requires_full_scheme_period(
     student,
     context,
 ):
+    ensure_hold_membership(
+        student=student,
+        group=context["group"],
+        actor=actor,
+    )
     scheme = SubscriptionPeriodScheme.objects.create(
         code="hold-calendar",
         name="Hold calendar",
@@ -427,6 +445,11 @@ def test_calendar_subscription_issue_uses_scheme_window(actor, student):
 
 @pytest.mark.django_db
 def test_group_place_hold_expires_after_period(actor, student, context):
+    ensure_hold_membership(
+        student=student,
+        group=context["group"],
+        actor=actor,
+    )
     scheme = SubscriptionPeriodScheme.objects.create(
         code="hold-expiry-calendar",
         name="Hold expiry",
@@ -449,13 +472,15 @@ def test_group_place_hold_expires_after_period(actor, student, context):
     from subscriptions.services import process_subscription_lifecycle
 
     result = process_subscription_lifecycle(
-        as_of=date(2026, 11, 1),
+        as_of=date(2026, 11, 2),
         actor=actor,
     )
 
     hold.refresh_from_db()
+    hold.seat_reservation.refresh_from_db()
     assert result["group_place_hold_expired"] == 1
     assert hold.status == GroupPlaceHold.Status.EXPIRED
+    assert hold.seat_reservation.cancelled_at is not None
 
 
 @pytest.mark.django_db
@@ -584,6 +609,11 @@ def test_backdated_attendance_does_not_activate_rolling_subscription(
 
 @pytest.mark.django_db
 def test_cancelled_group_place_hold_can_be_recreated(actor, student, context):
+    ensure_hold_membership(
+        student=student,
+        group=context["group"],
+        actor=actor,
+    )
     scheme = SubscriptionPeriodScheme.objects.create(
         code="hold-recreate",
         name="Hold recreate",
@@ -624,6 +654,11 @@ def test_cancelled_group_place_hold_can_be_recreated(actor, student, context):
 
 @pytest.mark.django_db
 def test_overlapping_group_place_holds_are_rejected(actor, student, context):
+    ensure_hold_membership(
+        student=student,
+        group=context["group"],
+        actor=actor,
+    )
     calendar = SubscriptionPeriodScheme.objects.create(
         code="hold-overlap-calendar",
         name="Hold overlap calendar",

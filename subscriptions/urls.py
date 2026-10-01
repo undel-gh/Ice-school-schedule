@@ -201,6 +201,11 @@ urlpatterns = [
         name="manager_place_hold_confirm",
     ),
     path(
+        "place-holds/<uuid:hold_id>/restore/",
+        views.manager_place_hold_restore_view,
+        name="manager_place_hold_restore",
+    ),
+    path(
         "place-holds/<uuid:hold_id>/cancel/",
         views.manager_place_hold_cancel_view,
         name="manager_place_hold_cancel",

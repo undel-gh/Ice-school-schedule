@@ -355,6 +355,11 @@ class TrainingGroup(models.Model):
         default=1,
     )
 
+    capacity = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+    )
+
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -369,6 +374,16 @@ models.CheckConstraint(
     name="group_min_attendees_gte_1",
 )
 ```
+
+```python
+models.CheckConstraint(
+    condition=models.Q(capacity__isnull=True) | models.Q(capacity__gte=1),
+    name="training_group_capacity_gte_1",
+)
+```
+
+`capacity = NULL` means that the system does not enforce a hard cap for that
+legacy/configuration state.
 
 ## Index
 
@@ -3373,25 +3388,147 @@ read-only in Django Admin; changes require a new version.
 
 ---
 
-# 38. Planned GroupPlaceHold model
+# 38. GroupPlaceHold and capacity semantics
 
-A paid one-period group-place reservation is a separate domain concept:
+A paid one-period group-place hold is a separate domain concept. It grants no
+AttendanceCoverage and no ICE/HALL visits.
 
 ```text
 GroupPlaceHold
     student
     group
-    period
-    status
-    created_at / created_by
+    period_scheme
+    period_from / period_until
+    status:
+        PENDING_PAYMENT
+        ACTIVE
+        RESTORED
+        CANCELLED
+        EXPIRED
+    seat_reservation -> GroupSeatReservation
+    suspended_membership -> GroupMembership
+    restored_membership -> GroupMembership
+    fee confirmation metadata
+    restore metadata
+    cancellation metadata
+```
+
+The protected return date is:
+
+```text
+return_on = period_until + 1 day
+```
+
+Scheduling owns the generic seat claim:
+
+```text
+GroupSeatReservation
+    student
+    group
+    starts_on
+    ends_on        # protected return date
     cancelled_at / cancelled_by
 ```
 
-It preserves the student's place in a TrainingGroup while the student skips
-one billing period. It grants no AttendanceCoverage and no ICE/HALL visits.
+## Capacity invariant
 
-The future Billing domain may attach payment data, but payment details are not
-required in the scheduling/subscriptions foundation.
+One occupied place is a distinct Student present in the union of:
+
+```text
+GroupMembership whose Student is active
+UNION
+non-cancelled GroupSeatReservation
+```
+
+A reservation and a membership for the same Student therefore consume one
+place, not two. `TrainingGroup.capacity = NULL` means no hard cap is enforced.
+
+An inactive Student's membership is retained for history but does not consume
+group capacity. A non-cancelled paid GroupSeatReservation remains an explicit
+seat claim even if that Student is later deactivated, until the reservation is
+cancelled or expires.
+
+Reactivating a Student is a capacity-changing operation. Before `False -> True`,
+the application locks all groups referenced by the student's current/future
+memberships in stable id order and validates every membership interval with the
+same capacity invariant used by ordinary admission. Reactivation is rejected if
+another student has taken the seat; the conflicting membership must be ended or
+moved first.
+
+Deactivating a Student does **not** automatically cancel an ACTIVE
+GroupPlaceHold. Its paid GroupSeatReservation continues to claim the seat until
+explicit hold cancellation or lifecycle expiry. Restore remains forbidden while
+the Student is inactive.
+
+All capacity-changing writers serialize on the TrainingGroup row. This includes
+ordinary membership admission/update, hold activation/restore and hard-cap
+changes.
+
+A TrainingGroup cannot be deactivated while it has a non-cancelled current or
+future GroupSeatReservation.
+
+## Hold activation
+
+A hold may be created only when an existing membership for the same
+student/group is active on `period_from` and started before that date.
+
+Payment confirmation requires `period_from > school_today`. Retroactive
+activation, including activation on the start calendar date, is rejected.
+Additionally, roster entries for lessons that already have Attendance records
+are never deactivated by hold suspension.
+
+Confirming payment atomically performs:
+
+```text
+old GroupMembership.ends_on = period_from - 1 day
+
+GroupSeatReservation:
+    starts_on = period_from
+    ends_on   = return_on
+
+GroupPlaceHold:
+    PENDING_PAYMENT -> ACTIVE
+    suspended_membership = old membership
+    suspended_membership_ends_on_snapshot = original ends_on
+    seat_reservation = reservation
+```
+
+The reservation owns the seat while the membership is suspended. GROUP-derived
+roster entries from `period_from` onward are deactivated if lessons were
+already published. Active explicit LessonEnrollment participation is preserved.
+
+## Restore
+
+Ordinary membership creation/update is rejected when the same student's
+interval overlaps an active seat reservation. The caller must use the explicit
+place-hold restore flow.
+
+`restore_group_place_hold(...)` creates a membership starting on
+`return_on` and moves the hold from ACTIVE to RESTORED. The original
+membership's finite `ends_on` is snapshotted during suspension and copied to
+the restored membership; an originally open-ended membership remains
+open-ended. Restore is rejected if the original end date is before
+`return_on`. The reservation still
+protects `return_on`; because occupancy is deduplicated by Student, the
+returning membership is allowed even when the group is otherwise at its
+formal capacity. Other students remain blocked from taking the protected seat.
+
+Already-published open/confirmed lessons from the new membership start are
+materialized into the roster immediately.
+
+## Cancel and expiry
+
+Cancelling an ACTIVE hold cancels its seat reservation and does not
+automatically restore membership.
+
+If an ACTIVE hold is not restored, lifecycle processing preserves the
+reservation through the whole protected return date. Only after that date does
+the hold move to EXPIRED and the reservation get cancelled. No membership is
+created automatically.
+
+RESTORED is a consumed terminal state for the paid hold and is not handled by
+the normal cancellation flow.
+
 
 ---
 

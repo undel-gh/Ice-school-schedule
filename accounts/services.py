@@ -5,10 +5,12 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from audit.services import record_event
 from core.permissions import require_permission
+from core.time import school_date
 
 from .models import CoachProfile, Student, StudentAccess
 
@@ -64,11 +66,85 @@ def update_student(
         "accounts.change_student",
         "Student change permission is required.",
     )
+
+    locked_groups = {}
+    today = school_date(timezone.now())
+    candidate_group_ids: tuple[UUID, ...] = ()
+
+    if is_active:
+        from scheduling.models import GroupMembership, TrainingGroup
+
+        candidate_group_ids = tuple(
+            GroupMembership.objects.filter(
+                student_id=student_id,
+            )
+            .filter(
+                Q(ends_on__isnull=True)
+                | Q(ends_on__gte=today)
+            )
+            .order_by("group_id")
+            .values_list("group_id", flat=True)
+            .distinct()
+        )
+        locked_groups = {
+            group.id: group
+            for group in TrainingGroup.objects.select_for_update()
+            .filter(id__in=candidate_group_ids)
+            .order_by("id")
+        }
+
     student = Student.objects.select_for_update().get(pk=student_id)
     previous = {
         "display_name": student.display_name,
         "is_active": student.is_active,
     }
+
+    if not student.is_active and is_active:
+        from scheduling.models import GroupMembership
+        from scheduling.services import ensure_group_capacity_available
+
+        memberships = list(
+            GroupMembership.objects.select_for_update()
+            .filter(student_id=student.id)
+            .filter(
+                Q(ends_on__isnull=True)
+                | Q(ends_on__gte=today)
+            )
+            .order_by("group_id", "starts_on", "id")
+        )
+        current_group_ids = {membership.group_id for membership in memberships}
+        if not current_group_ids.issubset(set(candidate_group_ids)):
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "Student memberships changed concurrently. "
+                        "Retry activation."
+                    )
+                }
+            )
+
+        for membership in memberships:
+            group = locked_groups[membership.group_id]
+            starts_on = max(membership.starts_on, today)
+            try:
+                ensure_group_capacity_available(
+                    group=group,
+                    student_id=student.id,
+                    starts_on=starts_on,
+                    ends_on=membership.ends_on,
+                    exclude_membership_id=membership.id,
+                )
+            except ValidationError as exc:
+                raise ValidationError(
+                    {
+                        "is_active": (
+                            f'Cannot reactivate student: group "{group.name}" '
+                            "has no free place for this membership. "
+                            "End or move the membership first."
+                        )
+                    }
+                ) from exc
+
     student.display_name = _clean_display_name(display_name)
     student.is_active = is_active
     student.save(update_fields=["display_name", "is_active", "updated_at"])

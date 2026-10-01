@@ -1,6 +1,6 @@
 # Абонементы: расчётные периоды, заморозка, сохранение места и web-операции
 
-**Статус:** реализация начата; period foundation, GroupPlaceHold и первый Manager web/reporting slice находятся в `feat/billing-periods-place-hold-manager-web`  
+**Статус:** period foundation, GroupPlaceHold, manager web/reporting и фактическая capacity/membership semantics реализованы  
 **Область:** subscriptions, scheduling, group membership, manager/trainer web UI  
 **Не является:** спецификацией биллинга или онлайн-оплаты
 
@@ -261,7 +261,8 @@ activate_rolling_subscription_period(...)
 
 ## 4.1. Реализованный GroupPlaceHold
 
-Платное сохранение места представлено отдельной сущностью:
+Платное сохранение места представлено отдельной сущностью и не является
+Subscription, ICE/HALL allowance или AttendanceCoverage.
 
 ```text
 GroupPlaceHold
@@ -272,33 +273,172 @@ GroupPlaceHold
     status:
         PENDING_PAYMENT
         ACTIVE
+        RESTORED
         CANCELLED
         EXPIRED
-    fee_confirmed_at / fee_confirmed_by
+    seat_reservation
+    suspended_membership
+    restored_membership
+    fee confirmation metadata
+    restore metadata
     cancellation metadata
 ```
 
-Hold обязан покрывать ровно один полный период выбранного scheme. Оплата
-подтверждается application service, после чего статус становится ACTIVE.
-`process_subscription_lifecycle(...)` переводит ACTIVE hold в EXPIRED после
-`period_until`.
+Hold обязан покрывать ровно один полный расчётный период выбранного scheme.
+Дата возврата определяется как:
+
+```text
+return_on = period_until + 1 day
+```
+
+До подтверждения оплаты `PENDING_PAYMENT` не занимает место и не меняет
+`GroupMembership`.
+
+### Вместимость группы
+
+`TrainingGroup.capacity` задаёт hard cap группы. Для исторических групп поле
+может быть `NULL`: тогда система показывает occupancy, но не блокирует
+зачисление по лимиту.
+
+Единое определение занятого места для read/write path:
+
+```text
+occupied students =
+    GroupMembership активных Student
+    UNION
+    non-cancelled GroupSeatReservation
+```
+
+Union выполняется по Student. Если в дату возврата одновременно существуют
+reservation и новый membership одного ученика, они занимают **одно** место.
+
+Membership деактивированного Student не занимает capacity: деактивация ученика
+сохраняет исторические membership как записи, но снимает их текущую/будущую
+seat-семантику. Явная оплаченная GroupSeatReservation остаётся отдельным
+обязательством школы и продолжает занимать место до cancel/expiry даже для
+inactive Student.
+
+Обратная активация Student не считается бесплатным возвратом места. Перед
+`False -> True` система блокирует все группы его текущих/будущих membership в
+стабильном порядке и повторно проверяет каждый membership через общий
+capacity-invariant. Если место уже занято другим учеником, активация
+отклоняется; менеджер должен сначала завершить или перенести конфликтующий
+membership.
+
+Деактивация Student **не отменяет ACTIVE GroupPlaceHold автоматически**.
+Связанная оплаченная reservation продолжает удерживать место до явной отмены
+hold или lifecycle-expiry. Пока Student inactive, restore запрещён; менеджер
+может либо снова активировать ученика (если его обычные membership не создают
+capacity conflict), либо отменить hold и освободить место.
+
+Все операции, способные изменить occupancy, сериализуются блокировкой строки
+`TrainingGroup`. Это относится к обычному admission/update membership,
+активации hold, restore и изменению hard cap. Два конкурентных запроса не могут
+одновременно занять последнее свободное место.
+
+### Активация hold
+
+Создать hold можно только для ученика, у которого membership той же группы
+активен на `period_from` и начался до даты hold.
+
+Подтвердить оплату можно только пока `period_from > school_today`. Hold нельзя
+активировать задним числом и нельзя начинать в текущий календарный день:
+дневная гранулярность не позволяет безопасно отделить уже прошедшие занятия от
+будущих в том же дне.
+
+Независимо от этой проверки roster entry занятия, для которого уже существует
+Attendance, никогда не деактивируется hold-механизмом. Attendance и возможность
+последующей коррекции тренером имеют приоритет над изменением membership.
+
+При `confirm_group_place_hold_fee(...)` в одной транзакции:
+
+```text
+старый GroupMembership
+    ends_on = period_from - 1 day
+
+GroupSeatReservation
+    starts_on = period_from
+    ends_on   = return_on
+
+GroupPlaceHold
+    PENDING_PAYMENT -> ACTIVE
+    suspended_membership = старый membership
+    suspended_membership_ends_on_snapshot = исходный ends_on
+    seat_reservation = reservation
+```
+
+Именно reservation, а не закрытый membership, удерживает место во время
+отсутствия и на защищённую дату возврата.
+
+Если будущие Lessons уже опубликованы, GROUP-derived roster rows начиная с
+`period_from` деактивируются. Явные активные `LessonEnrollment` не
+подавляются: административно добавленный ученик может участвовать в конкретном
+Lesson даже во время hold.
+
+### Возврат ученика
+
+Обычный `create_group_membership(...)` не может создать membership,
+пересекающий собственную действующую reservation ученика. Возврат должен идти
+через `restore_group_place_hold(...)`.
+
+Restore создаёт новый membership:
+
+```text
+new GroupMembership.starts_on = return_on
+new GroupMembership.ends_on   = исходный ends_on
+                                или NULL для исходно бессрочного membership
+
+GroupPlaceHold
+    ACTIVE -> RESTORED
+    restored_membership = new membership
+    restored_at / restored_by
+```
+
+Capacity-check допускает этот переход даже когда группа формально заполнена:
+reservation уже принадлежит тому же Student, поэтому reservation + membership
+дедуплицируются в одно занятое место. При этом другой ученик получить это место
+не может.
+
+Если исходный membership имел конечный `ends_on`, эта дата сохраняется в
+`suspended_membership_ends_on_snapshot` и переносится в восстановленный
+membership. Restore не превращает сезонное/срочное членство в бессрочное. Если
+исходный срок закончился раньше `return_on`, автоматический restore
+отклоняется.
+
+Если Lessons на дату возврата и позже уже опубликованы, GROUP-derived roster
+для нового membership материализуется/восстанавливается сразу. Уроки периода
+hold остаются исключёнными.
+
+### Отмена и истечение
+
+Отмена `PENDING_PAYMENT` просто отменяет услугу.
+
+Отмена `ACTIVE` hold отменяет seat reservation и **не восстанавливает**
+membership автоматически. Место становится свободным.
+
+ACTIVE hold защищает место также на `return_on`. Если restore не выполнен,
+`process_subscription_lifecycle(...)` переводит hold в `EXPIRED` только
+после завершения этой защищённой даты, отменяет reservation и освобождает место.
+EXPIRED hold не создаёт membership автоматически.
+
+RESTORED hold считается использованным: отменить его обычным cancel-flow нельзя.
+
+Деактивация `TrainingGroup` запрещена, пока существует non-cancelled текущая
+или будущая `GroupSeatReservation`.
+
+Для одного ученика и группы одновременно запрещены пересекающиеся
+non-CANCELLED hold. CANCELLED запись остаётся историей и не мешает создать
+новый hold на тот же период.
 
 Основные services:
 
 ```python
 create_group_place_hold(...)
 confirm_group_place_hold_fee(...)
+restore_group_place_hold(...)
 cancel_group_place_hold(...)
+process_subscription_lifecycle(...)
 ```
-
-В текущем срезе GroupPlaceHold фиксирует оплату/обязательство сохранить место,
-но **ещё не изменяет автоматически** GroupMembership, roster, вместимость группы
-или правила зачисления. Интеграция hold с фактическим удержанием места — отдельный
-следующий этап.
-
-Для одного ученика и группы одновременно запрещены пересекающиеся
-non-CANCELLED hold. CANCELLED запись остаётся историей и не мешает создать
-новый hold на тот же период.
 
 
 ---

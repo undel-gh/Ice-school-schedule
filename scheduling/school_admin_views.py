@@ -16,6 +16,7 @@ from core.presentation import validation_message
 from core.time import school_date
 from django.utils import timezone
 
+from .capacity import group_capacity_snapshot
 from .models import GroupMembership, TrainingGroup
 from .school_admin_forms import GroupMembershipForm, TrainingGroupForm
 from .services import (
@@ -65,6 +66,7 @@ def manager_group_create(request: HttpRequest) -> HttpResponse:
                 default_minimum_attendees=form.cleaned_data[
                     "default_minimum_attendees"
                 ],
+                capacity=form.cleaned_data["capacity"],
                 is_active=form.cleaned_data["is_active"],
                 actor=request.user,
             )
@@ -92,13 +94,32 @@ def manager_group_detail(
         "Training group view permission is required.",
     )
     group = get_object_or_404(TrainingGroup, pk=group_id)
+    today = school_date(timezone.now())
     memberships = group.memberships.select_related("student").order_by(
         "-starts_on", "student__display_name", "id"
+    )
+    seat_reservations = (
+        group.seat_reservations.filter(
+            cancelled_at__isnull=True,
+            ends_on__gte=today,
+        )
+        .select_related("student")
+        .order_by("starts_on", "student__display_name", "id")
+    )
+    capacity = group_capacity_snapshot(
+        group=group,
+        on_date=today,
     )
     return render(
         request,
         "scheduling/manager_group_detail.html",
-        {"group": group, "memberships": memberships},
+        {
+            "group": group,
+            "memberships": memberships,
+            "seat_reservations": seat_reservations,
+            "capacity": capacity,
+            "today": today,
+        },
     )
 
 
@@ -120,6 +141,7 @@ def manager_group_edit(
             "code": group.code,
             "name": group.name,
             "default_minimum_attendees": group.default_minimum_attendees,
+            "capacity": group.capacity,
             "is_active": group.is_active,
         },
     )
@@ -132,6 +154,7 @@ def manager_group_edit(
                 default_minimum_attendees=form.cleaned_data[
                     "default_minimum_attendees"
                 ],
+                capacity=form.cleaned_data["capacity"],
                 is_active=form.cleaned_data["is_active"],
                 actor=request.user,
             )
