@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID
 
 from django.contrib import messages
@@ -8,12 +9,23 @@ from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils import timezone
 
 from core.permissions import require_permission
 from core.presentation import validation_message
 
-from .forms import CoachProfileForm, StudentAccessForm, StudentForm
-from .models import CoachProfile, Student, StudentAccess
+from .forms import (
+    AccountInvitationForm,
+    CoachProfileForm,
+    StudentAccessForm,
+    StudentForm,
+)
+from .models import AccountInvitation, CoachProfile, Student, StudentAccess
+from .onboarding import (
+    create_account_invitation,
+    revoke_account_invitation,
+)
 from .services import (
     create_coach_profile,
     create_student,
@@ -312,3 +324,109 @@ def manager_coach_edit(
         "accounts/manager_coach_form.html",
         {"form": form, "coach": coach, "title": "Редактирование тренера"},
     )
+
+
+
+@login_required
+def manager_account_invitations(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.view_accountinvitation",
+        "Account invitation view permission is required.",
+    )
+    invitations = (
+        AccountInvitation.objects.select_related(
+            "student",
+            "created_by",
+            "accepted_by",
+            "revoked_by",
+        )
+        .order_by("-created_at", "id")[:300]
+    )
+    return render(
+        request,
+        "accounts/manager_invitations.html",
+        {
+            "invitations": invitations,
+            "now": timezone.now(),
+        },
+    )
+
+
+@login_required
+def manager_account_invitation_create(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.add_accountinvitation",
+        "Account invitation creation permission is required.",
+    )
+    form = AccountInvitationForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        student = form.cleaned_data.get("student")
+        expires_at = timezone.now() + timedelta(
+            hours=form.cleaned_data["expires_in_hours"]
+        )
+        try:
+            created = create_account_invitation(
+                kind=form.cleaned_data["kind"],
+                actor=request.user,
+                student_id=student.id if student is not None else None,
+                student_access_role=form.cleaned_data.get(
+                    "student_access_role",
+                    "",
+                ),
+                coach_display_name=form.cleaned_data.get(
+                    "coach_display_name",
+                    "",
+                ),
+                expires_at=expires_at,
+            )
+        except ValidationError as exc:
+            form.add_error(None, validation_message(exc))
+        else:
+            invitation_url = request.build_absolute_uri(
+                reverse(
+                    "external_auth:invitation",
+                    kwargs={"token": created.token},
+                )
+            )
+            return render(
+                request,
+                "accounts/manager_invitation_created.html",
+                {
+                    "invitation": created.invitation,
+                    "invitation_url": invitation_url,
+                },
+            )
+    return render(
+        request,
+        "accounts/manager_invitation_form.html",
+        {"form": form},
+    )
+
+
+@login_required
+def manager_account_invitation_revoke(
+    request: HttpRequest,
+    *,
+    invitation_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "accounts.change_accountinvitation",
+        "Account invitation change permission is required.",
+    )
+    invitation = get_object_or_404(AccountInvitation, pk=invitation_id)
+    if request.method != "POST":
+        return redirect("accounts_manager:invitations")
+    try:
+        revoke_account_invitation(
+            invitation_id=invitation.id,
+            actor=request.user,
+            now=timezone.now(),
+        )
+    except ValidationError as exc:
+        messages.error(request, validation_message(exc))
+    else:
+        messages.success(request, "Приглашение отозвано.")
+    return redirect("accounts_manager:invitations")
