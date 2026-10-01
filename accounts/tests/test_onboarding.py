@@ -4,7 +4,8 @@ from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError
+from django.contrib.auth.models import Permission
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.utils import timezone
 
 from accounts.models import (
@@ -230,4 +231,25 @@ def test_revoked_and_expired_invitation_cannot_be_used(manager):
         resolve_invitation_token(
             expired.token,
             now=timezone.now() + timedelta(seconds=2),
+        )
+
+
+
+@pytest.mark.django_db
+def test_invitation_permission_does_not_bypass_target_permission():
+    actor = User.objects.create_user(username="limited-inviter")
+    actor.user_permissions.add(
+        Permission.objects.get(
+            codename="add_accountinvitation",
+            content_type__app_label="accounts",
+        )
+    )
+    student = Student.objects.create(display_name="Ученик")
+
+    with pytest.raises(PermissionDenied):
+        create_account_invitation(
+            kind=AccountInvitation.Kind.STUDENT_ACCESS,
+            actor=actor,
+            student_id=student.id,
+            student_access_role=StudentAccess.Role.GUARDIAN,
         )
