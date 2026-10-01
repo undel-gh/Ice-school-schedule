@@ -293,6 +293,9 @@ For a compromised single-provider account the supported recovery procedure is:
 2. Unlink the compromised ExternalIdentity.
 3. Create an AccountInvitation of kind RECOVERY bound to that exact User.
 4. Send the one-time recovery URL to the account owner.
+   Treat the URL as a bearer secret: during compromise, deliver it through a
+   trusted channel independent of the compromised account (for example in
+   person, by phone, or via another verified messenger/account).
 5. The owner authenticates with Yandex/VK while signed out.
 6. The provider is linked to the existing User and the same User is reactivated.
 ```
