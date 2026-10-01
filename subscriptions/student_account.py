@@ -37,7 +37,8 @@ RIGHT_STATUS_LABELS = {
     "lesson_cancelled": "Занятие отменено",
     "targeted": "Назначено на занятие",
     "target_cancelled": "Целевое занятие отменено",
-    "target_passed": "Целевое занятие прошло",
+    "lesson_closed": "Занятие закрыто",
+    "target_closed": "Целевое занятие закрыто",
     "source_unavailable": "Нет доступного остатка",
 }
 
@@ -168,8 +169,8 @@ def _one_time_rights(
             status = "used"
         elif entitlement.lesson.status == Lesson.Status.CANCELLED:
             status = "lesson_cancelled"
-        elif entitlement.lesson.ends_at < now:
-            status = "expired"
+        elif entitlement.lesson.status == Lesson.Status.CLOSED:
+            status = "lesson_closed"
         else:
             status = "available"
         rows.append(
@@ -184,8 +185,9 @@ def _one_time_rights(
         "available": 0,
         "used": 1,
         "expired": 2,
-        "lesson_cancelled": 3,
-        "cancelled": 4,
+        "lesson_closed": 3,
+        "lesson_cancelled": 4,
+        "cancelled": 5,
     }
     rows.sort(
         key=lambda row: (
@@ -256,8 +258,8 @@ def _makeup_rights(
         elif entitlement.target_lesson_id is not None:
             if entitlement.target_lesson.status == Lesson.Status.CANCELLED:
                 status = "target_cancelled"
-            elif entitlement.target_lesson.ends_at < now:
-                status = "target_passed"
+            elif entitlement.target_lesson.status == Lesson.Status.CLOSED:
+                status = "target_closed"
             elif (
                 source_subscription.cancelled_at is not None
                 or source_balance <= 0
@@ -287,7 +289,7 @@ def _makeup_rights(
         "not_started": 2,
         "used": 3,
         "expired": 4,
-        "target_passed": 5,
+        "target_closed": 5,
         "target_cancelled": 6,
         "source_unavailable": 7,
         "cancelled": 8,
