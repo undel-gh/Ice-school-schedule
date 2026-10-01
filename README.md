@@ -282,7 +282,9 @@ accept external invitations.
 Users may unlink one provider themselves only while another external provider
 remains. Managers with `change_externalidentity` may unlink a compromised
 provider; the service refuses to remove the final login method from an
-external-only User. Every unlink records `ExternalIdentityUnlinked`.
+external-only User. For an external-only User, manager unlink also rotates the
+unusable password value so Django invalidates already-issued sessions via the
+session authentication hash. Every unlink records `ExternalIdentityUnlinked`.
 
 Local username/password login remains the staff and emergency administration
 channel.
