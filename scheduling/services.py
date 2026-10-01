@@ -2293,6 +2293,21 @@ def update_training_group(
                     )
                 }
             )
+        has_current_or_future_reservation = GroupSeatReservation.objects.filter(
+            group=group,
+            cancelled_at__isnull=True,
+            ends_on__gte=today,
+        ).exists()
+        if has_current_or_future_reservation:
+            raise ValidationError(
+                {
+                    "is_active": (
+                        "The group cannot be deactivated while it has an active "
+                        "current or future seat reservation. Cancel the related "
+                        "place hold or let it expire first."
+                    )
+                }
+            )
     group.code = code
     group.name = name
     group.default_minimum_attendees = default_minimum_attendees
