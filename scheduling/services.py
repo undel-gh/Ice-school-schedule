@@ -108,6 +108,27 @@ def _capacity_boundary_dates(
     )
 
 
+def _overlapping_active_seat_reservation(
+    *,
+    student_id: UUID,
+    group_id: UUID,
+    starts_on: date,
+    ends_on: date | None,
+) -> GroupSeatReservation | None:
+    effective_end = ends_on or date.max
+    return (
+        GroupSeatReservation.objects.filter(
+            student_id=student_id,
+            group_id=group_id,
+            cancelled_at__isnull=True,
+            starts_on__lte=effective_end,
+            ends_on__gte=starts_on,
+        )
+        .order_by("starts_on", "id")
+        .first()
+    )
+
+
 def ensure_group_capacity_available(
     *,
     group: TrainingGroup,
@@ -724,6 +745,22 @@ def create_group_membership(
             }
         )
 
+    reservation = _overlapping_active_seat_reservation(
+        student_id=student_id,
+        group_id=group_id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+    )
+    if reservation is not None:
+        raise ValidationError(
+            {
+                "membership": (
+                    "Student has an active seat reservation in this interval. "
+                    "Use the place-hold restore flow instead."
+                )
+            }
+        )
+
     ensure_group_capacity_available(
         group=group,
         student_id=student_id,
@@ -804,6 +841,22 @@ def update_group_membership(
                 "membership": (
                     "Membership interval overlaps an existing interval "
                     "for this student and group."
+                )
+            }
+        )
+
+    reservation = _overlapping_active_seat_reservation(
+        student_id=membership.student_id,
+        group_id=membership.group_id,
+        starts_on=starts_on,
+        ends_on=ends_on,
+    )
+    if reservation is not None:
+        raise ValidationError(
+            {
+                "membership": (
+                    "Membership interval overlaps an active seat reservation. "
+                    "Use the place-hold restore flow instead."
                 )
             }
         )
@@ -1747,7 +1800,7 @@ def publish_lesson(
     reserved_student_ids = GroupSeatReservation.objects.filter(
         group_id=lesson.group_id,
         starts_on__lte=lesson_date,
-        ends_on__gte=lesson_date,
+        ends_on__gt=lesson_date,
         cancelled_at__isnull=True,
     ).values_list("student_id", flat=True)
 
