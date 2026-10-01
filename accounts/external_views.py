@@ -94,6 +94,8 @@ def invitation_landing(request, *, token: str):
     try:
         invitation = resolve_invitation_token(token, now=timezone.now())
     except ValidationError as exc:
+        request.session.pop(INVITATION_SESSION_KEY, None)
+        request.session.modified = True
         return render(
             request,
             "accounts/invitation_invalid.html",
@@ -135,6 +137,8 @@ def invitation_external_login(request, *, provider: str):
             invitation_id=invitation.id,
         )
     except (AccountInvitation.DoesNotExist, ValueError, ValidationError) as exc:
+        request.session.pop(INVITATION_SESSION_KEY, None)
+        request.session.modified = True
         message = (
             validation_message(exc)
             if isinstance(exc, ValidationError)
