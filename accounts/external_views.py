@@ -3,6 +3,7 @@ from __future__ import annotations
 import secrets
 from uuid import UUID
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login as django_login
 from django.contrib.auth.decorators import login_required
@@ -160,7 +161,7 @@ def external_callback(request, *, provider: str):
         return redirect("login")
 
     issued_at = flow.get("issued_at")
-    ttl = getattr(__import__("django.conf").conf.settings, "EXTERNAL_AUTH_FLOW_TTL_SECONDS", 600)
+    ttl = settings.EXTERNAL_AUTH_FLOW_TTL_SECONDS
     try:
         age = timezone.now().timestamp() - float(issued_at)
     except (TypeError, ValueError):
