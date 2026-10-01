@@ -204,21 +204,32 @@ def _suppress_group_rosters_for_reservation(
         starts_on=reservation.starts_on,
         ends_on=reservation.ends_on,
     )
-    updated = LessonRosterEntry.objects.filter(
+    explicit_lesson_ids = LessonEnrollment.objects.filter(
         student_id=reservation.student_id,
+        cancelled_at__isnull=True,
         lesson__group_id=reservation.group_id,
         lesson__starts_at__gte=start,
         lesson__starts_at__lt=end,
-        lesson__status__in=[
-            Lesson.Status.RSVP_OPEN,
-            Lesson.Status.CONFIRMED,
-        ],
-        source=LessonRosterEntry.Source.GROUP,
-        is_active=True,
-    ).update(
+    ).values_list("lesson_id", flat=True)
+    updated = (
+        LessonRosterEntry.objects.filter(
+            student_id=reservation.student_id,
+            lesson__group_id=reservation.group_id,
+            lesson__starts_at__gte=start,
+            lesson__starts_at__lt=end,
+            lesson__status__in=[
+                Lesson.Status.RSVP_OPEN,
+                Lesson.Status.CONFIRMED,
+            ],
+            source=LessonRosterEntry.Source.GROUP,
+            is_active=True,
+        )
+        .exclude(lesson_id__in=explicit_lesson_ids)
+        .update(
         is_active=False,
         deactivated_at=at,
-        deactivated_by_id=actor.id if actor is not None else None,
+            deactivated_by_id=actor.id if actor is not None else None,
+        )
     )
     if updated:
         record_event(
