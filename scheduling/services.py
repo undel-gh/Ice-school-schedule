@@ -1349,6 +1349,13 @@ def publish_lesson(
 
     lesson_date = get_school_date(lesson.starts_at)
 
+    reserved_student_ids = GroupSeatReservation.objects.filter(
+        group_id=lesson.group_id,
+        starts_on__lte=lesson_date,
+        ends_on__gte=lesson_date,
+        cancelled_at__isnull=True,
+    ).values_list("student_id", flat=True)
+
     memberships = (
         GroupMembership.objects.filter(
             group_id=lesson.group_id,
@@ -1356,6 +1363,7 @@ def publish_lesson(
             starts_on__lte=lesson_date,
         )
         .filter(Q(ends_on__isnull=True) | Q(ends_on__gte=lesson_date))
+        .exclude(student_id__in=reserved_student_ids)
         .order_by("student_id", "-starts_on", "id")
     )
 
