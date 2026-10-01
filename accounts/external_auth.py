@@ -90,7 +90,8 @@ def build_authorization_url(
             "redirect_uri": redirect_uri,
             "state": state,
             "code_challenge": challenge,
-            "code_challenge_method": "S256",
+            # VK ID's current official Web SDK uses lowercase s256.
+            "code_challenge_method": "s256",
         }
         scope = getattr(settings, "VKID_SCOPE", "").strip()
         if scope:
