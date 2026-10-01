@@ -35,4 +35,9 @@ urlpatterns = [
         external_views.external_identities,
         name="identities",
     ),
+    path(
+        "identities/<uuid:identity_id>/unlink/",
+        external_views.external_identity_unlink,
+        name="unlink",
+    ),
 ]
