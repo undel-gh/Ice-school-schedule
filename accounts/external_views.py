@@ -26,6 +26,7 @@ from .external_auth import (
 )
 from .models import AccountInvitation, ExternalIdentity
 from .onboarding import (
+    accept_account_invitation_for_existing_user,
     authenticate_external_identity,
     link_external_identity,
     resolve_invitation_token,
@@ -238,19 +239,27 @@ def external_callback(request, *, provider: str):
                             )
                         }
                     )
-                link_external_identity(
+                user = accept_account_invitation_for_existing_user(
                     user=request.user,
                     provider=profile.provider,
                     provider_subject=profile.subject,
+                    invitation_id=invitation_id,
                     now=timezone.now(),
                 )
-
-        user = authenticate_external_identity(
-            provider=profile.provider,
-            provider_subject=profile.subject,
-            invitation_id=invitation_id,
-            now=timezone.now(),
-        )
+            else:
+                user = authenticate_external_identity(
+                    provider=profile.provider,
+                    provider_subject=profile.subject,
+                    invitation_id=invitation_id,
+                    now=timezone.now(),
+                )
+        else:
+            user = authenticate_external_identity(
+                provider=profile.provider,
+                provider_subject=profile.subject,
+                invitation_id=None,
+                now=timezone.now(),
+            )
         django_login(
             request,
             user,
