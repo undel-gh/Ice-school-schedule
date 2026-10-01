@@ -102,10 +102,13 @@ class AccountInvitation(UUIDModel):
                         student_access_role__in=["self", "guardian"],
                         coach_display_name="",
                     )
-                    | models.Q(
-                        kind="coach",
-                        student__isnull=True,
-                        student_access_role="",
+                    | (
+                        models.Q(
+                            kind="coach",
+                            student__isnull=True,
+                            student_access_role="",
+                        )
+                        & ~models.Q(coach_display_name="")
                     )
                 ),
                 name="account_invite_target_ck",
