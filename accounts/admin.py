@@ -7,7 +7,8 @@ from .models import (
     ExternalIdentity,
     Student,
     StudentAccess,
-), User
+    User,
+)
 
 
 @admin.register(User)
