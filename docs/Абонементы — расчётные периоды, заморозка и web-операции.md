@@ -324,9 +324,15 @@ GroupPlaceHold PENDING_PAYMENT
 
 `GroupSeatReservation` принадлежит scheduling-домену и не является roster
 membership. При публикации Lesson membership ученика, покрытый действующей
-reservation, **не добавляется в roster**. На следующий день после
-`period_until` reservation больше не действует и тот же долгосрочный
-membership снова автоматически участвует в построении roster.
+reservation, **не добавляется в roster**. Если hold активирован уже после
+публикации будущих занятий, GROUP-derived roster entries в интервале hold
+деактивируются в той же транзакции. Явные ENROLLMENT/MANUAL участия не
+подавляются. При отмене hold membership-derived roster восстанавливается для
+ещё открытых/подтверждённых уроков, если нет другой активной reservation.
+
+На следующий день после `period_until` reservation больше не действует и тот
+же долгосрочный membership снова автоматически участвует в построении новых
+roster.
 
 Capacity writers сериализуются блокировкой строки `TrainingGroup`.
 `create_group_membership`, `update_group_membership`, активация hold и
