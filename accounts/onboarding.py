@@ -177,6 +177,15 @@ def create_account_invitation(
                     )
                 }
             )
+        if ExternalIdentity.objects.filter(user=recovery_user).exists():
+            raise ValidationError(
+                {
+                    "recovery_user": (
+                        "Remove all old external identities before issuing "
+                        "an account recovery invitation."
+                    )
+                }
+            )
         cleaned_account_name = recovery_user.display_label
 
     token = secrets.token_urlsafe(32)
@@ -381,6 +390,14 @@ def _accept_recovery_invitation_locked(
     if not external_auth_role_allowed(user):
         raise ValidationError(
             {"invitation": "Staff and manager accounts cannot use external recovery."}
+        )
+    if ExternalIdentity.objects.select_for_update().filter(user=user).exists():
+        raise ValidationError(
+            {
+                "invitation": (
+                    "Old external identities must be removed before recovery."
+                )
+            }
         )
 
     subject = str(provider_subject).strip()
