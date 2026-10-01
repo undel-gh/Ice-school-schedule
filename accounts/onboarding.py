@@ -101,6 +101,11 @@ def create_account_invitation(
     cleaned_coach_name = ""
 
     if kind == AccountInvitation.Kind.STUDENT_ACCESS:
+        require_permission(
+            actor,
+            "accounts.add_studentaccess",
+            "Student access creation permission is required for this invitation.",
+        )
         if student_id is None:
             raise ValidationError({"student": "Student is required."})
         if student_access_role not in StudentAccess.Role.values:
@@ -110,6 +115,11 @@ def create_account_invitation(
             raise ValidationError({"student": "Cannot invite access to an inactive student."})
         cleaned_role = student_access_role
     else:
+        require_permission(
+            actor,
+            "accounts.add_coachprofile",
+            "Coach profile creation permission is required for this invitation.",
+        )
         cleaned_coach_name = coach_display_name.strip()
         if not cleaned_coach_name:
             raise ValidationError({"coach_display_name": "Coach display name is required."})
