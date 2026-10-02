@@ -153,6 +153,13 @@ STATIC_ROOT = Path(
         str(BASE_DIR / "staticfiles"),
     )
 )
+_use_manifest_static = (
+    os.environ.get(
+        "DJANGO_STATICFILES_MANIFEST",
+        "0" if DEBUG else "1",
+    )
+    == "1"
+)
 STORAGES = {
     "default": {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
@@ -160,6 +167,8 @@ STORAGES = {
     "staticfiles": {
         "BACKEND": (
             "whitenoise.storage.CompressedManifestStaticFilesStorage"
+            if _use_manifest_static
+            else "django.contrib.staticfiles.storage.StaticFilesStorage"
         ),
     },
 }

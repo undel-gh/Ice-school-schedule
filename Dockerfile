@@ -14,6 +14,7 @@ COPY . /app
 
 RUN python -m pip install . \
     && DJANGO_DEBUG=1 \
+       DJANGO_STATICFILES_MANIFEST=1 \
        DJANGO_SECRET_KEY=build-only-static-collection \
        python manage.py collectstatic --noinput \
     && chown -R app:app /app
