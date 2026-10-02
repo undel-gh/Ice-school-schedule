@@ -26,6 +26,8 @@ from audit.services import record_event
 from .mfa import (
     MFA_RECOVERY_CODES_SESSION_KEY,
     MFA_SETUP_DEVICE_SESSION_KEY,
+    authenticated_mfa_setup_is_authorized,
+    authorize_authenticated_mfa_setup,
     begin_mfa_preauth,
     clear_mfa_transient_session,
     has_confirmed_mfa_device,
@@ -186,6 +188,11 @@ def mfa_challenge(request):
                 )
             messages.success(request, "Дополнительная проверка пройдена.")
             if not has_confirmed_totp(user):
+                if identity.preauthenticated:
+                    authorize_authenticated_mfa_setup(
+                        request,
+                        user=user,
+                    )
                 return redirect("mfa:setup")
             target = pop_mfa_next(
                 request,
@@ -247,6 +254,22 @@ def mfa_setup(request):
         return redirect("scheduling:home")
     if has_confirmed_totp(user):
         return redirect("mfa:challenge")
+    if (
+        request.user.is_authenticated
+        and not identity.preauthenticated
+        and not authenticated_mfa_setup_is_authorized(
+            request,
+            user=user,
+        )
+    ):
+        target = request.session.get(
+            "mfa_next",
+            reverse("scheduling:home"),
+        )
+        django_logout(request)
+        return redirect(
+            f"{reverse('login')}?next={target}"
+        )
 
     device = _setup_device_for(user, request)
     form = MFASetupTokenForm(request.POST or None)
@@ -451,6 +474,7 @@ def mfa_replace_authenticator(request):
         TOTPDevice.objects.filter(user=user).delete()
     request.session.pop(MFA_SETUP_DEVICE_SESSION_KEY, None)
     request.session.pop(DEVICE_ID_SESSION_KEY, None)
+    authorize_authenticated_mfa_setup(request, user=user)
     request.session.modified = True
     record_event(
         event_type="MFAAuthenticatorReplacementStarted",
