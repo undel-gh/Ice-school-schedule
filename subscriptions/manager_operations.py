@@ -63,6 +63,7 @@ def manager_compensation_cases(request: HttpRequest) -> HttpResponse:
             "student",
             "source_lesson__lesson_type",
             "source_subscription_allowance__subscription",
+            "source_subscription_allowance__subscription__billing_period",
             "policy",
         )
         .prefetch_related("action_grants")
@@ -138,6 +139,7 @@ def manager_compensation_case_detail(
             "attendance",
             "source_lesson__lesson_type",
             "source_subscription_allowance__subscription",
+            "source_subscription_allowance__subscription__billing_period",
             "source_justification",
             "policy",
         ).prefetch_related(

@@ -32,6 +32,7 @@ from subscriptions.models import (
     AbsenceCompensationPolicyWindow,
     AttendanceCoverage,
     MakeupEntitlement,
+    Subscription,
     SubscriptionPeriodScheme,
     SubscriptionPlan,
     SubscriptionPlanAllowance,
@@ -3823,3 +3824,228 @@ def test_manager_report_surfaces_free_makeup_waiting_for_rolling_activation(
     case.refresh_from_db()
     assert case.status == AbsenceCompensationCase.Status.OPEN
     assert not case.action_grants.exists()
+
+
+
+@pytest.mark.django_db
+def test_next_period_sequences_prepaid_rolling_package_by_creation_order(
+    actor,
+    context,
+):
+    policy = make_policy(code="rolling-package-policy")
+    add_paid_action(policy)
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-package-scheme",
+        name="Rolling package",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="rolling-package-plan",
+        name="Rolling package",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+
+    package_reference = date(2026, 9, 25)
+    source = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=package_reference,
+        actor=actor,
+    )
+    second = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=package_reference,
+        actor=actor,
+    )
+    third = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=package_reference,
+        actor=actor,
+    )
+
+    # Make the package ordering deterministic even on databases/platforms
+    # where adjacent auto_now_add values could theoretically be equal.
+    Subscription.objects.filter(pk=source.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 0, tzinfo=dt_timezone.utc)
+    )
+    Subscription.objects.filter(pk=second.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 1, tzinfo=dt_timezone.utc)
+    )
+    Subscription.objects.filter(pk=third.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 2, tzinfo=dt_timezone.utc)
+    )
+    source.refresh_from_db()
+    second.refresh_from_db()
+    third.refresh_from_db()
+
+    source_activation = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=school_dt(2026, 10, 3, 18, 0),
+        ends_at=school_dt(2026, 10, 3, 19, 0),
+        minimum_attendees=1,
+        rsvp_deadline=school_dt(2026, 10, 3, 16, 0),
+        decision_deadline=school_dt(2026, 10, 3, 17, 0),
+        status=Lesson.Status.COMPLETED,
+    )
+    activate_rolling_subscription_period(
+        subscription_id=source.id,
+        lesson_id=source_activation.id,
+        actor=actor,
+        now=school_dt(2026, 10, 3, 19, 0),
+    )
+    source.refresh_from_db()
+    assert source.valid_from == date(2026, 10, 3)
+    assert second.billing_period.reference_date < source.valid_from
+
+    first_absence = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=school_dt(2026, 10, 10, 18, 0),
+    )
+    first_case = create_absence_compensation_case(
+        attendance_id=first_absence.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=first_absence.marked_at,
+    )
+    first_grant = authorize_paid_makeup_from_case(
+        case_id=first_case.id,
+        actor=actor,
+        now=first_absence.marked_at + timedelta(hours=1),
+    )
+    assert first_case.source_subscription_allowance.subscription_id == source.id
+    assert first_grant.target_subscription_id == second.id
+
+    second_activation = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=school_dt(2026, 10, 31, 18, 0),
+        ends_at=school_dt(2026, 10, 31, 19, 0),
+        minimum_attendees=1,
+        rsvp_deadline=school_dt(2026, 10, 31, 16, 0),
+        decision_deadline=school_dt(2026, 10, 31, 17, 0),
+        status=Lesson.Status.COMPLETED,
+    )
+    activate_rolling_subscription_period(
+        subscription_id=second.id,
+        lesson_id=second_activation.id,
+        actor=actor,
+        now=school_dt(2026, 10, 31, 19, 0),
+    )
+    second.refresh_from_db()
+    assert second.valid_from == date(2026, 10, 31)
+    assert third.billing_period.reference_date < second.valid_from
+
+    second_absence = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=school_dt(2026, 11, 5, 18, 0),
+    )
+    second_case = create_absence_compensation_case(
+        attendance_id=second_absence.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=second_absence.marked_at,
+    )
+    second_grant = authorize_paid_makeup_from_case(
+        case_id=second_case.id,
+        actor=actor,
+        now=second_absence.marked_at + timedelta(hours=1),
+    )
+    assert second_case.source_subscription_allowance.subscription_id == second.id
+    assert second_grant.target_subscription_id == third.id
+
+
+@pytest.mark.django_db
+def test_explicit_paid_target_accepts_later_item_from_same_rolling_package(
+    actor,
+    context,
+):
+    attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=school_dt(2026, 10, 10, 18, 0),
+    )
+    policy = make_policy(code="rolling-package-explicit-policy")
+    add_paid_action(policy)
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-package-explicit-scheme",
+        name="Rolling package explicit",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="rolling-package-explicit-plan",
+        name="Rolling package explicit",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    source = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 25),
+        actor=actor,
+    )
+    target = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 25),
+        actor=actor,
+    )
+    Subscription.objects.filter(pk=source.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 0, tzinfo=dt_timezone.utc)
+    )
+    Subscription.objects.filter(pk=target.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 1, tzinfo=dt_timezone.utc)
+    )
+    source.refresh_from_db()
+    target.refresh_from_db()
+
+    activation = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=school_dt(2026, 10, 3, 18, 0),
+        ends_at=school_dt(2026, 10, 3, 19, 0),
+        minimum_attendees=1,
+        rsvp_deadline=school_dt(2026, 10, 3, 16, 0),
+        decision_deadline=school_dt(2026, 10, 3, 17, 0),
+        status=Lesson.Status.COMPLETED,
+    )
+    activate_rolling_subscription_period(
+        subscription_id=source.id,
+        lesson_id=activation.id,
+        actor=actor,
+        now=school_dt(2026, 10, 3, 19, 0),
+    )
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    grant = authorize_paid_makeup_from_case(
+        case_id=case.id,
+        actor=actor,
+        target_subscription_id=target.id,
+        now=attendance.marked_at + timedelta(hours=1),
+    )
+
+    assert grant.target_subscription_id == target.id
