@@ -62,7 +62,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
             raise ValidationError(
                 {
                     "fixed_anchor_date": (
-                        "Fixed 28-day period scheme requires an anchor date."
+                        "Для модели фиксированных 28-дневных периодов требуется опорная дата."
                     )
                 }
             )
@@ -73,7 +73,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
             raise ValidationError(
                 {
                     "fixed_anchor_date": (
-                        "Anchor date is only valid for FIXED_28_DAYS."
+                        "Опорная дата допустима только для модели фиксированных 28-дневных периодов."
                     )
                 }
             )
@@ -93,8 +93,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
                     raise ValidationError(
                         {
                             "mode": (
-                                "Referenced period schemes cannot change mode "
-                                "or fixed anchor."
+                                "Уже используемую модель расчётного периода нельзя менять по типу или фиксированной опорной дате."
                             )
                         }
                     )
@@ -106,8 +105,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
                     raise ValidationError(
                         {
                             "is_active": (
-                                "Active subscription plans still use this "
-                                "period scheme."
+                                "Эту модель расчётного периода всё ещё используют активные тарифы."
                             )
                         }
                     )
@@ -251,8 +249,7 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
             raise ValidationError(
                 {
                     "effective_from": (
-                        "Another active compensation policy for this "
-                        "absence reason overlaps this effective interval."
+                        "Другая активная политика компенсаций для этой причины отсутствия пересекается с выбранным периодом действия."
                     )
                 }
             )
@@ -279,7 +276,7 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
                 for field in immutable_fields
             ):
                 raise ValidationError(
-                    "Referenced compensation policy versions are immutable."
+                    "Использованные версии политики компенсаций нельзя изменять."
                 )
         return super().save(*args, **kwargs)
 
@@ -288,7 +285,7 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
             policy_id=self.pk
         ).exists():
             raise ValidationError(
-                "Referenced compensation policy versions cannot be deleted."
+                "Использованные версии политики компенсаций нельзя удалять."
             )
         return super().delete(*args, **kwargs)
 
@@ -391,8 +388,7 @@ class AbsenceCompensationPolicyAction(UUIDModel):
         raise ValidationError(
             {
                 "action_type": (
-                    "Billing recalculation is outside the scheduling system "
-                    "and must be handled by accounting."
+                    "Перерасчёт оплаты выполняется вне системы расписания и должен оформляться бухгалтерией."
                 )
             }
         )
@@ -412,8 +408,7 @@ class AbsenceCompensationPolicyAction(UUIDModel):
                 policy_id=self.policy_id
             ).exists():
                 raise ValidationError(
-                    "Actions cannot be added to referenced compensation "
-                    "policy versions."
+                    "Нельзя добавлять действия в уже использованную версию политики компенсаций."
                 )
         if previous is not None:
             if previous.policy.compensation_cases.exists():
@@ -431,16 +426,14 @@ class AbsenceCompensationPolicyAction(UUIDModel):
                     for field in immutable_fields
                 ):
                     raise ValidationError(
-                        "Actions of referenced compensation policies are "
-                        "immutable."
+                        "Действия уже использованных политик компенсаций нельзя изменять."
                     )
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         if self.pk and self.policy.compensation_cases.exists():
             raise ValidationError(
-                "Actions of referenced compensation policies cannot be "
-                "deleted."
+                "Действия уже использованных политик компенсаций нельзя удалять."
             )
         return super().delete(*args, **kwargs)
 
@@ -515,8 +508,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
             raise ValidationError(
                 {
                     "source_from": (
-                        "Another active window with the same priority "
-                        "overlaps this source interval."
+                        "Другое активное окно с тем же приоритетом пересекается с выбранным исходным периодом."
                     )
                 }
             )
@@ -536,8 +528,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
                 policy_id=self.policy_action.policy_id
             ).exists():
                 raise ValidationError(
-                    "Windows cannot be added to referenced compensation "
-                    "policy versions."
+                    "Нельзя добавлять сезонные окна в уже использованную версию политики компенсаций."
                 )
         if previous is not None:
             if previous.policy_action.policy.compensation_cases.exists():
@@ -557,8 +548,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
                     for field in immutable_fields
                 ):
                     raise ValidationError(
-                        "Windows of referenced compensation policies are "
-                        "immutable."
+                        "Сезонные окна уже использованных политик компенсаций нельзя изменять."
                     )
         return super().save(*args, **kwargs)
 
@@ -568,8 +558,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
             and self.policy_action.policy.compensation_cases.exists()
         ):
             raise ValidationError(
-                "Windows of referenced compensation policies cannot be "
-                "deleted."
+                "Сезонные окна уже использованных политик компенсаций нельзя удалять."
             )
         return super().delete(*args, **kwargs)
 
