@@ -60,10 +60,12 @@ services:
         - python
         - -c
         - >-
-          import urllib.request;
+          import os, urllib.request;
           request=urllib.request.Request(
           'http://127.0.0.1:8000/healthz/',
-          headers={'X-Forwarded-Proto':'https'});
+          headers={
+          'Host':os.environ['APP_HOST'],
+          'X-Forwarded-Proto':'https'});
           urllib.request.urlopen(request, timeout=3).read()
       interval: 15s
       timeout: 5s
