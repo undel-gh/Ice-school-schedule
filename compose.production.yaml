@@ -102,20 +102,14 @@ services:
     command: ["/ops/postgres_backup.sh"]
     volumes:
       - ./ops/postgres_backup.sh:/ops/postgres_backup.sh:ro
+      - ./ops/backup_healthcheck.sh:/ops/backup_healthcheck.sh:ro
       - ${BACKUP_HOST_PATH:-./backups}:/backups
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          test -f /tmp/backup_last_success &&
-          now=$(date +%s) &&
-          last=$(stat -c %Y /tmp/backup_last_success) &&
-          max_age=$((BACKUP_INTERVAL_SECONDS * 2 + 300)) &&
-          test $((now - last)) -le $max_age
+      test: ["CMD", "/ops/backup_healthcheck.sh"]
       interval: 60s
       timeout: 5s
       retries: 3
