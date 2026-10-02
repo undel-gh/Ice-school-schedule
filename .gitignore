@@ -3,8 +3,12 @@ __pycache__/
 *.sqlite3
 .venv/
 .env
+.env.*
+!.env.example
+!.env.production.example
 .pytest_cache/
 .coverage
 htmlcov/
 staticfiles/
 media/
+backups/

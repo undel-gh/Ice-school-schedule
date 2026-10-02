@@ -60,6 +60,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -146,6 +147,31 @@ TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", SCHOOL_TIME_ZONE)
 USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
+STATIC_ROOT = Path(
+    os.environ.get(
+        "DJANGO_STATIC_ROOT",
+        str(BASE_DIR / "staticfiles"),
+    )
+)
+_use_manifest_static = (
+    os.environ.get(
+        "DJANGO_STATICFILES_MANIFEST",
+        "0" if DEBUG else "1",
+    )
+    == "1"
+)
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": (
+            "whitenoise.storage.CompressedManifestStaticFilesStorage"
+            if _use_manifest_static
+            else "django.contrib.staticfiles.storage.StaticFilesStorage"
+        ),
+    },
+}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LOGIN_URL = "login"

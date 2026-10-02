@@ -2,8 +2,10 @@ from django.contrib import admin
 from django.urls import include, path
 
 from accounts.mfa_views import LocalLoginView
+from core.views import healthz
 
 urlpatterns = [
+    path("healthz/", healthz, name="healthz"),
     path("", include("scheduling.urls")),
     path("accounts/login/", LocalLoginView.as_view(), name="login"),
     path("accounts/mfa/", include("accounts.mfa_urls")),

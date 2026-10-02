@@ -589,3 +589,362 @@ slot.
 Direct cancellation of a DRAFT lesson is rejected when it has an active
 `LessonEnrollment` or active `OneTimeEntitlement`. Use
 `reschedule_lesson` instead so bookings can move to the replacement lesson.
+
+
+## Production operations
+
+The repository includes a small production Docker Compose stack in
+`compose.production.yaml`. It deliberately stays on a single-host operational
+model for the pilot:
+
+```text
+Internet
+   |
+   v
+Caddy :80/:443
+   |
+   v
+Gunicorn / Django
+   |
+   v
+PostgreSQL
+
+sidecars:
+- scheduler -> Django lifecycle/generation commands
+- backup    -> PostgreSQL custom-format dumps
+```
+
+Celery and Redis are intentionally not required for these recurring jobs. The
+current scheduled commands are idempotent and the expected deployment has one
+scheduler replica.
+
+### First deployment
+
+Create the production environment file and replace every example secret/domain:
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+
+mkdir -p backups
+chmod 700 backups
+```
+
+At minimum set:
+
+- `APP_HOST` and the matching `DJANGO_ALLOWED_HOSTS`;
+- a long random `DJANGO_SECRET_KEY`;
+- a long random `POSTGRES_PASSWORD`;
+- the school time zone;
+- external-provider credentials when Yandex/VK login is enabled.
+
+Create public DNS for `APP_HOST` before starting the proxy. TCP 80 and 443
+must reach this host so Caddy can obtain/renew the public TLS certificate.
+
+Build and start:
+
+```bash
+docker compose \
+  --env-file .env.production \
+  -f compose.production.yaml \
+  build
+
+docker compose \
+  --env-file .env.production \
+  -f compose.production.yaml \
+  up -d
+```
+
+Startup ordering is explicit:
+
+1. PostgreSQL must become healthy.
+2. the one-shot `migrate` service must finish successfully;
+3. Gunicorn starts and must pass `/healthz/`;
+4. Caddy starts proxying only after web is healthy;
+5. scheduler and backup start after the database/migration prerequisites.
+
+Inspect state and logs:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml ps
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  logs -f web proxy scheduler backup
+```
+
+Caddy keeps ordinary HTTP access logs, but deliberately skips request logging
+for paths that can contain bearer/one-time secrets:
+
+```text
+/accounts/external/invite/*
+/accounts/external/callback/*
+/accounts/reset/*
+```
+
+This prevents invitation/recovery tokens, OAuth authorization callbacks and
+Django password-reset tokens from being copied into proxy logs. Do not remove
+these exclusions when changing access-log formatting.
+
+Gunicorn access logging is deliberately disabled; otherwise the same sensitive
+request target would be logged a second time behind Caddy and bypass these
+path exclusions. Gunicorn error logs remain enabled. Caddy is the single
+source of ordinary HTTP access logs.
+
+All production services use Docker's `json-file` driver with bounded rotation
+to avoid an unattended host filling its disk. Defaults are:
+
+```text
+DOCKER_LOG_MAX_SIZE=10m
+DOCKER_LOG_MAX_FILES=5
+```
+
+These limits apply per container. Central/off-host log shipping can be added
+later, but disabling local rotation is not recommended.
+
+The database is not published to the host network. Gunicorn is exposed only on
+the private Compose network; public traffic enters through Caddy.
+
+Caddy has the fixed private address `172.30.0.10`, which matches the default
+production `TRUSTED_PROXY_IPS`. If the `172.30.0.0/24` subnet conflicts with
+the host/network environment, change both the Compose subnet/proxy address and
+`TRUSTED_PROXY_IPS` together. Do not broaden trusted proxy addresses merely
+to make the warning disappear.
+
+Static files are collected into the application image and served by
+WhiteNoise. The proxy does not need a writable static-files volume.
+
+### External monitoring and alerting
+
+Container healthchecks are local status signals, not an alerting system.
+Docker's `restart: unless-stopped` policy does **not** restart a container
+merely because its health status becomes `unhealthy`, and Docker Compose does
+not notify an operator about that state.
+
+For production, configure at least:
+
+- an external HTTPS uptime check for
+  `https://<school-host>/healthz/`; this covers public DNS/TLS, Caddy,
+  Gunicorn and the database check behind the endpoint;
+- a dead-man check for each scheduler job and for PostgreSQL backups. Services
+  such as healthchecks.io, Uptime Kuma or an equivalent internal monitor can
+  alert when an expected success ping stops arriving.
+
+The stack can send optional success pings directly after verified successful
+work. Configure unique HTTPS endpoints in `.env.production`:
+
+```bash
+SCHEDULER_LIFECYCLE_SUCCESS_PING_URL=
+SCHEDULER_GENERATION_SUCCESS_PING_URL=
+BACKUP_SUCCESS_PING_URL=
+MONITORING_HTTP_TIMEOUT_SECONDS=10
+```
+
+These URLs are bearer-like secrets; do not commit or print them. A monitoring
+request failure is logged as `event=success_ping_failed`, but it does not turn
+already completed lifecycle/generation/backup work into a failure and does not
+remove the local success marker. This keeps monitoring outages separate from
+application correctness while the dead-man service still detects missed pings.
+
+### Scheduler
+
+The `scheduler` container runs both jobs immediately after startup, then
+repeats them independently:
+
+```text
+process_subscription_lifecycle
+    default interval: 3600 s
+
+generate_lessons --all-active --horizon-days 60
+    default interval: 21600 s
+```
+
+Configure them with:
+
+```bash
+SCHEDULER_LIFECYCLE_INTERVAL_SECONDS=3600
+SCHEDULER_GENERATION_INTERVAL_SECONDS=21600
+SCHEDULER_GENERATION_HORIZON_DAYS=60
+
+SCHEDULER_LIFECYCLE_TIMEOUT_SECONDS=3600
+SCHEDULER_GENERATION_TIMEOUT_SECONDS=3600
+```
+
+A failed invocation is logged with its non-zero exit code and does **not**
+terminate the scheduler process; the job is attempted again at its next
+interval. This is important for generation conflicts: they remain visible as
+command failures/audit events without taking down unrelated lifecycle work.
+
+Jobs are executed sequentially, so every command also has a hard timeout.
+Lifecycle defaults to its own interval. Generation defaults to the smaller of
+its generation interval and the lifecycle interval (3600 seconds with the
+default configuration), so a stuck generation process cannot block lifecycle
+processing indefinitely. An overrun is terminated by `subprocess.run`, is
+logged as `event=timeout`, and does not update the job's success marker or
+external success ping. Operators may set lower timeouts after observing normal
+production runtimes.
+
+Each successful job updates its own last-success marker. The scheduler
+container healthcheck requires both markers to remain newer than approximately
+`2 * job_interval + SCHEDULER_HEALTH_GRACE_SECONDS` (300 seconds by
+default). Repeated failures or timeouts therefore become visible as
+`unhealthy` in `docker compose ps`. The scheduler process itself remains
+running so independent work can continue and failed work can retry.
+
+Normal operational inspection:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  logs --since 24h scheduler
+```
+
+A manual diagnostic run still uses the same management command:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  exec scheduler python manage.py process_subscription_lifecycle
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  exec scheduler python manage.py generate_lessons \
+  --all-active --horizon-days 60
+```
+
+Do not scale `scheduler` above one replica. The commands are designed to be
+idempotent, but duplicate schedulers create unnecessary concurrent work and
+duplicate operational noise.
+
+### Daily manual operations
+
+The production scheduler deliberately automates only subscription lifecycle
+processing and lesson generation. The following normal school operations are
+**not** run automatically:
+
+- publish the day's schedule (`publish_daily_schedule`) so students/parents
+  can see the lessons and coaches can work with the published roster;
+- evaluate lessons at the school's decision deadline when the business rules
+  require a manager decision;
+- after the lesson, record coach-confirmed attendance and move the lesson to
+  `COMPLETED` through the normal web workflow.
+
+The responsible manager/coach should therefore include these items in the
+daily operating checklist. If the school later decides to automate publication
+or lesson-state transitions, add them as explicit, independently monitored
+jobs only after the timing and audit/actor semantics are agreed. They are
+intentionally disabled by default in this pilot stack.
+
+### PostgreSQL backups
+
+The `backup` service uses the same PostgreSQL 17 client generation as the
+database server. By default it:
+
+- runs immediately when the backup container starts;
+- creates one custom-format `pg_dump` every 86400 seconds;
+- terminates a stuck `pg_dump` after `BACKUP_TIMEOUT_SECONDS` (default 3600);
+- writes to the host path in `BACKUP_HOST_PATH` (default `./backups`);
+- uses `umask 077`;
+- writes to `.partial`, validates it with `pg_restore --list`, and only then
+  atomically renames it to `.dump`;
+- removes dumps older than `BACKUP_RETENTION_DAYS` (default 14);
+- updates a last-success marker only after a dump passes `pg_restore --list`.
+
+The backup container healthcheck becomes unhealthy when no successful dump has
+been produced for more than roughly two configured backup intervals
+(`2 * BACKUP_INTERVAL_SECONDS + 300s`). A failed dump therefore remains
+visible even though the loop intentionally stays alive to retry later.
+
+Settings:
+
+```bash
+BACKUP_HOST_PATH=/var/backups/ice-school
+BACKUP_INTERVAL_SECONDS=86400
+BACKUP_TIMEOUT_SECONDS=3600
+BACKUP_RETENTION_DAYS=14
+BACKUP_SUCCESS_PING_URL=
+```
+
+If `pg_dump` exceeds `BACKUP_TIMEOUT_SECONDS`, BusyBox `timeout` terminates it,
+the partial archive is removed, no success marker/ping is written, and the
+normal backup loop can retry at the next interval without a container restart.
+The failed run is logged with `stage=pg_dump`, its exit code and configured
+timeout.
+
+When `BACKUP_SUCCESS_PING_URL` is configured, the backup service sends the
+dead-man success ping only after `pg_dump` has completed, `pg_restore --list`
+has validated the archive, and the success marker has been updated. Monitoring
+delivery failure is logged but does not invalidate the verified dump.
+
+Run an additional backup immediately:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  exec backup /ops/postgres_backup.sh --once
+```
+
+A local backup directory is **not** a complete backup strategy. Copy validated
+dumps to encrypted/off-host storage under the organisation's backup policy and
+regularly test restoration. Database backups contain school/personal data and
+must be protected accordingly.
+
+CI performs a basic restore smoke-test for the produced custom-format archive:
+it restores the dump into a temporary PostgreSQL database and verifies that
+Django migration metadata is readable. This catches structurally unusable
+archives, but it does not replace periodic operator restore exercises against
+real production backups.
+
+### Restore procedure
+
+Restoration is destructive. Select a known validated dump and stop application
+writers first:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  stop proxy web scheduler backup
+
+set -a
+source .env.production
+set +a
+
+BACKUP_FILE=ice_school_YYYYMMDDTHHMMSSZ.dump
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  run --rm --no-deps -T backup cat "/backups/$BACKUP_FILE" | \
+  docker compose --env-file .env.production -f compose.production.yaml \
+  exec -T db pg_restore \
+    --clean --if-exists --no-owner --no-privileges \
+    -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
+The dump is deliberately read through a one-shot backup container instead of
+the host shell. Backup files are created with `umask 077` and may therefore
+be unreadable by the unprivileged host operator account; do not weaken dump
+permissions merely to make restore piping convenient.
+
+After restoring, apply any migrations required by the currently deployed
+application image and start services again:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  run --rm migrate
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  up -d web scheduler backup proxy
+```
+
+Verify `/healthz/`, manager login/MFA, a representative schedule page, and
+recent audit/subscription state after every restore exercise.
+
+### Updating the application
+
+For a normal single-host update:
+
+```bash
+git pull
+
+docker compose --env-file .env.production -f compose.production.yaml build
+
+docker compose --env-file .env.production -f compose.production.yaml up -d
+```
+
+The `migrate` service remains the migration gate. Before deploying a schema
+change that is not backwards-compatible, take an explicit backup and follow the
+migration's own rollback/forward-fix notes rather than assuming that reverting
+the container image is sufficient.

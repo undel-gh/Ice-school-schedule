@@ -9,6 +9,15 @@ from accounts.mfa import (
 )
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _test_static_root(tmp_path_factory):
+    """Give WhiteNoise an existing STATIC_ROOT during request-based tests."""
+
+    from django.conf import settings
+
+    settings.STATIC_ROOT = tmp_path_factory.mktemp("staticfiles")
+
+
 class MFAAwareClient(Client):
     """
     Existing view tests use force_login() to skip authentication itself.
