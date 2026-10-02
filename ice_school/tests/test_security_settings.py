@@ -154,3 +154,21 @@ def test_axes_trusted_proxy_normalizes_ipv4_mapped_cidr():
     )
 
     assert get_client_ip_address(request) == "203.0.113.7"
+
+
+
+def test_privileged_mfa_middleware_order_is_safe():
+    middleware = list(settings.MIDDLEWARE)
+    authentication = middleware.index(
+        "django.contrib.auth.middleware.AuthenticationMiddleware"
+    )
+    otp = middleware.index("django_otp.middleware.OTPMiddleware")
+    messages = middleware.index(
+        "django.contrib.messages.middleware.MessageMiddleware"
+    )
+    privileged = middleware.index(
+        "accounts.mfa_middleware.PrivilegedMFAMiddleware"
+    )
+
+    assert authentication < otp < privileged
+    assert messages < privileged
