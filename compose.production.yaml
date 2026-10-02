@@ -118,6 +118,8 @@ services:
       BACKUP_DIR: /backups
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_SUCCESS_PING_URL: ${BACKUP_SUCCESS_PING_URL:-}
+      MONITORING_HTTP_TIMEOUT_SECONDS: ${MONITORING_HTTP_TIMEOUT_SECONDS:-10}
     command: ["/ops/postgres_backup.sh"]
     volumes:
       - ./ops/postgres_backup.sh:/ops/postgres_backup.sh:ro
