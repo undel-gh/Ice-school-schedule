@@ -206,9 +206,10 @@ The named actor must possess the Django model permission required by the
 underlying application service. Direct editing of lifecycle/ledger rows in
 Django Admin remains prohibited.
 
-Coverage rebinds and one-time entitlement administration currently remain
-service-level operations and are intended for a
-dedicated administrative UI rather than direct model editing.
+Coverage rebinds and one-time entitlement administration are available through
+the authenticated manager UI. The underlying services/management commands
+remain secondary interfaces for automation, diagnostics and emergency
+operations rather than a substitute for normal manager workflows.
 
 ## Financial responsibility boundary
 
@@ -370,6 +371,12 @@ by default).
 Enrollment also creates 10 one-time recovery codes. They are shown once, may
 be used in any order, and each is deleted by the OTP backend when consumed.
 MFA setup/challenge/recovery pages use `Cache-Control: no-store`.
+
+TOTP replay protection remains enabled. A code that was already accepted in
+the current 30-second authenticator window cannot be reused. If an
+administrator signs out and immediately signs in again, wait for the next code
+in the authenticator application instead of weakening or bypassing replay
+protection.
 
 The privileged verified session has an **absolute** maximum age controlled by
 `MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS` (43200 seconds / 12 hours by default).
@@ -830,6 +837,25 @@ daily operating checklist. If the school later decides to automate publication
 or lesson-state transitions, add them as explicit, independently monitored
 jobs only after the timing and audit/actor semantics are agreed. They are
 intentionally disabled by default in this pilot stack.
+
+### Rolling-period recovery
+
+If reversing the attendance coverage that originally activated a rolling
+28-day subscription cannot safely return the period to `PENDING`, the
+application keeps the period `ACTIVE` and records
+`SubscriptionPeriodActivationRevertSkipped`. The subscription detail page
+shows this unresolved recovery state and its blockers. A manager must first
+resolve active attendance coverage and/or dependent make-up/compensation
+rights through their normal web workflows, then use **Повторить откат периода**
+on the subscription page. Standalone administrative and school-reschedule
+make-up rights can be cancelled from the subscription detail page with an
+explicit reason; medical rights must be revoked through the medical workflow,
+and absence-compensation rights through the compensation reversal workflow so
+their source state and any refund decision cannot be bypassed. A successful
+retry clears the activation dates,
+returns the period to `PENDING`, and records
+`SubscriptionPeriodActivationReverted` with reason `manager_recovery`.
+
 
 ### PostgreSQL backups
 

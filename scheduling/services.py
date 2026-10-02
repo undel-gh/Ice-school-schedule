@@ -1457,11 +1457,12 @@ def coach_has_unmaterialized_future_occurrence(
     coach_id: UUID,
     now: datetime,
 ) -> bool:
-    """Return whether an active template can still create a future lesson.
+    """Return whether an active template can still require this coach.
 
-    A finite template whose remaining occurrences are already materialized
-    does not block coach deactivation: those Lesson rows can be reassigned
-    independently while the old template expires naturally.
+    This mirrors lesson-generation slot semantics for finite templates:
+    an own materialized occurrence closes the slot, and a non-cancelled
+    overlapping lesson of the same type also covers it. A cross-type overlap
+    remains unresolved until the occurrence is explicitly skipped.
     """
     today = get_school_date(now)
     templates = (
@@ -1483,12 +1484,35 @@ def coach_has_unmaterialized_future_occurrence(
             starts_at = make_school_aware(
                 datetime.combine(occurrence_date, template.start_time)
             )
-            if starts_at >= now and not Lesson.objects.filter(
+            occurrence_date += timedelta(days=7)
+            if starts_at < now:
+                continue
+
+            if Lesson.objects.filter(
                 source_template=template,
                 starts_at=starts_at,
             ).exists():
-                return True
-            occurrence_date += timedelta(days=7)
+                continue
+
+            ends_at = starts_at + timedelta(
+                minutes=template.duration_minutes
+            )
+            overlapping_type_ids = list(
+                Lesson.objects.filter(
+                    group_id=template.group_id,
+                    starts_at__lt=ends_at,
+                    ends_at__gt=starts_at,
+                )
+                .exclude(status=Lesson.Status.CANCELLED)
+                .values_list("lesson_type_id", flat=True)
+            )
+            if overlapping_type_ids and all(
+                lesson_type_id == template.lesson_type_id
+                for lesson_type_id in overlapping_type_ids
+            ):
+                continue
+
+            return True
     return False
 
 
@@ -2230,6 +2254,7 @@ def reassign_lesson_coach(
     coach_id: UUID,
     actor: User,
     reason: str,
+    now: datetime | None = None,
 ) -> Lesson:
     require_permission(
         actor,
@@ -2246,6 +2271,10 @@ def reassign_lesson_coach(
             {"reason": "Coach reassignment reason must be at most 500 characters."}
         )
 
+    # Canonical order for coach/template scheduling writes: Coach -> Lesson.
+    # version_schedule_template() also locks the target coach before affected
+    # lessons, so taking Lesson -> Coach here would allow a PostgreSQL deadlock.
+    coach = CoachProfile.objects.select_for_update().get(pk=coach_id)
     lesson = Lesson.objects.select_for_update().get(pk=lesson_id)
     if lesson.status not in {
         Lesson.Status.DRAFT,
@@ -2260,12 +2289,21 @@ def reassign_lesson_coach(
                 )
             }
         )
+    effective_now = now or timezone.now()
+    if lesson.starts_at <= effective_now:
+        raise ValidationError(
+            {
+                "lesson": (
+                    "Lessons that have already started cannot have their "
+                    "coach reassigned. Cancel or reschedule the lesson instead."
+                )
+            }
+        )
     if lesson.coach_id == coach_id:
         raise ValidationError(
             {"coach": "The selected coach is already assigned to this lesson."}
         )
 
-    coach = CoachProfile.objects.select_for_update().get(pk=coach_id)
     if not coach.is_active:
         raise ValidationError(
             {"coach": "Only an active coach can be assigned to a lesson."}

@@ -8,6 +8,14 @@
 <article class="report-card">
   <p><strong>Скопируйте ссылку:</strong></p>
   <p><code>{{ invitation_url }}</code></p>
+  {% if invitation.kind == "recovery" %}
+    <p class="empty-state">
+      <strong>Важно:</strong> это ссылка восстановления и секретный одноразовый токен.
+      Передайте её только по независимому доверенному каналу, не связанному со
+      скомпрометированным аккаунтом: лично, по телефону или через другой
+      проверенный мессенджер/аккаунт.
+    </p>
+  {% endif %}
   <p>Действует до {{ invitation.expires_at|date:"d.m.Y H:i" }}.</p>
   <div class="toolbar">
     <a class="btn btn-secondary" href="{% url 'accounts_manager:invitations' %}">К списку приглашений</a>

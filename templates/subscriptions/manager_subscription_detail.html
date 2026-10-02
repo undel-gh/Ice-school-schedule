@@ -38,6 +38,41 @@
     <p class="muted">Исторический абонемент без SubscriptionPeriod.</p>
   {% endif %}
 
+  {% if rolling_recovery_event %}
+    <div class="empty-state">
+      <strong>Требуется восстановление расчётного периода.</strong>
+      <p>
+        Автоматический откат после исправления посещения был пропущен:
+        {{ rolling_recovery_event.payload.reason }}.
+      </p>
+      {% with deps=rolling_recovery_event.payload.dependencies %}
+        {% if deps.active_coverages %}
+          <p>Есть активное покрытие посещения. Сначала измените или снимите источник покрытия.</p>
+          <p>
+            <a href="{% url 'attendance_manager:coverage_report' %}?student={{ detail.row.subscription.student_id }}&coverage=covered">
+              Открыть покрытие посещений
+            </a>
+          </p>
+        {% endif %}
+        {% if deps.active_makeups or deps.active_compensation_cases or deps.active_compensation_grants %}
+          <p>Есть зависимые права на отработку/компенсацию. Сначала разрешите или отмените их штатным workflow.</p>
+          <p>
+            <a href="{% url 'subscriptions:manager_compensation_cases' %}">Открыть компенсационные случаи</a>
+          </p>
+        {% endif %}
+      {% endwith %}
+      {% if perms.subscriptions.change_subscription %}
+        <form
+          method="post"
+          action="{% url 'subscriptions:manager_subscription_rolling_recovery' detail.row.subscription.id %}"
+        >
+          {% csrf_token %}
+          <button class="btn-secondary" type="submit">Повторить откат периода</button>
+        </form>
+      {% endif %}
+    </div>
+  {% endif %}
+
   {% if detail.row.subscription.cancelled_at %}
     <p class="badge badge--cancelled">
       Отменён {{ detail.row.subscription.cancelled_at|date:"d.m.Y H:i" }}
@@ -107,6 +142,34 @@
           {{ makeup.category|upper }} ·
           {{ makeup.valid_from|date:"d.m.Y" }}—{{ makeup.valid_until|date:"d.m.Y" }}
         </p>
+        {% if not makeup.cancelled_at %}
+          {% if makeup.reason == "medical" and makeup.source_justification %}
+            <p>
+              <a href="{% url 'attendance_manager:medical_detail' makeup.source_justification.id %}">
+                Открыть медицинское основание
+              </a>
+            </p>
+          {% elif makeup.reason == "absence_compensation" and makeup.compensation_action_grant %}
+            <p>
+              <a href="{% url 'subscriptions:manager_compensation_case_detail' makeup.compensation_action_grant.case_id %}">
+                Открыть компенсационный случай
+              </a>
+            </p>
+          {% elif perms.subscriptions.change_makeupentitlement %}
+            <form
+              class="filter-form"
+              method="post"
+              action="{% url 'subscriptions:manager_makeup_cancel' makeup.id %}"
+            >
+              {% csrf_token %}
+              <div class="field">
+                <label for="makeup-cancel-reason-{{ makeup.id }}">Причина отмены права</label>
+                <input id="makeup-cancel-reason-{{ makeup.id }}" type="text" name="reason" maxlength="255" required>
+              </div>
+              <button class="btn-absent" type="submit">Отменить право</button>
+            </form>
+          {% endif %}
+        {% endif %}
       </article>
     {% endfor %}
   </div>

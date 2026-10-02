@@ -12,17 +12,20 @@ from django.utils import timezone
 from django.views.decorators.http import require_POST
 
 from accounts.models import Student
+from audit.models import AuditEvent
 from core.permissions import require_permission
 from core.time import school_date
 from subscriptions.forms import (
     ManagerAllowanceAdjustmentForm,
     ManagerPlaceHoldCancelForm,
     ManagerPlaceHoldCreateForm,
+    ManagerMakeupCancelForm,
     ManagerSubscriptionCancelForm,
     ManagerSubscriptionIssueForm,
 )
 from subscriptions.models import (
     GroupPlaceHold,
+    MakeupEntitlement,
     Subscription,
     SubscriptionAllowance,
 )
@@ -33,11 +36,13 @@ from subscriptions.selectors import (
 from subscriptions.services import (
     adjust_allowance,
     cancel_group_place_hold,
+    cancel_manager_makeup_entitlement,
     cancel_subscription,
     confirm_group_place_hold_fee,
     create_group_place_hold,
     restore_group_place_hold,
     issue_subscription_for_period,
+    recover_rolling_subscription_period_activation,
     resolve_subscription_period_window,
 )
 
@@ -364,6 +369,28 @@ def manager_subscription_detail_view(
     except (Subscription.DoesNotExist, StopIteration) as exc:
         raise Http404("Subscription not found.") from exc
 
+    period = detail.row.period
+    rolling_recovery_event = None
+    if period is not None:
+        latest_recovery_event = (
+            AuditEvent.objects.filter(
+                aggregate_type="SubscriptionPeriod",
+                aggregate_id=period.id,
+                event_type__in=[
+                    "SubscriptionPeriodActivationRevertSkipped",
+                    "SubscriptionPeriodActivationReverted",
+                ],
+            )
+            .order_by("-occurred_at", "-id")
+            .first()
+        )
+        if (
+            latest_recovery_event is not None
+            and latest_recovery_event.event_type
+            == "SubscriptionPeriodActivationRevertSkipped"
+        ):
+            rolling_recovery_event = latest_recovery_event
+
     return render(
         request,
         "subscriptions/manager_subscription_detail.html",
@@ -371,6 +398,7 @@ def manager_subscription_detail_view(
             "detail": detail,
             "adjustment_form": ManagerAllowanceAdjustmentForm(),
             "cancel_form": ManagerSubscriptionCancelForm(),
+            "rolling_recovery_event": rolling_recovery_event,
         },
     )
 
@@ -404,6 +432,73 @@ def manager_allowance_adjust_view(
     return redirect(
         "subscriptions:manager_subscription_detail",
         subscription_id=allowance.subscription_id,
+    )
+
+
+@login_required
+@require_POST
+def manager_makeup_cancel_view(
+    request: HttpRequest,
+    *,
+    makeup_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_makeupentitlement",
+        "Make-up entitlement change permission is required.",
+    )
+    makeup = get_object_or_404(
+        MakeupEntitlement.objects.select_related(
+            "source_subscription_allowance",
+        ),
+        pk=makeup_id,
+    )
+    subscription_id = makeup.source_subscription_allowance.subscription_id
+    form = ManagerMakeupCancelForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, "Укажите причину отмены права на отработку.")
+    else:
+        try:
+            cancel_manager_makeup_entitlement(
+                makeup_entitlement_id=makeup.id,
+                actor=request.user,
+                reason=form.cleaned_data["reason"],
+                now=timezone.now(),
+            )
+        except ValidationError as exc:
+            messages.error(request, " ".join(exc.messages))
+        else:
+            messages.success(request, "Право на отработку отменено.")
+    return redirect(
+        "subscriptions:manager_subscription_detail",
+        subscription_id=subscription_id,
+    )
+
+
+@login_required
+@require_POST
+def manager_subscription_rolling_recovery_view(
+    request: HttpRequest,
+    *,
+    subscription_id: UUID,
+) -> HttpResponse:
+    try:
+        recover_rolling_subscription_period_activation(
+            subscription_id=subscription_id,
+            actor=request.user,
+        )
+    except Subscription.DoesNotExist as exc:
+        raise Http404("Subscription not found.") from exc
+    except ValidationError as exc:
+        messages.error(request, " ".join(exc.messages))
+    else:
+        messages.success(
+            request,
+            "Расчётный период возвращён в ожидание первого занятия.",
+        )
+    return redirect(
+        "subscriptions:manager_subscription_detail",
+        subscription_id=subscription_id,
     )
 
 

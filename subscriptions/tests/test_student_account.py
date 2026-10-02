@@ -275,6 +275,8 @@ def test_student_account_shows_balances_rights_and_coverage_history(
 
     assert "Разовое право" in body
     assert "Отработки" in body
+    assert "Использует остаток" in body
+    assert "отдельный визит не добавляется" in body
     assert "Абонемент · Лёд" in body
     assert "Отсутствовал" in body
 
@@ -343,6 +345,71 @@ def test_inactive_student_keeps_historical_account_access(
     home = client.get(reverse("scheduling:home"))
     assert home.status_code == 302
     assert home.url == reverse("student_account:account")
+
+
+@pytest.mark.django_db
+def test_historical_subscription_labels_balance_as_history(
+    client,
+    account_context,
+    monkeypatch,
+):
+    ctx = account_context
+    fixed_now = make_school_aware(datetime(2026, 11, 15, 12, 0))
+    monkeypatch.setattr(timezone, "now", lambda: fixed_now)
+    client.force_login(ctx["guardian"])
+
+    response = client.get(
+        reverse("student_account:account"),
+        {"student": str(ctx["student"].id)},
+    )
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "исторический остаток" in body
+    assert "недоступен для обычных посещений" in body
+    assert "может использоваться уже выданными отработками" in body
+
+
+@pytest.mark.django_db
+def test_home_prefers_active_coach_over_historical_student_account(
+    client,
+    account_context,
+):
+    ctx = account_context
+    Student.objects.filter(
+        pk__in=[ctx["student"].id, ctx["other_student"].id]
+    ).update(is_active=False)
+    coach = CoachProfile.objects.create(
+        user=ctx["guardian"],
+        display_name="Тренер с историческим аккаунтом",
+    )
+    client.force_login(ctx["guardian"])
+
+    response = client.get(reverse("scheduling:home"))
+
+    assert response.status_code == 302
+    assert response.url == reverse("scheduling:coach_schedule")
+    assert coach.is_active is True
+
+
+@pytest.mark.django_db
+def test_home_prefers_manager_over_historical_student_account(
+    client,
+    account_context,
+):
+    ctx = account_context
+    Student.objects.filter(
+        pk__in=[ctx["student"].id, ctx["other_student"].id]
+    ).update(is_active=False)
+    ctx["guardian"].is_staff = True
+    ctx["guardian"].is_superuser = True
+    ctx["guardian"].save(update_fields=["is_staff", "is_superuser"])
+    client.force_login(ctx["guardian"])
+
+    response = client.get(reverse("scheduling:home"))
+
+    assert response.status_code == 302
+    assert response.url == reverse("subscriptions:manager_operations")
 
 
 @pytest.mark.django_db
