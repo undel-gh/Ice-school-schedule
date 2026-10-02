@@ -97,3 +97,10 @@ class ManagerSubscriptionCancelForm(forms.Form):
     confirm = forms.BooleanField(
         label="Подтверждаю отмену абонемента",
     )
+
+
+class ManagerMakeupCancelForm(forms.Form):
+    reason = forms.CharField(
+        label="Причина отмены права",
+        max_length=255,
+    )

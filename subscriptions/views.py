@@ -19,11 +19,13 @@ from subscriptions.forms import (
     ManagerAllowanceAdjustmentForm,
     ManagerPlaceHoldCancelForm,
     ManagerPlaceHoldCreateForm,
+    ManagerMakeupCancelForm,
     ManagerSubscriptionCancelForm,
     ManagerSubscriptionIssueForm,
 )
 from subscriptions.models import (
     GroupPlaceHold,
+    MakeupEntitlement,
     Subscription,
     SubscriptionAllowance,
 )
@@ -34,6 +36,7 @@ from subscriptions.selectors import (
 from subscriptions.services import (
     adjust_allowance,
     cancel_group_place_hold,
+    cancel_manager_makeup_entitlement,
     cancel_subscription,
     confirm_group_place_hold_fee,
     create_group_place_hold,
@@ -429,6 +432,41 @@ def manager_allowance_adjust_view(
     return redirect(
         "subscriptions:manager_subscription_detail",
         subscription_id=allowance.subscription_id,
+    )
+
+
+@login_required
+@require_POST
+def manager_makeup_cancel_view(
+    request: HttpRequest,
+    *,
+    makeup_id: UUID,
+) -> HttpResponse:
+    makeup = get_object_or_404(
+        MakeupEntitlement.objects.select_related(
+            "source_subscription_allowance",
+        ),
+        pk=makeup_id,
+    )
+    subscription_id = makeup.source_subscription_allowance.subscription_id
+    form = ManagerMakeupCancelForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, "Укажите причину отмены права на отработку.")
+    else:
+        try:
+            cancel_manager_makeup_entitlement(
+                makeup_entitlement_id=makeup.id,
+                actor=request.user,
+                reason=form.cleaned_data["reason"],
+                now=timezone.now(),
+            )
+        except ValidationError as exc:
+            messages.error(request, " ".join(exc.messages))
+        else:
+            messages.success(request, "Право на отработку отменено.")
+    return redirect(
+        "subscriptions:manager_subscription_detail",
+        subscription_id=subscription_id,
     )
 
 

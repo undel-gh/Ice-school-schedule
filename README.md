@@ -847,7 +847,12 @@ application keeps the period `ACTIVE` and records
 shows this unresolved recovery state and its blockers. A manager must first
 resolve active attendance coverage and/or dependent make-up/compensation
 rights through their normal web workflows, then use **Повторить откат периода**
-on the subscription page. A successful retry clears the activation dates,
+on the subscription page. Standalone administrative and school-reschedule
+make-up rights can be cancelled from the subscription detail page with an
+explicit reason; medical rights must be revoked through the medical workflow,
+and absence-compensation rights through the compensation reversal workflow so
+their source state and any refund decision cannot be bypassed. A successful
+retry clears the activation dates,
 returns the period to `PENDING`, and records
 `SubscriptionPeriodActivationReverted` with reason `manager_recovery`.
 

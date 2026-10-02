@@ -1008,9 +1008,21 @@ def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
         source_subscription_allowance=allowance,
         source_lesson=source_lesson,
     )
-    makeup.cancelled_at = school_dt(2026, 10, 12, 21, 0)
-    makeup.cancelled_by = actor
-    makeup.save(update_fields=["cancelled_at", "cancelled_by"])
+    cancelled = client.post(
+        reverse(
+            "subscriptions:manager_makeup_cancel",
+            kwargs={"makeup_id": makeup.id},
+        ),
+        {"reason": "Исправление ошибочной активации периода"},
+    )
+    assert cancelled.status_code == 302
+    makeup.refresh_from_db()
+    assert makeup.cancelled_at is not None
+    assert AuditEvent.objects.filter(
+        event_type="MakeupEntitlementCancelled",
+        aggregate_id=makeup.id,
+        payload__source="manager_manual",
+    ).exists()
 
     recovered = client.post(
         reverse(
@@ -1044,3 +1056,55 @@ def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
     assert "Требуется восстановление расчётного периода" not in (
         detail_after.content.decode()
     )
+
+@pytest.mark.django_db
+def test_manager_makeup_cancel_preserves_source_workflow_boundaries(
+    client,
+    actor,
+    student,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="makeup-cancel-boundary",
+        name="Makeup cancel boundary",
+        mode=SubscriptionPeriodScheme.Mode.CALENDAR_MONTH,
+    )
+    plan = make_plan(code="makeup-cancel-boundary-plan", scheme=scheme, ice=2)
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    allowance = subscription.allowances.get(category=SubscriptionCategory.ICE)
+    source_lesson = make_lesson(
+        context=context,
+        starts_at=school_dt(2026, 10, 10, 18, 0),
+    )
+    compensation_makeup = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=source_lesson,
+        source_subscription_allowance=allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ABSENCE_COMPENSATION,
+        valid_from=date(2026, 10, 11),
+        valid_until=date(2026, 10, 31),
+        created_by=actor,
+    )
+    client.force_login(actor)
+
+    response = client.post(
+        reverse(
+            "subscriptions:manager_makeup_cancel",
+            kwargs={"makeup_id": compensation_makeup.id},
+        ),
+        {"reason": "Не должен обходить compensation workflow"},
+        follow=True,
+    )
+
+    assert response.status_code == 200
+    compensation_makeup.refresh_from_db()
+    assert compensation_makeup.cancelled_at is None
+    assert "compensation workflow" in response.content.decode()
+

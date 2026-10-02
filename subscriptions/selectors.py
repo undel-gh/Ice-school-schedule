@@ -1034,6 +1034,8 @@ def manager_subscription_detail(
         .select_related(
             "source_lesson",
             "target_lesson",
+            "source_justification",
+            "compensation_action_grant__case",
         )
         .order_by("-created_at", "-id")
     )

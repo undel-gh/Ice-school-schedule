@@ -142,6 +142,34 @@
           {{ makeup.category|upper }} ·
           {{ makeup.valid_from|date:"d.m.Y" }}—{{ makeup.valid_until|date:"d.m.Y" }}
         </p>
+        {% if not makeup.cancelled_at %}
+          {% if makeup.reason == "medical" and makeup.source_justification %}
+            <p>
+              <a href="{% url 'attendance_manager:medical_detail' makeup.source_justification.id %}">
+                Открыть медицинское основание
+              </a>
+            </p>
+          {% elif makeup.reason == "absence_compensation" and makeup.compensation_action_grant %}
+            <p>
+              <a href="{% url 'subscriptions:manager_compensation_case_detail' makeup.compensation_action_grant.case_id %}">
+                Открыть компенсационный случай
+              </a>
+            </p>
+          {% elif perms.subscriptions.change_makeupentitlement %}
+            <form
+              class="filter-form"
+              method="post"
+              action="{% url 'subscriptions:manager_makeup_cancel' makeup.id %}"
+            >
+              {% csrf_token %}
+              <div class="field">
+                <label for="makeup-cancel-reason-{{ makeup.id }}">Причина отмены права</label>
+                <input id="makeup-cancel-reason-{{ makeup.id }}" type="text" name="reason" maxlength="255" required>
+              </div>
+              <button class="btn-absent" type="submit">Отменить право</button>
+            </form>
+          {% endif %}
+        {% endif %}
       </article>
     {% endfor %}
   </div>

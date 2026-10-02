@@ -4864,6 +4864,92 @@ def adjust_allowance(
 
 
 @transaction.atomic
+def cancel_manager_makeup_entitlement(
+    *,
+    makeup_entitlement_id: UUID,
+    actor: User,
+    reason: str,
+    now=None,
+) -> MakeupEntitlement:
+    """Cancel an unused standalone make-up right from the manager UI.
+
+    Medical and absence-compensation rights must be reversed through their
+    source workflows so justification/grant/refund state stays consistent.
+    """
+    require_permission(
+        actor,
+        "subscriptions.change_makeupentitlement",
+        "Make-up entitlement change permission is required.",
+    )
+    reason = reason.strip()
+    if not reason:
+        raise ValidationError({"reason": "Cancellation reason is required."})
+    if len(reason) > 255:
+        raise ValidationError(
+            {"reason": "Cancellation reason must be at most 255 characters."}
+        )
+
+    makeup = (
+        MakeupEntitlement.objects.select_for_update()
+        .select_related("source_subscription_allowance")
+        .get(pk=makeup_entitlement_id)
+    )
+    if makeup.cancelled_at is not None:
+        return makeup
+    if makeup.reason == MakeupEntitlement.Reason.MEDICAL_VERIFIED:
+        raise ValidationError(
+            {
+                "makeup_entitlement": (
+                    "Medical make-up rights must be revoked through the "
+                    "medical absence workflow."
+                )
+            }
+        )
+    if makeup.reason == MakeupEntitlement.Reason.ABSENCE_COMPENSATION:
+        raise ValidationError(
+            {
+                "makeup_entitlement": (
+                    "Absence-compensation make-up rights must be reversed "
+                    "through the compensation workflow."
+                )
+            }
+        )
+    if AttendanceCoverage.objects.filter(
+        makeup_entitlement=makeup,
+        reversed_at__isnull=True,
+    ).exists():
+        raise ValidationError(
+            {
+                "makeup_entitlement": (
+                    "A used make-up right cannot be cancelled. Reverse or "
+                    "rebind its attendance coverage first."
+                )
+            }
+        )
+
+    cancelled_at = now or timezone.now()
+    makeup.cancelled_at = cancelled_at
+    makeup.cancelled_by = actor
+    makeup.save(update_fields=["cancelled_at", "cancelled_by"])
+    _audit(
+        event_type="MakeupEntitlementCancelled",
+        aggregate_type="MakeupEntitlement",
+        aggregate_id=makeup.id,
+        actor=actor,
+        payload={
+            "source": "manager_manual",
+            "reason": reason,
+            "cancelled_at": cancelled_at.isoformat(),
+            "source_lesson_id": str(makeup.source_lesson_id),
+            "source_allowance_id": str(
+                makeup.source_subscription_allowance_id
+            ),
+        },
+    )
+    return makeup
+
+
+@transaction.atomic
 def cancel_subscription(
     *,
     subscription_id: UUID,
