@@ -6,6 +6,7 @@ umask 077
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 BACKUP_INTERVAL_SECONDS="${BACKUP_INTERVAL_SECONDS:-86400}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+BACKUP_TIMEOUT_SECONDS="${BACKUP_TIMEOUT_SECONDS:-3600}"
 MONITORING_HTTP_TIMEOUT_SECONDS="${MONITORING_HTTP_TIMEOUT_SECONDS:-10}"
 
 case "$BACKUP_INTERVAL_SECONDS" in
@@ -14,8 +15,15 @@ esac
 case "$BACKUP_RETENTION_DAYS" in
   *[!0-9]*|"") echo "BACKUP_RETENTION_DAYS must be a non-negative integer" >&2; exit 2 ;;
 esac
+case "$BACKUP_TIMEOUT_SECONDS" in
+  *[!0-9]*|"") echo "BACKUP_TIMEOUT_SECONDS must be a positive integer" >&2; exit 2 ;;
+esac
 if [ "$BACKUP_INTERVAL_SECONDS" -le 0 ]; then
   echo "BACKUP_INTERVAL_SECONDS must be positive" >&2
+  exit 2
+fi
+if [ "$BACKUP_TIMEOUT_SECONDS" -le 0 ]; then
+  echo "BACKUP_TIMEOUT_SECONDS must be positive" >&2
   exit 2
 fi
 case "$MONITORING_HTTP_TIMEOUT_SECONDS" in
@@ -48,9 +56,13 @@ run_backup() {
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) backup event=start target=$final"
   rm -f "$temp"
 
-  if ! pg_dump --format=custom --no-owner --no-privileges --file="$temp" "$PGDATABASE"; then
+  if timeout "$BACKUP_TIMEOUT_SECONDS" \
+    pg_dump --format=custom --no-owner --no-privileges --file="$temp" "$PGDATABASE"; then
+    :
+  else
+    status=$?
     rm -f "$temp"
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) backup event=failed stage=pg_dump" >&2
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) backup event=failed stage=pg_dump exit_code=$status timeout_seconds=$BACKUP_TIMEOUT_SECONDS" >&2
     return 1
   fi
 

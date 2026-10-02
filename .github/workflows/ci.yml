@@ -205,6 +205,32 @@ jobs:
             --env-file .env.production \
             -f compose.production.yaml \
             exec -T backup /ops/postgres_backup.sh --once
+      - name: Smoke PostgreSQL backup timeout
+        run: |
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            exec -T backup sh -c \
+              'mkdir -p /tmp/backup-timeout-test && printf "#!/bin/sh\\nsleep 10\\n" > /tmp/backup-timeout-test/pg_dump && chmod +x /tmp/backup-timeout-test/pg_dump'
+
+          set +e
+          output="$(
+            docker compose \
+              --env-file .env.production \
+              -f compose.production.yaml \
+              exec -T \
+              -e BACKUP_TIMEOUT_SECONDS=1 \
+              -e PATH=/tmp/backup-timeout-test:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+              backup /ops/postgres_backup.sh --once 2>&1
+          )"
+          status=$?
+          set -e
+
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          printf '%s\n' "$output" | grep -q 'event=failed stage=pg_dump'
+          printf '%s\n' "$output" | grep -q 'timeout_seconds=1'
+          test -z "$(find backups -maxdepth 1 -name '*.partial' -print -quit)"
       - name: Smoke PostgreSQL restore
         run: |
           set -a

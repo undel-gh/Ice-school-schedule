@@ -838,6 +838,7 @@ database server. By default it:
 
 - runs immediately when the backup container starts;
 - creates one custom-format `pg_dump` every 86400 seconds;
+- terminates a stuck `pg_dump` after `BACKUP_TIMEOUT_SECONDS` (default 3600);
 - writes to the host path in `BACKUP_HOST_PATH` (default `./backups`);
 - uses `umask 077`;
 - writes to `.partial`, validates it with `pg_restore --list`, and only then
@@ -855,9 +856,16 @@ Settings:
 ```bash
 BACKUP_HOST_PATH=/var/backups/ice-school
 BACKUP_INTERVAL_SECONDS=86400
+BACKUP_TIMEOUT_SECONDS=3600
 BACKUP_RETENTION_DAYS=14
 BACKUP_SUCCESS_PING_URL=
 ```
+
+If `pg_dump` exceeds `BACKUP_TIMEOUT_SECONDS`, BusyBox `timeout` terminates it,
+the partial archive is removed, no success marker/ping is written, and the
+normal backup loop can retry at the next interval without a container restart.
+The failed run is logged with `stage=pg_dump`, its exit code and configured
+timeout.
 
 When `BACKUP_SUCCESS_PING_URL` is configured, the backup service sends the
 dead-man success ping only after `pg_dump` has completed, `pg_restore --list`
