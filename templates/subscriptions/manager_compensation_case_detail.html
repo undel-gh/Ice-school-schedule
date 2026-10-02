@@ -13,7 +13,7 @@
   {% if case.eligibility_period_from %}<p>Период оценки права: {{ case.eligibility_period_from|date:"d.m.Y" }}—{{ case.eligibility_period_until|date:"d.m.Y" }}</p>{% endif %}
   <p>Правило: {{ case.policy_name_snapshot }} v{{ case.policy_version_snapshot }}</p>
   {% if next_period_state == "pending_activation" %}
-    <p><span class="badge badge--unknown">Бесплатная отработка ждёт активации следующего rolling-периода. После активации нажмите «Выдать» повторно.</span></p>
+    <p><span class="badge badge--unknown">Бесплатная отработка ждёт активации следующего 28-дневного периода. После активации нажмите «Выдать» повторно.</span></p>
   {% elif next_period_state == "ready" %}
     <p><span class="badge badge--covered">Следующий период активен: бесплатную отработку можно выдать.</span></p>
   {% elif next_period_state == "missing" %}
