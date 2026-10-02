@@ -756,6 +756,7 @@ def test_authenticator_replacement_rotates_verified_session_after_new_totp():
     client.force_login(user)
     session = client.session
     session[DEVICE_ID_SESSION_KEY] = old_device.persistent_id
+    session[MFA_VERIFIED_AT_SESSION_KEY] = timezone.now().timestamp()
     session.save()
 
     replacement = client.post(
@@ -864,7 +865,6 @@ def test_abandoned_authenticator_replacement_keeps_old_totp_usable():
     client.force_login(user)
     session = client.session
     session[DEVICE_ID_SESSION_KEY] = old_device.persistent_id
-    from accounts.mfa import MFA_VERIFIED_AT_SESSION_KEY
     session[MFA_VERIFIED_AT_SESSION_KEY] = timezone.now().timestamp()
     session.save()
 
@@ -910,7 +910,6 @@ def test_confirming_replacement_revokes_old_totp_in_same_flow():
     client.force_login(user)
     session = client.session
     session[DEVICE_ID_SESSION_KEY] = old_device.persistent_id
-    from accounts.mfa import MFA_VERIFIED_AT_SESSION_KEY
     session[MFA_VERIFIED_AT_SESSION_KEY] = timezone.now().timestamp()
     session.save()
 
