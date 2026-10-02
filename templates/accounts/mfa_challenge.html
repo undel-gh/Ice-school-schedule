@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Проверка MFA{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <h1>Дополнительная проверка</h1>
+  <p>Введите код из приложения-аутентификатора. Если устройство недоступно, выберите «Recovery codes» и введите один из сохранённых одноразовых кодов.</p>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Продолжить</button>
+  </form>
+</section>
+{% endblock %}

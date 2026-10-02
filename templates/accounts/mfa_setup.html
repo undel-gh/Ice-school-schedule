@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Настройка MFA{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <h1>Настройка дополнительной защиты</h1>
+  <p>Добавьте Ice School в приложение-аутентификатор, например Aegis, 2FAS, Google Authenticator или Microsoft Authenticator.</p>
+
+  <p><img src="{% url 'mfa:setup_qr' %}" alt="QR-код для настройки приложения-аутентификатора"></p>
+
+  <details>
+    <summary>Ввести ключ вручную</summary>
+    <p><code>{{ manual_secret }}</code></p>
+  </details>
+
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Подтвердить и включить MFA</button>
+  </form>
+</section>
+{% endblock %}
