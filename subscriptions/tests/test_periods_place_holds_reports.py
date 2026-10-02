@@ -18,6 +18,7 @@ from core.testing import school_dt
 from scheduling.models import GroupMembership, Lesson, LessonType, TrainingGroup, Venue
 import subscriptions.services as subscription_services
 from subscriptions.models import (
+    AttendanceCoverage,
     GroupPlaceHold,
     MakeupEntitlement,
     SubscriptionPeriod,
