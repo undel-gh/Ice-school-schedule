@@ -299,7 +299,7 @@ def test_policy_clean_rejects_overlapping_active_policy():
 
     with pytest.raises(
         ValidationError,
-        match="overlaps this effective interval",
+        match="пересекается с выбранным периодом действия",
     ):
         second.full_clean()
 
@@ -335,6 +335,6 @@ def test_window_clean_rejects_same_priority_overlap():
 
     with pytest.raises(
         ValidationError,
-        match="same priority",
+        match="тем же приоритетом пересекается",
     ):
         second.full_clean()

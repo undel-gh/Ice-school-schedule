@@ -892,7 +892,7 @@ def test_referenced_policy_and_actions_are_immutable(actor, context):
     policy.max_eligible_absences = 7
     with pytest.raises(
         ValidationError,
-        match="policy versions are immutable",
+        match="Использованные версии политики компенсаций нельзя изменять",
     ):
         policy.save(update_fields=["max_eligible_absences"])
 
@@ -900,7 +900,7 @@ def test_referenced_policy_and_actions_are_immutable(actor, context):
     action.priority = 99
     with pytest.raises(
         ValidationError,
-        match="referenced compensation policies are immutable",
+        match="Действия уже использованных политик компенсаций нельзя изменять",
     ):
         action.save(update_fields=["priority"])
 

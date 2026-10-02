@@ -2,6 +2,7 @@ import uuid
 
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils.translation import gettext_lazy as _
 
 from core.models import TimeStampedModel, UUIDModel
 
@@ -18,8 +19,8 @@ class User(AbstractUser):
 
 class ExternalIdentity(UUIDModel):
     class Provider(models.TextChoices):
-        YANDEX = "yandex", "Yandex"
-        VK = "vk", "VK"
+        YANDEX = "yandex", _("Yandex")
+        VK = "vk", _("VK")
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="external_identities")
     provider = models.CharField(max_length=16, choices=Provider.choices)
@@ -44,9 +45,9 @@ class ExternalIdentity(UUIDModel):
 
 class AccountInvitation(UUIDModel):
     class Kind(models.TextChoices):
-        STUDENT_ACCESS = "student_access", "Student access"
-        COACH = "coach", "Coach"
-        RECOVERY = "recovery", "Account recovery"
+        STUDENT_ACCESS = "student_access", _("Student access")
+        COACH = "coach", _("Coach")
+        RECOVERY = "recovery", _("Account recovery")
 
     kind = models.CharField(max_length=24, choices=Kind.choices)
     token_hash = models.CharField(max_length=64, unique=True)
@@ -60,8 +61,8 @@ class AccountInvitation(UUIDModel):
     student_access_role = models.CharField(
         max_length=16,
         choices=(
-            ("self", "Self"),
-            ("guardian", "Guardian"),
+            ("self", _("Self")),
+            ("guardian", _("Guardian")),
         ),
         blank=True,
         default="",
@@ -179,8 +180,8 @@ class Student(UUIDModel, TimeStampedModel):
 
 class StudentAccess(UUIDModel):
     class Role(models.TextChoices):
-        SELF = "self", "Self"
-        GUARDIAN = "guardian", "Guardian"
+        SELF = "self", _("Self")
+        GUARDIAN = "guardian", _("Guardian")
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="student_accesses")
     student = models.ForeignKey(Student, on_delete=models.CASCADE, related_name="accesses")

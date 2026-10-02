@@ -15,6 +15,7 @@ from core.permissions import (
     has_manager_operations_access,
     require_lesson_coach_or_permission,
 )
+from core.presentation import localize_message, validation_message
 from core.time import school_date as get_school_date
 from django.views.decorators.http import require_POST
 
@@ -165,7 +166,7 @@ def set_rsvp(
     except Lesson.DoesNotExist as exc:
         raise Http404("Lesson not found.") from exc
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Ответ сохранён.")
 
@@ -303,10 +304,10 @@ def coach_set_attendance(
             messages.warning(
                 request,
                 "Требуется решение менеджера: "
-                + " ".join(manager_messages),
+                + " ".join(localize_message(message) for message in manager_messages),
             )
         else:
-            messages.error(request, " ".join(exc.messages))
+            messages.error(request, validation_message(exc))
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
 
 
@@ -328,7 +329,7 @@ def coach_mark_expected_present(
             confirmed=confirmed,
         )
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, f"Отмечено присутствующими: {count}.")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
@@ -350,7 +351,7 @@ def coach_mark_remaining_absent(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, f"Отмечено отсутствующими: {count}.")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
@@ -372,9 +373,9 @@ def coach_complete_lesson(
             actor=request.user,
         )
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
-        messages.success(request, "Занятие переведено в COMPLETED.")
+        messages.success(request, "Занятие переведено в состояние «Проведено».")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)
 
 
@@ -394,7 +395,7 @@ def coach_submit_attendance(
             now=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Ведомость закрыта.")
     return redirect("scheduling:coach_lesson", lesson_id=lesson.id)

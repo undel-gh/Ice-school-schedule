@@ -176,6 +176,36 @@ def test_privileged_login_with_confirmed_totp_requires_challenge():
 
 
 @pytest.mark.django_db
+def test_mfa_challenge_is_fully_localized():
+    client = Client()
+    user = _privileged_user(username="mfa-localized")
+    TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    StaticDevice.objects.create(
+        user=user,
+        name="Recovery codes",
+        confirmed=True,
+    )
+    password = _begin_password_login(client, user)
+    assert password.url == reverse("mfa:challenge")
+
+    response = client.get(reverse("mfa:challenge"))
+    body = response.content.decode()
+
+    assert response.status_code == 200
+    assert "Способ проверки" in body
+    assert "Одноразовый код" in body
+    assert "Приложение-аутентификатор" in body
+    assert "Резервные коды" in body
+    assert "Otp device" not in body
+    assert "Otp token" not in body
+    assert "Recovery codes" not in body
+
+
+@pytest.mark.django_db
 def test_recovery_code_can_complete_login_and_is_consumed():
     client = Client()
     user = _privileged_user()

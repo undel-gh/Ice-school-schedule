@@ -1,0 +1,237 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: ice-school-schedule\nReport-Msgid-Bugs-To: \nPOT-Creation-Date: 2026-10-02 00:00+0000\nPO-Revision-Date: 2026-10-02 00:00+0000\nLanguage: ru\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nPlural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "28 days from first lesson"
+msgstr "28 дней от первого занятия"
+
+msgid "Absence compensation"
+msgstr "Компенсация отсутствия"
+
+msgid "Absent"
+msgstr "Отсутствовал"
+
+msgid "Account recovery"
+msgstr "Восстановление аккаунта"
+
+msgid "Active"
+msgstr "Активен"
+
+msgid "Adjustment"
+msgstr "Корректировка"
+
+msgid "Administrative"
+msgstr "Административная причина"
+
+msgid "Attendance correction"
+msgstr "Исправление посещаемости"
+
+msgid "Billing recalculation"
+msgstr "Перерасчёт оплаты"
+
+msgid "Calendar month"
+msgstr "Календарный месяц"
+
+msgid "Cancelled"
+msgstr "Отменено"
+
+msgid "Closed"
+msgstr "Закрыто"
+
+msgid "Coach"
+msgstr "Тренер"
+
+msgid "Coach unavailable"
+msgstr "Тренер недоступен"
+
+msgid "Completed"
+msgstr "Проведено"
+
+msgid "Confirmed"
+msgstr "Подтверждено"
+
+msgid "Consume"
+msgstr "Списание"
+
+msgid "Current period"
+msgstr "Текущий период"
+
+msgid "Draft"
+msgstr "Черновик"
+
+msgid "Eligible"
+msgstr "Доступна"
+
+msgid "Enrollment"
+msgstr "Запись"
+
+msgid "Expired"
+msgstr "Истёк"
+
+msgid "Explicit target window"
+msgstr "Явное целевое окно"
+
+msgid "Fee and target subscription required"
+msgstr "Требуются оплата и целевой абонемент"
+
+msgid "Fee required"
+msgstr "Требуется оплата"
+
+msgid "Fixed school-wide 28-day periods"
+msgstr "Общие фиксированные 28-дневные периоды"
+
+msgid "Free makeup"
+msgstr "Бесплатная отработка"
+
+msgid "Grant"
+msgstr "Начисление"
+
+msgid "Group"
+msgstr "Группа"
+
+msgid "Guardian"
+msgstr "Родитель / представитель"
+
+msgid "Guest"
+msgstr "Гость"
+
+msgid "HALL"
+msgstr "Зал"
+
+msgid "ICE"
+msgstr "Лёд"
+
+msgid "In person"
+msgstr "Лично"
+
+msgid "Individual ICE"
+msgstr "Индивидуальное занятие на льду"
+
+msgid "Limit exceeded"
+msgstr "Лимит исчерпан"
+
+msgid "Low attendance"
+msgstr "Недостаточно участников"
+
+msgid "Make-up"
+msgstr "Отработка"
+
+msgid "Manual"
+msgstr "Вручную"
+
+msgid "Materialized"
+msgstr "Право выдано"
+
+msgid "Medical"
+msgstr "Медицинская причина"
+
+msgid "Mini-group ICE"
+msgstr "Мини-группа на льду"
+
+msgid "Next student period"
+msgstr "Следующий период ученика"
+
+msgid "No"
+msgstr "Нет"
+
+msgid "No additional requirement"
+msgstr "Нет дополнительных условий"
+
+msgid "No justification required"
+msgstr "Основание не требуется"
+
+msgid "Open"
+msgstr "Открыт"
+
+msgid "Other"
+msgstr "Другая причина"
+
+msgid "Paid/deferred makeup"
+msgstr "Платная / отложенная отработка"
+
+msgid "Pending"
+msgstr "Ожидает проверки"
+
+msgid "Pending activation"
+msgstr "Ожидает активации"
+
+msgid "Pending payment"
+msgstr "Ожидает оплаты"
+
+msgid "Present"
+msgstr "Присутствовал"
+
+msgid "RSVP open"
+msgstr "Сбор ответов"
+
+msgid "Rejected"
+msgstr "Отклонено"
+
+msgid "Restore"
+msgstr "Возврат"
+
+msgid "Restored"
+msgstr "Возврат оформлен"
+
+msgid "Reversed"
+msgstr "Отменён"
+
+msgid "Revoked"
+msgstr "Отозвано"
+
+msgid "School reschedule"
+msgstr "Перенос школой"
+
+msgid "Self"
+msgstr "Сам ученик"
+
+msgid "Single HALL"
+msgstr "Разовое занятие в зале"
+
+msgid "Single ICE"
+msgstr "Разовое занятие на льду"
+
+msgid "Student + category + period"
+msgstr "Ученик + категория + период"
+
+msgid "Student + lesson type + period"
+msgstr "Ученик + тип занятия + период"
+
+msgid "Student + period"
+msgstr "Ученик + период"
+
+msgid "Student access"
+msgstr "Доступ к ученику"
+
+msgid "Target subscription required"
+msgstr "Требуется целевой абонемент"
+
+msgid "Trial ICE"
+msgstr "Пробное занятие на льду"
+
+msgid "Undetermined"
+msgstr "Не определено"
+
+msgid "Unexcused"
+msgstr "Без уважительной причины"
+
+msgid "VK"
+msgstr "VK"
+
+msgid "Venue unavailable"
+msgstr "Площадка недоступна"
+
+msgid "Verified"
+msgstr "Подтверждено"
+
+msgid "Verified medical absence"
+msgstr "Подтверждённое медицинское отсутствие"
+
+msgid "Verified medical justification"
+msgstr "Подтверждённое медицинское основание"
+
+msgid "Yandex"
+msgstr "Яндекс"
+
+msgid "Yes"
+msgstr "Да"

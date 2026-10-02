@@ -1383,5 +1383,5 @@ def test_manager_makeup_cancel_preserves_source_workflow_boundaries(
     assert response.status_code == 200
     compensation_makeup.refresh_from_db()
     assert compensation_makeup.cancelled_at is None
-    assert "compensation workflow" in response.content.decode()
+    assert "процесс компенсации" in response.content.decode()
 

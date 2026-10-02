@@ -425,7 +425,7 @@ def test_manager_cannot_deactivate_coach_with_active_template(client, manager):
     assert response.status_code == 200
     coach.refresh_from_db()
     assert coach.is_active is True
-    assert "schedule template" in response.content.decode().lower()
+    assert "активного шаблона расписания" in response.content.decode().lower()
 
 
 @pytest.mark.django_db
@@ -465,7 +465,7 @@ def test_manager_cannot_deactivate_coach_with_future_lesson(client, manager):
     assert response.status_code == 200
     coach.refresh_from_db()
     assert coach.is_active is True
-    assert "future" in response.content.decode().lower()
+    assert "будущие неотменённые занятия" in response.content.decode().lower()
 
 
 @pytest.mark.django_db
@@ -612,7 +612,7 @@ def test_coach_deactivation_names_skip_for_cross_type_occupied_slot(
     assert response.status_code == 200
     old_coach.refresh_from_db()
     assert old_coach.is_active is True
-    assert "skip_template_occurrence" in response.content.decode()
+    assert "явно пропустите это регулярное занятие" in response.content.decode().lower()
 
 
 @pytest.mark.django_db
