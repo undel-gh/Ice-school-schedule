@@ -5,6 +5,7 @@ from base64 import b32encode
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login as django_login
+from django.contrib.auth import logout as django_logout
 from django.contrib.auth.views import LoginView
 from django.db import transaction
 from django.http import HttpResponse
@@ -104,6 +105,16 @@ def _mfa_identity_or_login(request):
         messages.error(
             request,
             "Сеанс проверки входа отсутствует или истёк. Войдите снова.",
+        )
+        return None, redirect("login")
+    if not identity.user.has_usable_password():
+        clear_mfa_transient_session(request)
+        if request.user.is_authenticated:
+            django_logout(request)
+        messages.error(
+            request,
+            "Привилегированный аккаунт требует локальный пароль как первый "
+            "фактор. Обратитесь к администратору.",
         )
         return None, redirect("login")
     return identity, None

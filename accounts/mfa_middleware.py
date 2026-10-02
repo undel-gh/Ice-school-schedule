@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from django.conf import settings
+from django.contrib import messages
+from django.contrib.auth import logout as django_logout
 from django.shortcuts import redirect
 from django.urls import reverse
 
@@ -30,6 +32,14 @@ class PrivilegedMFAMiddleware:
             and not getattr(user, "is_verified", lambda: False)()
             and not self._is_exempt(request)
         ):
+            if not user.has_usable_password():
+                django_logout(request)
+                messages.error(
+                    request,
+                    "Привилегированный аккаунт требует локальный пароль как "
+                    "первый фактор. Обратитесь к администратору.",
+                )
+                return redirect("login")
             remember_mfa_next(request, request.get_full_path())
             if has_confirmed_mfa_device(user):
                 return redirect("mfa:challenge")

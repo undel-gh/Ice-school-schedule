@@ -519,3 +519,47 @@ def test_mfa_security_mutations_are_post_only(client):
 
     assert regenerate.status_code == 405
     assert replace.status_code == 405
+
+
+
+@pytest.mark.django_db
+def test_promoted_external_only_session_cannot_enroll_mfa_without_local_password():
+    client = Client()
+    user = User.objects.create_user(username="promoted-external")
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    client.force_login(user)
+    user.user_permissions.add(
+        Permission.objects.get(
+            content_type__app_label="accounts",
+            codename="view_student",
+        )
+    )
+
+    response = client.get(reverse("subscriptions:manager_operations"))
+
+    assert response.status_code == 302
+    assert response.url == reverse("login")
+    assert "_auth_user_id" not in client.session
+
+
+@pytest.mark.django_db
+def test_promoted_external_only_session_cannot_bypass_guard_via_mfa_setup():
+    client = Client()
+    user = User.objects.create_user(username="promoted-external-setup")
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    client.force_login(user)
+    user.user_permissions.add(
+        Permission.objects.get(
+            content_type__app_label="accounts",
+            codename="view_student",
+        )
+    )
+
+    response = client.get(reverse("mfa:setup"))
+
+    assert response.status_code == 302
+    assert response.url == reverse("login")
+    assert "_auth_user_id" not in client.session
+    assert TOTPDevice.objects.filter(user=user).exists() is False

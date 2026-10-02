@@ -352,6 +352,14 @@ is the local Django password (and therefore remains protected by
 `django-axes`); the second factor is TOTP from an authenticator application.
 SMS and email OTP are deliberately not enabled.
 
+Privilege promotion does not turn an existing external-auth session into a
+valid first factor. If a signed-in external-only User gains staff/manager
+privileges while it still has an unusable Django password, privileged access
+is terminated and MFA enrollment is refused. A local password must first be
+established through an administrative recovery procedure (for example Django
+Admin or `changepassword`) or, preferably, a separate privileged account
+must be used.
+
 On the first successful password login, a privileged user must enroll a TOTP
 device before an authenticated application session is created. The setup page
 shows an `otpauth://` QR code and a manual secret. The enrollment code is
