@@ -97,6 +97,7 @@ def test_manager_subscription_report_renders_subscription_summary(client):
     assert "переносов доступно" in body
     assert "Календарный месяц" in body
     assert "Истёк" in body
+    assert "Активен" in body
     assert "Лёд" in body
 
 
