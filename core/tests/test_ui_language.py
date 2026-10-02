@@ -42,7 +42,7 @@ def _visible_static_text(template: str) -> str:
 def _latin_words(text: str) -> set[str]:
     words = set()
     for match in LATIN_WORD_RE.finditer(text):
-        word = match.group(0).strip(".,:;!?()[]{}«»")
+        word = match.group(0).strip(".,:;!?()[]{}«»-")
         if not word:
             continue
         if word == "2FAS":
