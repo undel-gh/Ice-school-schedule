@@ -803,3 +803,53 @@ def test_policy_versioning_drops_legacy_billing_recalculation(manager):
     assert event.payload["skipped_action_types"] == [
         AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
     ]
+
+
+
+@pytest.mark.django_db
+def test_billing_recalculation_model_validation_blocks_new_admin_style_action(
+    manager,
+):
+    policy = AbsenceCompensationPolicy.objects.create(
+        code="billing-model-validation",
+        version=1,
+        name="Billing model validation",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.OTHER,
+        justification_requirement=(
+            AbsenceCompensationPolicy.JustificationRequirement.NONE
+        ),
+        max_eligible_absences=None,
+        limit_scope=AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD,
+        effective_from=date(2026, 1, 1),
+        is_active=True,
+    )
+    candidate = AbsenceCompensationPolicyAction(
+        policy=policy,
+        action_type=(
+            AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ),
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=10,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="outside the scheduling system",
+    ):
+        candidate.full_clean()
+
+    legacy = AbsenceCompensationPolicyAction.objects.create(
+        policy=policy,
+        action_type=(
+            AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ),
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=20,
+    )
+    legacy.full_clean()

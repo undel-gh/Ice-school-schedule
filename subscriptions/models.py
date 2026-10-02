@@ -374,6 +374,28 @@ class AbsenceCompensationPolicyAction(UUIDModel):
             )
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        if self.action_type != self.ActionType.BILLING_RECALCULATION:
+            return
+        if self.pk:
+            previous_type = (
+                AbsenceCompensationPolicyAction.objects.filter(pk=self.pk)
+                .values_list("action_type", flat=True)
+                .first()
+            )
+            if previous_type == self.ActionType.BILLING_RECALCULATION:
+                # Preserve legacy rows as readable historical configuration.
+                return
+        raise ValidationError(
+            {
+                "action_type": (
+                    "Billing recalculation is outside the scheduling system "
+                    "and must be handled by accounting."
+                )
+            }
+        )
+
     def save(self, *args, **kwargs):
         previous = None
         if self.pk:

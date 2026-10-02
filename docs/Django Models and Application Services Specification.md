@@ -3353,8 +3353,9 @@ payment-provider integration
 ```
 
 `BILLING_RECALCULATION` remains a reserved enum for historical/future
-compatibility, but manager catalog forms do not offer it and application
-services reject creation or conversion of policy actions to that type.
+compatibility, but manager catalog forms do not offer it and both application
+services and model validation reject creation or conversion of policy actions
+to that type. Existing legacy rows remain valid for historical reads.
 Versioning a legacy policy also omits BILLING_RECALCULATION (and its windows)
 from the replacement version while preserving the historical source version.
 
