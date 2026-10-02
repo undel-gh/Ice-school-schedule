@@ -17,7 +17,6 @@ from django.views.decorators.http import require_POST
 from django_otp import DEVICE_ID_SESSION_KEY
 from django_otp import login as otp_login
 from django_otp import verify_token
-from django_otp.forms import OTPTokenForm
 from django_otp.plugins.otp_static.models import StaticDevice, StaticToken
 from django_otp.plugins.otp_totp.models import TOTPDevice
 from django_otp.qr import write_qrcode_image
@@ -41,7 +40,7 @@ from .mfa import (
     resolve_mfa_identity,
     totp_replacement_old_device_ids,
 )
-from .mfa_forms import MFAPasswordReauthForm, MFASetupTokenForm
+from .mfa_forms import LocalizedOTPTokenForm, MFAPasswordReauthForm, MFASetupTokenForm
 
 
 RECOVERY_CODE_COUNT = 10
@@ -183,7 +182,7 @@ def mfa_challenge(request):
     if not has_confirmed_mfa_device(user):
         return redirect("mfa:setup")
 
-    form = OTPTokenForm(
+    form = LocalizedOTPTokenForm(
         user,
         request=request,
         data=request.POST or None,
