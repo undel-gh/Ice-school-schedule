@@ -99,6 +99,7 @@ class NextStudentPeriodResolution:
     ordering_date: date
     effective_start: date
     gap_days: int
+    package_sequence: bool = False
 
 
 class CompensationNextPeriodState:
@@ -265,6 +266,7 @@ def _next_student_period_candidate(
         return None
 
     target_period = _subscription_billing_period(target_subscription)
+    source_period = _subscription_billing_period(source_subscription)
 
     if (
         target_subscription.valid_from is not None
@@ -299,8 +301,24 @@ def _next_student_period_candidate(
         and target_period.state == SubscriptionPeriod.State.PENDING
     ):
         ordering_date = target_period.reference_date
+        package_sequence = False
         if ordering_date <= source_start:
-            return None
+            # Rolling subscriptions may be sold as a package before any of
+            # them activates. Once the first item becomes the source period,
+            # later-created pending items with the same reference date form a
+            # deterministic continuation queue.
+            package_sequence = (
+                source_period is not None
+                and source_period.mode_snapshot
+                == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+                and source_period.state == SubscriptionPeriod.State.ACTIVE
+                and target_period.reference_date
+                == source_period.reference_date
+                and target_subscription.created_at
+                > source_subscription.created_at
+            )
+            if not package_sequence:
+                return None
 
         # A rolling subscription may be bought while the source period is
         # still active. Until it actually activates, treat its effective
@@ -315,6 +333,9 @@ def _next_student_period_candidate(
     else:
         return None
 
+    if not pending_activation:
+        package_sequence = False
+
     first_day_after_source = source_end + timedelta(days=1)
     gap_days = max(0, (effective_start - first_day_after_source).days)
     if gap_days > source_length_days:
@@ -328,6 +349,7 @@ def _next_student_period_candidate(
         ordering_date=ordering_date,
         effective_start=effective_start,
         gap_days=gap_days,
+        package_sequence=package_sequence,
     )
 
 
@@ -407,6 +429,31 @@ def resolve_next_student_period(
         if item.ordering_date == earliest_date
     ]
     if len(earliest) > 1:
+        if all(item.package_sequence for item in earliest):
+            # A multi-subscription rolling package is an ordered queue. Use
+            # creation time only inside that explicitly recognised package;
+            # ordinary equal-date candidates remain an ambiguity error.
+            earliest.sort(
+                key=lambda item: (
+                    item.subscription.created_at,
+                    str(item.subscription.id),
+                )
+            )
+            if (
+                len(earliest) > 1
+                and earliest[0].subscription.created_at
+                == earliest[1].subscription.created_at
+            ):
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Multiple rolling package subscriptions have the "
+                            "same issue order. Resolve the ambiguity before "
+                            "issuing compensation."
+                        )
+                    }
+                )
+            return earliest[0]
         raise ValidationError(
             {
                 "target_subscription": (
