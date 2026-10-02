@@ -244,6 +244,23 @@ Subscription
 конкретных типов зависимостей. Это позволяет manager UI объяснить, почему
 исправление Attendance не вернуло rolling Subscription в PENDING.
 
+Неуспешный автоматический откат не является тупиковым состоянием. Карточка
+Subscription показывает unresolved
+`SubscriptionPeriodActivationRevertSkipped`, его blockers и действие
+«Повторить откат периода». Manager сначала устраняет зависимости штатными
+web-workflows, после чего `recover_rolling_subscription_period_activation(...)`
+повторно проверяет текущие зависимости под блокировками и только затем
+выполняет тот же переход ACTIVE → PENDING. Успешный ручной recovery создаёт
+`SubscriptionPeriodActivationReverted` с `reason=manager_recovery` и ссылкой
+на исходное skipped-событие.
+
+Standalone `ADMINISTRATIVE` и `SCHOOL_RESCHEDULE` MakeupEntitlement можно
+отменить из карточки Subscription только пока право не использовано активным
+AttendanceCoverage; причина отмены обязательна и попадает в audit. Medical
+makeup отменяется только через revoke medical justification, а
+`ABSENCE_COMPENSATION` — через compensation reversal. Тем самым ручной
+recovery не обходит source lifecycle и refund decision для платных действий.
+
 Для уменьшения риска взаимной блокировки activation и reversal используют
 совместимый порядок блокировок критических сущностей: SubscriptionPeriod
 блокируется до SubscriptionAllowance.
@@ -1231,7 +1248,11 @@ OneTimeEntitlement, medical justification и SubscriptionPeriod содержат
 `SubscriptionPeriod`, поэтому
 `SubscriptionPeriodActivationRevertSkipped` с причинами
 `active_coverages_remain` и `dependent_rights_exist` виден менеджеру без
-ручного поиска в Django Admin.
+ручного поиска в Django Admin. Пока skipped-событие остаётся последним
+recovery-событием периода, карточка также показывает blocker-specific
+подсказки и кнопку повторного отката. После успешного recovery предупреждение
+исчезает, потому что последним событием становится
+`SubscriptionPeriodActivationReverted`.
 
 
 
