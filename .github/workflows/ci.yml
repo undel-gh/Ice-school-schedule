@@ -61,11 +61,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare production environment
+        run: cp .env.production.example .env.production
       - name: Build production image
-        run: docker build -t ice-school-ci .
+        run: docker build -t ice-school-app:local .
       - name: Validate production Compose
         run: |
-          cp .env.production.example .env.production
           docker compose \
             --env-file .env.production \
             -f compose.production.yaml \
@@ -77,3 +78,56 @@ jobs:
             -v "$PWD/ops/Caddyfile:/etc/caddy/Caddyfile:ro" \
             caddy:2.11.2-alpine \
             caddy validate --config /etc/caddy/Caddyfile
+      - name: Smoke production web and database
+        run: |
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            up -d web
+
+          web_id="$(
+            docker compose \
+              --env-file .env.production \
+              -f compose.production.yaml \
+              ps -q web
+          )"
+
+          for attempt in $(seq 1 40); do
+            status="$(
+              docker inspect \
+                --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$web_id"
+            )"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker compose \
+                --env-file .env.production \
+                -f compose.production.yaml \
+                logs web migrate db
+              exit 1
+            fi
+            sleep 2
+          done
+
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            logs web migrate db
+          exit 1
+      - name: Smoke PostgreSQL backup
+        run: |
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            run --rm backup /ops/postgres_backup.sh --once
+
+          test -n "$(find backups -maxdepth 1 -name 'ice_school_*.dump' -print -quit)"
+      - name: Stop production smoke stack
+        if: always()
+        run: |
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            down -v --remove-orphans
