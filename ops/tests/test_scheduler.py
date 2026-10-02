@@ -1,8 +1,10 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 
-from ops.scheduler import build_jobs
+from ops import scheduler
+from ops.scheduler import Job, build_jobs
 
 
 def test_scheduler_defaults(monkeypatch):
@@ -62,3 +64,40 @@ def test_scheduler_rejects_invalid_positive_integer(monkeypatch, name, value):
 
     with pytest.raises(SystemExit):
         build_jobs()
+
+
+
+def test_successful_job_updates_health_marker(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCHEDULER_HEALTH_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        scheduler.subprocess,
+        "run",
+        lambda command, check: SimpleNamespace(returncode=0),
+    )
+    job = Job(
+        name="test_job",
+        interval_seconds=60,
+        command=["true"],
+    )
+
+    scheduler._run(job)
+
+    assert (tmp_path / "test_job.success").exists()
+
+
+def test_failed_job_does_not_update_health_marker(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCHEDULER_HEALTH_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        scheduler.subprocess,
+        "run",
+        lambda command, check: SimpleNamespace(returncode=1),
+    )
+    job = Job(
+        name="test_job",
+        interval_seconds=60,
+        command=["false"],
+    )
+
+    scheduler._run(job)
+
+    assert not (tmp_path / "test_job.success").exists()

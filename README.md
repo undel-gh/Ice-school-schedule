@@ -739,6 +739,13 @@ terminate the scheduler process; the job is attempted again at its next
 interval. This is important for generation conflicts: they remain visible as
 command failures/audit events without taking down unrelated lifecycle work.
 
+Each successful job updates its own last-success marker. The scheduler
+container healthcheck requires both markers to remain newer than approximately
+`2 * job_interval + SCHEDULER_HEALTH_GRACE_SECONDS` (300 seconds by
+default). Repeated failure or a hung job therefore becomes visible as
+`unhealthy` in `docker compose ps`, while the scheduler process itself is
+left running so other jobs can continue and failed work can retry.
+
 Normal operational inspection:
 
 ```bash

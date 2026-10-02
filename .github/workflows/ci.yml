@@ -143,6 +143,11 @@ jobs:
               grep -c 'job=lesson_generation event=finish exit_code=0' || true
             )"
             if [ "$lifecycle_ok" -ge 1 ] && [ "$generation_ok" -ge 1 ]; then
+              docker compose \
+                --env-file .env.production \
+                -f compose.production.yaml \
+                exec -T scheduler \
+                  /bin/sh /app/ops/scheduler_healthcheck.sh
               exit 0
             fi
             if [ "$(docker inspect --format '{{.State.Running}}' "$scheduler_id")" != "true" ]; then

@@ -94,6 +94,15 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - /bin/sh
+        - /app/ops/scheduler_healthcheck.sh
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
     networks:
       - backend
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import os
+from pathlib import Path
 import signal
 import subprocess
 import sys
@@ -43,6 +44,22 @@ def _signal_handler(signum, frame) -> None:
     _log(f"signal={signum} stop_requested=true")
 
 
+def _health_dir() -> Path:
+    return Path(
+        os.environ.get(
+            "SCHEDULER_HEALTH_DIR",
+            "/tmp/ice_school_scheduler",
+        )
+    )
+
+
+def _mark_success(job: Job) -> None:
+    health_dir = _health_dir()
+    health_dir.mkdir(parents=True, exist_ok=True)
+    marker = health_dir / f"{job.name}.success"
+    marker.touch()
+
+
 def _run(job: Job) -> None:
     started = time.monotonic()
     _log(f"job={job.name} event=start command={job.command!r}")
@@ -53,6 +70,8 @@ def _run(job: Job) -> None:
         code = 127
         _log(f"job={job.name} event=spawn_error error={exc!r}")
     duration = time.monotonic() - started
+    if code == 0:
+        _mark_success(job)
     _log(
         f"job={job.name} event=finish exit_code={code} "
         f"duration_seconds={duration:.3f}"
