@@ -2809,6 +2809,47 @@ def test_reassign_lesson_coach_rejects_inactive_coach(
 
 
 @pytest.mark.django_db
+def test_reassign_lesson_coach_rejects_started_confirmed_lesson(
+    school_context,
+    admin,
+):
+    old_coach, group, venue, lesson_type = school_context
+    new_user = User.objects.create_user(
+        username="started-replacement-coach",
+        password="test",
+    )
+    new_coach = CoachProfile.objects.create(
+        user=new_user,
+        display_name="Started Replacement",
+    )
+    starts_at = school_dt(2026, 11, 15, 18, 0)
+    lesson = Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.CONFIRMED,
+    )
+
+    with pytest.raises(ValidationError, match="already started"):
+        reassign_lesson_coach(
+            lesson_id=lesson.id,
+            coach_id=new_coach.id,
+            actor=admin,
+            reason="Too late",
+            now=starts_at + timedelta(minutes=1),
+        )
+
+    lesson.refresh_from_db()
+    assert lesson.coach_id == old_coach.id
+
+
+@pytest.mark.django_db
 def test_reassign_lesson_coach_rejects_closed_lesson(
     school_context,
     admin,

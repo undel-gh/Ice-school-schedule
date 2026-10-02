@@ -469,6 +469,153 @@ def test_manager_cannot_deactivate_coach_with_future_lesson(client, manager):
 
 
 @pytest.mark.django_db
+def test_manager_can_deactivate_coach_when_finite_slot_is_covered_by_same_type(
+    client,
+    manager,
+):
+    old_user = User.objects.create_user(
+        username="covered-slot-old-coach",
+        password="test",
+    )
+    old_coach = CoachProfile.objects.create(
+        user=old_user,
+        display_name="Covered slot old coach",
+    )
+    replacement_user = User.objects.create_user(
+        username="covered-slot-new-coach",
+        password="test",
+    )
+    replacement_coach = CoachProfile.objects.create(
+        user=replacement_user,
+        display_name="Covered slot new coach",
+    )
+    group, venue, lesson_type = _coach_schedule_refs(
+        coach=old_coach,
+        suffix="covered-slot",
+    )
+    today = school_date(timezone.now())
+    occurrence_date = today + timedelta(days=7)
+    start_time = time(18, 0)
+    template = ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=old_coach,
+        venue=venue,
+        weekday=occurrence_date.weekday(),
+        start_time=start_time,
+        duration_minutes=60,
+        valid_from=today,
+        valid_until=occurrence_date,
+        is_active=True,
+    )
+    starts_at = make_school_aware(
+        datetime.combine(occurrence_date, start_time)
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=lesson_type,
+        coach=replacement_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    assert not Lesson.objects.filter(source_template=template).exists()
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "accounts_manager:coach_edit",
+            kwargs={"coach_id": old_coach.id},
+        ),
+        {"display_name": old_coach.display_name, "is_active": ""},
+    )
+
+    assert response.status_code == 302
+    old_coach.refresh_from_db()
+    assert old_coach.is_active is False
+
+
+@pytest.mark.django_db
+def test_coach_deactivation_names_skip_for_cross_type_occupied_slot(
+    client,
+    manager,
+):
+    old_user = User.objects.create_user(
+        username="cross-slot-old-coach",
+        password="test",
+    )
+    old_coach = CoachProfile.objects.create(
+        user=old_user,
+        display_name="Cross slot old coach",
+    )
+    replacement_user = User.objects.create_user(
+        username="cross-slot-new-coach",
+        password="test",
+    )
+    replacement_coach = CoachProfile.objects.create(
+        user=replacement_user,
+        display_name="Cross slot new coach",
+    )
+    group, venue, ice_type = _coach_schedule_refs(
+        coach=old_coach,
+        suffix="cross-slot",
+    )
+    hall_type = LessonType.objects.create(
+        code="coach-hall-cross-slot",
+        name="Coach hall cross slot",
+        subscription_category="hall",
+    )
+    today = school_date(timezone.now())
+    occurrence_date = today + timedelta(days=7)
+    start_time = time(18, 0)
+    ScheduleTemplate.objects.create(
+        group=group,
+        lesson_type=ice_type,
+        coach=old_coach,
+        venue=venue,
+        weekday=occurrence_date.weekday(),
+        start_time=start_time,
+        duration_minutes=60,
+        valid_from=today,
+        valid_until=occurrence_date,
+        is_active=True,
+    )
+    starts_at = make_school_aware(
+        datetime.combine(occurrence_date, start_time)
+    )
+    Lesson.objects.create(
+        group=group,
+        lesson_type=hall_type,
+        coach=replacement_coach,
+        venue=venue,
+        starts_at=starts_at,
+        ends_at=starts_at + timedelta(hours=1),
+        minimum_attendees=1,
+        rsvp_deadline=starts_at - timedelta(hours=2),
+        decision_deadline=starts_at - timedelta(hours=1),
+        status=Lesson.Status.DRAFT,
+    )
+    client.force_login(manager)
+
+    response = client.post(
+        reverse(
+            "accounts_manager:coach_edit",
+            kwargs={"coach_id": old_coach.id},
+        ),
+        {"display_name": old_coach.display_name, "is_active": ""},
+    )
+
+    assert response.status_code == 200
+    old_coach.refresh_from_db()
+    assert old_coach.is_active is True
+    assert "skip_template_occurrence" in response.content.decode()
+
+
+@pytest.mark.django_db
 def test_user_choice_does_not_expose_email(client, manager):
     guardian = User.objects.create_user(
         username="private-guardian",

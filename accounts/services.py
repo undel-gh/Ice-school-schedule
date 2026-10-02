@@ -314,8 +314,10 @@ def update_coach_profile(
                 {
                     "is_active": (
                         "The coach cannot be deactivated while an active "
-                        "schedule template still has an unmaterialized future "
-                        "occurrence. Version or end that template first."
+                        "schedule template still has an unresolved future "
+                        "occurrence. Version or end that template first; if an "
+                        "intentional conflicting lesson occupies the slot, use "
+                        "skip_template_occurrence before deactivation."
                     )
                 }
             )
