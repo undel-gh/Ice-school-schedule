@@ -4378,6 +4378,8 @@ def test_free_makeup_uses_activated_package_successor_not_later_pending_item(
         actor=actor,
         now=school_dt(2026, 10, 20, 19, 0),
     )
+    second.refresh_from_db()
+    third.refresh_from_db()
 
     case = create_absence_compensation_case(
         attendance_id=attendance.id,
