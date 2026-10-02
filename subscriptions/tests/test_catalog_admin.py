@@ -131,7 +131,7 @@ def test_referenced_fixed_anchor_cannot_change(
     assert response.status_code == 200
     scheme.refresh_from_db()
     assert scheme.fixed_anchor_date == first_anchor
-    assert "Referenced period schemes" in response.content.decode()
+    assert "уже используемую модель расчётного периода нельзя менять" in response.content.decode().lower()
 
 
 @pytest.mark.django_db
@@ -709,7 +709,7 @@ def test_billing_recalculation_is_outside_manager_catalog_and_services(manager):
 
     with pytest.raises(
         ValidationError,
-        match="outside the scheduling system",
+        match="Перерасчёт оплаты выполняется вне системы расписания",
     ):
         create_absence_compensation_policy_action(
             policy_id=policy.id,
