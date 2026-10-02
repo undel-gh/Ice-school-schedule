@@ -3251,10 +3251,14 @@ Target-period resolution:
   rolling subscription and a PENDING target has the same
   `billing_period.reference_date`, a target created after source is a valid
   continuation even when that reference date precedes source `valid_from`.
-  Multiple remaining package items are sequenced by `Subscription.created_at`;
-  equal timestamps are ambiguous, and UUID is not a business tie-break. A
-  pending item created before source is not pulled forward merely because the
-  reference date matches;
+  Multiple remaining PENDING package items are sequenced by
+  `Subscription.created_at`; equal timestamps are ambiguous, and UUID is not
+  a business tie-break. A pending item created before source is not pulled
+  forward merely because the reference date matches. If a later-created
+  package item is already ACTIVE, it takes precedence over still-PENDING
+  package items: for A(active 03.10) -> B(active 20.10) -> C(pending), the
+  next period for A is B, not C. Creation order is only a queue among pending
+  package items and cannot skip an activated successor;
 - an ACTIVE rolling target may overlap the source nominal validity window,
   because early source exhaustion can legitimately activate the replacement
   before source `valid_until`. Other overlapping period types are not valid
