@@ -5,10 +5,9 @@
 {$APP_HOST} {
     encode zstd gzip
 
-    @sensitive_access_log path \
-        /accounts/external/invite/* \
-        /accounts/external/callback/* \
-        /accounts/reset/*
+    @sensitive_access_log {
+        path /accounts/external/invite/* /accounts/external/callback/* /accounts/reset/*
+    }
     log_skip @sensitive_access_log
 
     reverse_proxy web:8000 {
