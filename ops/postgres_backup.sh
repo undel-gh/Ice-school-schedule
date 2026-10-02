@@ -50,6 +50,11 @@ run_backup() {
   done
 }
 
+if [ "${1:-}" = "--once" ]; then
+  run_backup
+  exit $?
+fi
+
 trap 'exit 0' TERM INT
 
 while :; do

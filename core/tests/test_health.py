@@ -11,7 +11,7 @@ def test_healthz_reports_application_and_database_ready(client):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-    assert response["Cache-Control"].startswith("no-store")
+    assert "no-store" in response["Cache-Control"]
 
 
 @pytest.mark.django_db

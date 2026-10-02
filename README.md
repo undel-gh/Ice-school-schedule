@@ -589,3 +589,229 @@ slot.
 Direct cancellation of a DRAFT lesson is rejected when it has an active
 `LessonEnrollment` or active `OneTimeEntitlement`. Use
 `reschedule_lesson` instead so bookings can move to the replacement lesson.
+
+
+## Production operations
+
+The repository includes a small production Docker Compose stack in
+`compose.production.yaml`. It deliberately stays on a single-host operational
+model for the pilot:
+
+```text
+Internet
+   |
+   v
+Caddy :80/:443
+   |
+   v
+Gunicorn / Django
+   |
+   v
+PostgreSQL
+
+sidecars:
+- scheduler -> Django lifecycle/generation commands
+- backup    -> PostgreSQL custom-format dumps
+```
+
+Celery and Redis are intentionally not required for these recurring jobs. The
+current scheduled commands are idempotent and the expected deployment has one
+scheduler replica.
+
+### First deployment
+
+Create the production environment file and replace every example secret/domain:
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+
+mkdir -p backups
+chmod 700 backups
+```
+
+At minimum set:
+
+- `APP_HOST` and the matching `DJANGO_ALLOWED_HOSTS`;
+- a long random `DJANGO_SECRET_KEY`;
+- a long random `POSTGRES_PASSWORD`;
+- the school time zone;
+- external-provider credentials when Yandex/VK login is enabled.
+
+Create public DNS for `APP_HOST` before starting the proxy. TCP 80 and 443
+must reach this host so Caddy can obtain/renew the public TLS certificate.
+
+Build and start:
+
+```bash
+docker compose \
+  --env-file .env.production \
+  -f compose.production.yaml \
+  build
+
+docker compose \
+  --env-file .env.production \
+  -f compose.production.yaml \
+  up -d
+```
+
+Startup ordering is explicit:
+
+1. PostgreSQL must become healthy.
+2. the one-shot `migrate` service must finish successfully;
+3. Gunicorn starts and must pass `/healthz/`;
+4. Caddy starts proxying only after web is healthy;
+5. scheduler and backup start after the database/migration prerequisites.
+
+Inspect state and logs:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml ps
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  logs -f web proxy scheduler backup
+```
+
+The database is not published to the host network. Gunicorn is exposed only on
+the private Compose network; public traffic enters through Caddy.
+
+Caddy has the fixed private address `172.30.0.10`, which matches the default
+production `TRUSTED_PROXY_IPS`. If the `172.30.0.0/24` subnet conflicts with
+the host/network environment, change both the Compose subnet/proxy address and
+`TRUSTED_PROXY_IPS` together. Do not broaden trusted proxy addresses merely
+to make the warning disappear.
+
+Static files are collected into the application image and served by
+WhiteNoise. The proxy does not need a writable static-files volume.
+
+### Scheduler
+
+The `scheduler` container runs both jobs immediately after startup, then
+repeats them independently:
+
+```text
+process_subscription_lifecycle
+    default interval: 3600 s
+
+generate_lessons --all-active --horizon-days 60
+    default interval: 21600 s
+```
+
+Configure them with:
+
+```bash
+SCHEDULER_LIFECYCLE_INTERVAL_SECONDS=3600
+SCHEDULER_GENERATION_INTERVAL_SECONDS=21600
+SCHEDULER_GENERATION_HORIZON_DAYS=60
+```
+
+A failed invocation is logged with its non-zero exit code and does **not**
+terminate the scheduler process; the job is attempted again at its next
+interval. This is important for generation conflicts: they remain visible as
+command failures/audit events without taking down unrelated lifecycle work.
+
+Normal operational inspection:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  logs --since 24h scheduler
+```
+
+A manual diagnostic run still uses the same management command:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  exec scheduler python manage.py process_subscription_lifecycle
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  exec scheduler python manage.py generate_lessons \
+  --all-active --horizon-days 60
+```
+
+Do not scale `scheduler` above one replica. The commands are designed to be
+idempotent, but duplicate schedulers create unnecessary concurrent work and
+duplicate operational noise.
+
+### PostgreSQL backups
+
+The `backup` service uses the same PostgreSQL 17 client generation as the
+database server. By default it:
+
+- runs immediately when the backup container starts;
+- creates one custom-format `pg_dump` every 86400 seconds;
+- writes to the host path in `BACKUP_HOST_PATH` (default `./backups`);
+- uses `umask 077`;
+- writes to `.partial`, validates it with `pg_restore --list`, and only then
+  atomically renames it to `.dump`;
+- removes dumps older than `BACKUP_RETENTION_DAYS` (default 14).
+
+Settings:
+
+```bash
+BACKUP_HOST_PATH=/var/backups/ice-school
+BACKUP_INTERVAL_SECONDS=86400
+BACKUP_RETENTION_DAYS=14
+```
+
+Run an additional backup immediately:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  exec backup /ops/postgres_backup.sh --once
+```
+
+A local backup directory is **not** a complete backup strategy. Copy validated
+dumps to encrypted/off-host storage under the organisation's backup policy and
+regularly test restoration. Database backups contain school/personal data and
+must be protected accordingly.
+
+### Restore procedure
+
+Restoration is destructive. Select a known validated dump and stop application
+writers first:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  stop proxy web scheduler backup
+
+set -a
+source .env.production
+set +a
+
+cat /var/backups/ice-school/ice_school_YYYYMMDDTHHMMSSZ.dump | \
+  docker compose --env-file .env.production -f compose.production.yaml \
+  exec -T db pg_restore \
+    --clean --if-exists --no-owner --no-privileges \
+    -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+```
+
+After restoring, apply any migrations required by the currently deployed
+application image and start services again:
+
+```bash
+docker compose --env-file .env.production -f compose.production.yaml \
+  run --rm migrate
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  up -d web scheduler backup proxy
+```
+
+Verify `/healthz/`, manager login/MFA, a representative schedule page, and
+recent audit/subscription state after every restore exercise.
+
+### Updating the application
+
+For a normal single-host update:
+
+```bash
+git pull
+
+docker compose --env-file .env.production -f compose.production.yaml build
+
+docker compose --env-file .env.production -f compose.production.yaml up -d
+```
+
+The `migrate` service remains the migration gate. Before deploying a schema
+change that is not backwards-compatible, take an explicit backup and follow the
+migration's own rollback/forward-fix notes rather than assuming that reverting
+the container image is sufficient.

@@ -55,3 +55,25 @@ jobs:
           DJANGO_SECURE_SSL_REDIRECT: "1"
           DJANGO_SECURE_HSTS_SECONDS: "3600"
         run: python manage.py check --deploy
+
+
+  production-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build -t ice-school-ci .
+      - name: Validate production Compose
+        run: |
+          cp .env.production.example .env.production
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            config >/dev/null
+      - name: Validate Caddy configuration
+        run: |
+          docker run --rm \
+            -e APP_HOST=school.example.com \
+            -v "$PWD/ops/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2.11.2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile
