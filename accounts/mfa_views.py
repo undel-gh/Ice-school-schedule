@@ -10,6 +10,8 @@ from django.http import HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST
+from django_otp import DEVICE_ID_SESSION_KEY
 from django_otp import login as otp_login
 from django_otp import verify_token
 from django_otp.forms import OTPTokenForm
@@ -29,10 +31,40 @@ from .mfa import (
     pop_mfa_next,
     resolve_mfa_identity,
 )
-from .mfa_forms import MFASetupTokenForm
+from .mfa_forms import MFAPasswordReauthForm, MFASetupTokenForm
 
 
 RECOVERY_CODE_COUNT = 10
+
+
+def _create_recovery_codes(user) -> list[str]:
+    StaticDevice.objects.filter(user=user).delete()
+    recovery_device = StaticDevice.objects.create(
+        user=user,
+        name="Recovery codes",
+        confirmed=True,
+    )
+    codes = [
+        StaticToken.random_token()
+        for _ in range(RECOVERY_CODE_COUNT)
+    ]
+    StaticToken.objects.bulk_create(
+        [
+            StaticToken(device=recovery_device, token=code)
+            for code in codes
+        ]
+    )
+    return codes
+
+
+def _verified_privileged_user(request):
+    if (
+        request.user.is_authenticated
+        and mfa_required_for_user(request.user)
+        and getattr(request.user, "is_verified", lambda: False)()
+    ):
+        return request.user
+    return None
 
 
 class LocalLoginView(LoginView):
@@ -222,25 +254,7 @@ def mfa_setup(request):
                     confirmed=False,
                 ).exclude(pk=locked.pk).delete()
 
-                StaticDevice.objects.filter(user=user).delete()
-                recovery_device = StaticDevice.objects.create(
-                    user=user,
-                    name="Recovery codes",
-                    confirmed=True,
-                )
-                codes = [
-                    StaticToken.random_token()
-                    for _ in range(RECOVERY_CODE_COUNT)
-                ]
-                StaticToken.objects.bulk_create(
-                    [
-                        StaticToken(
-                            device=recovery_device,
-                            token=code,
-                        )
-                        for code in codes
-                    ]
-                )
+                codes = _create_recovery_codes(user)
 
             _finish_verified_login(
                 request,
@@ -323,3 +337,108 @@ def mfa_recovery_codes(request):
             },
         )
     )
+
+
+
+@never_cache
+def mfa_security(request):
+    user = _verified_privileged_user(request)
+    if user is None:
+        return redirect("mfa:challenge")
+
+    recovery_code_count = StaticToken.objects.filter(
+        device__user=user,
+        device__confirmed=True,
+    ).count()
+    return _response_no_store(
+        render(
+            request,
+            "accounts/mfa_security.html",
+            {
+                "recovery_code_count": recovery_code_count,
+                "regenerate_form": MFAPasswordReauthForm(user),
+                "replace_form": MFAPasswordReauthForm(user),
+            },
+        )
+    )
+
+
+@never_cache
+@require_POST
+def mfa_regenerate_recovery_codes(request):
+    user = _verified_privileged_user(request)
+    if user is None:
+        return redirect("mfa:challenge")
+
+    form = MFAPasswordReauthForm(user, request.POST)
+    if not form.is_valid():
+        recovery_code_count = StaticToken.objects.filter(
+            device__user=user,
+            device__confirmed=True,
+        ).count()
+        return _response_no_store(
+            render(
+                request,
+                "accounts/mfa_security.html",
+                {
+                    "recovery_code_count": recovery_code_count,
+                    "regenerate_form": form,
+                    "replace_form": MFAPasswordReauthForm(user),
+                },
+                status=400,
+            )
+        )
+
+    with transaction.atomic():
+        codes = _create_recovery_codes(user)
+    request.session[MFA_RECOVERY_CODES_SESSION_KEY] = codes
+    request.session.modified = True
+    record_event(
+        event_type="MFARecoveryCodesRegenerated",
+        aggregate_type="User",
+        aggregate_id=user.id,
+        actor=user,
+        payload={"recovery_code_count": len(codes)},
+    )
+    return redirect("mfa:recovery_codes")
+
+
+@never_cache
+@require_POST
+def mfa_replace_authenticator(request):
+    user = _verified_privileged_user(request)
+    if user is None:
+        return redirect("mfa:challenge")
+
+    form = MFAPasswordReauthForm(user, request.POST)
+    if not form.is_valid():
+        recovery_code_count = StaticToken.objects.filter(
+            device__user=user,
+            device__confirmed=True,
+        ).count()
+        return _response_no_store(
+            render(
+                request,
+                "accounts/mfa_security.html",
+                {
+                    "recovery_code_count": recovery_code_count,
+                    "regenerate_form": MFAPasswordReauthForm(user),
+                    "replace_form": form,
+                },
+                status=400,
+            )
+        )
+
+    with transaction.atomic():
+        TOTPDevice.objects.filter(user=user).delete()
+    request.session.pop(MFA_SETUP_DEVICE_SESSION_KEY, None)
+    request.session.pop(DEVICE_ID_SESSION_KEY, None)
+    request.session.modified = True
+    record_event(
+        event_type="MFAAuthenticatorReplacementStarted",
+        aggregate_type="User",
+        aggregate_id=user.id,
+        actor=user,
+        payload={},
+    )
+    return redirect("mfa:setup")
