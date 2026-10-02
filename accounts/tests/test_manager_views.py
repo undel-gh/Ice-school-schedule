@@ -504,7 +504,7 @@ def test_manager_can_deactivate_coach_when_finite_slot_is_covered_by_same_type(
         weekday=occurrence_date.weekday(),
         start_time=start_time,
         duration_minutes=60,
-        valid_from=today,
+        valid_from=occurrence_date,
         valid_until=occurrence_date,
         is_active=True,
     )
@@ -580,7 +580,7 @@ def test_coach_deactivation_names_skip_for_cross_type_occupied_slot(
         weekday=occurrence_date.weekday(),
         start_time=start_time,
         duration_minutes=60,
-        valid_from=today,
+        valid_from=occurrence_date,
         valid_until=occurrence_date,
         is_active=True,
     )
