@@ -563,3 +563,40 @@ def test_promoted_external_only_session_cannot_bypass_guard_via_mfa_setup():
     assert response.url == reverse("login")
     assert "_auth_user_id" not in client.session
     assert TOTPDevice.objects.filter(user=user).exists() is False
+
+
+
+@pytest.mark.django_db
+def test_anonymous_admin_login_is_routed_through_mfa_aware_local_login():
+    client = Client()
+
+    response = client.get(reverse("admin:login"))
+
+    assert response.status_code == 302
+    assert response.url == (
+        f"{reverse('login')}?next={reverse('admin:index')}"
+    )
+    assert "_auth_user_id" not in client.session
+
+
+@pytest.mark.django_db
+def test_admin_password_login_via_unified_route_does_not_create_session_before_mfa():
+    client = Client()
+    user = _privileged_user(username="admin-unified-login")
+
+    admin_login = client.get(reverse("admin:login"))
+    assert admin_login.status_code == 302
+
+    password = client.post(
+        admin_login.url,
+        {
+            "username": user.username,
+            "password": "secret-password",
+            "next": reverse("admin:index"),
+        },
+    )
+
+    assert password.status_code == 302
+    assert password.url == reverse("mfa:setup")
+    assert "_auth_user_id" not in client.session
+    assert client.session[MFA_PREAUTH_SESSION_KEY]["user_id"] == str(user.id)

@@ -5,6 +5,7 @@ from django.contrib import messages
 from django.contrib.auth import logout as django_logout
 from django.shortcuts import redirect
 from django.urls import reverse
+from django.utils.http import urlencode
 
 from .mfa import (
     has_confirmed_mfa_device,
@@ -26,6 +27,17 @@ class PrivilegedMFAMiddleware:
 
     def __call__(self, request):
         user = request.user
+
+        # Django Admin has its own password LoginView. Route it through the
+        # single MFA-aware local login flow so a staff session is never
+        # established by an alternate password-only endpoint.
+        if (
+            not user.is_authenticated
+            and request.path_info == reverse("admin:login")
+        ):
+            query = urlencode({"next": reverse("admin:index")})
+            return redirect(f"{reverse('login')}?{query}")
+
         if (
             user.is_authenticated
             and mfa_required_for_user(user)

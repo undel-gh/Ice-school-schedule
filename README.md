@@ -375,7 +375,9 @@ The privileged verified session has a separate shorter lifetime controlled by
 `MFA_PRIVILEGED_SESSION_AGE_SECONDS` (43200 seconds / 12 hours by default).
 The MFA middleware also intercepts privileged Django sessions that existed
 before MFA deployment, including access to `/admin/`; a password-only
-session is therefore not grandfathered into privileged access.
+session is therefore not grandfathered into privileged access. Anonymous
+`/admin/login/` is redirected to the same MFA-aware local login flow, so
+Django Admin cannot establish a separate password-only staff session.
 
 Verified users manage MFA at:
 
