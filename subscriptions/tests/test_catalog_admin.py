@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
+from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
 from core.time import make_school_aware, school_date
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
