@@ -1018,3 +1018,41 @@ def test_all_manager_and_admin_routes_reject_unverified_privileged_session(
     assert response.status_code == 302
     assert response.url.startswith(reverse("login"))
     assert "_auth_user_id" not in client.session
+
+
+
+@pytest.mark.django_db
+@override_settings(MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS=43200)
+def test_expired_verified_session_cannot_refresh_absolute_age_via_direct_challenge():
+    client = Client()
+    user = _privileged_user(username="mfa-expired-direct-challenge")
+    device = TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    _begin_password_login(client, user)
+    client.post(
+        reverse("mfa:challenge"),
+        {
+            "otp_device": device.persistent_id,
+            "otp_token": _totp_token(device),
+        },
+    )
+    session = client.session
+    session[MFA_VERIFIED_AT_SESSION_KEY] = (
+        timezone.now() - timedelta(hours=13)
+    ).timestamp()
+    session.save()
+
+    response = client.post(
+        reverse("mfa:challenge"),
+        {
+            "otp_device": device.persistent_id,
+            "otp_token": _totp_token(device),
+        },
+    )
+
+    assert response.status_code == 302
+    assert response.url.startswith(reverse("login"))
+    assert "_auth_user_id" not in client.session

@@ -37,6 +37,7 @@ from .mfa import (
     mark_privileged_mfa_verified,
     mfa_required_for_user,
     pop_mfa_next,
+    privileged_mfa_verification_is_fresh,
     resolve_mfa_identity,
     totp_replacement_old_device_ids,
 )
@@ -159,17 +160,23 @@ def mfa_challenge(request):
     if failure is not None:
         return failure
     user = identity.user
-    if (
-        request.user.is_authenticated
-        and not getattr(request.user, "is_verified", lambda: False)()
-    ):
-        target = request.session.get(
-            "mfa_next",
-            reverse("scheduling:home"),
-        )
-        django_logout(request)
-        query = urlencode({"next": target})
-        return redirect(f"{reverse('login')}?{query}")
+    if request.user.is_authenticated:
+        is_verified = getattr(
+            request.user,
+            "is_verified",
+            lambda: False,
+        )()
+        if (
+            not is_verified
+            or not privileged_mfa_verification_is_fresh(request)
+        ):
+            target = request.session.get(
+                "mfa_next",
+                reverse("scheduling:home"),
+            )
+            django_logout(request)
+            query = urlencode({"next": target})
+            return redirect(f"{reverse('login')}?{query}")
     if not mfa_required_for_user(user):
         clear_mfa_transient_session(request)
         return redirect("scheduling:home")
