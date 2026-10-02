@@ -8,13 +8,17 @@ import signal
 import subprocess
 import sys
 import time
+from urllib.request import urlopen
 
 
 @dataclass
 class Job:
     name: str
     interval_seconds: int
+    timeout_seconds: int
     command: list[str]
+    success_ping_url: str = ""
+    ping_timeout_seconds: int = 10
     next_run: float = 0.0
 
 
@@ -60,18 +64,52 @@ def _mark_success(job: Job) -> None:
     marker.touch()
 
 
+def _ping_success(job: Job) -> None:
+    if not job.success_ping_url:
+        return
+
+    try:
+        with urlopen(
+            job.success_ping_url,
+            timeout=job.ping_timeout_seconds,
+        ) as response:
+            response.read(1)
+    except Exception as exc:  # Monitoring failure must not fail completed work.
+        _log(
+            f"job={job.name} event=success_ping_failed "
+            f"error_type={type(exc).__name__}"
+        )
+        return
+
+    _log(f"job={job.name} event=success_ping_sent")
+
+
 def _run(job: Job) -> None:
     started = time.monotonic()
     _log(f"job={job.name} event=start command={job.command!r}")
     try:
-        completed = subprocess.run(job.command, check=False)
+        completed = subprocess.run(
+            job.command,
+            check=False,
+            timeout=job.timeout_seconds,
+        )
         code = completed.returncode
+    except subprocess.TimeoutExpired:
+        duration = time.monotonic() - started
+        _log(
+            f"job={job.name} event=timeout "
+            f"timeout_seconds={job.timeout_seconds} "
+            f"duration_seconds={duration:.3f}"
+        )
+        return
     except OSError as exc:
         code = 127
         _log(f"job={job.name} event=spawn_error error={exc!r}")
+
     duration = time.monotonic() - started
     if code == 0:
         _mark_success(job)
+        _ping_success(job)
     _log(
         f"job={job.name} event=finish exit_code={code} "
         f"duration_seconds={duration:.3f}"
@@ -79,25 +117,42 @@ def _run(job: Job) -> None:
 
 
 def build_jobs() -> list[Job]:
+    lifecycle_interval = _positive_int(
+        "SCHEDULER_LIFECYCLE_INTERVAL_SECONDS",
+        3600,
+    )
+    generation_interval = _positive_int(
+        "SCHEDULER_GENERATION_INTERVAL_SECONDS",
+        21600,
+    )
     horizon_days = _positive_int("SCHEDULER_GENERATION_HORIZON_DAYS", 60)
+    ping_timeout = _positive_int("MONITORING_HTTP_TIMEOUT_SECONDS", 10)
+
     return [
         Job(
             name="subscription_lifecycle",
-            interval_seconds=_positive_int(
-                "SCHEDULER_LIFECYCLE_INTERVAL_SECONDS",
-                3600,
+            interval_seconds=lifecycle_interval,
+            timeout_seconds=_positive_int(
+                "SCHEDULER_LIFECYCLE_TIMEOUT_SECONDS",
+                lifecycle_interval,
             ),
             command=[
                 sys.executable,
                 "manage.py",
                 "process_subscription_lifecycle",
             ],
+            success_ping_url=os.environ.get(
+                "SCHEDULER_LIFECYCLE_SUCCESS_PING_URL",
+                "",
+            ).strip(),
+            ping_timeout_seconds=ping_timeout,
         ),
         Job(
             name="lesson_generation",
-            interval_seconds=_positive_int(
-                "SCHEDULER_GENERATION_INTERVAL_SECONDS",
-                21600,
+            interval_seconds=generation_interval,
+            timeout_seconds=_positive_int(
+                "SCHEDULER_GENERATION_TIMEOUT_SECONDS",
+                generation_interval,
             ),
             command=[
                 sys.executable,
@@ -107,6 +162,11 @@ def build_jobs() -> list[Job]:
                 "--horizon-days",
                 str(horizon_days),
             ],
+            success_ping_url=os.environ.get(
+                "SCHEDULER_GENERATION_SUCCESS_PING_URL",
+                "",
+            ).strip(),
+            ping_timeout_seconds=ping_timeout,
         ),
     ]
 
