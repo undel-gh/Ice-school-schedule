@@ -347,3 +347,174 @@ def test_invalid_setup_token_does_not_confirm_device():
     device.refresh_from_db()
     assert device.confirmed is False
     assert "_auth_user_id" not in client.session
+
+
+
+@pytest.mark.django_db
+def test_static_break_glass_without_totp_forces_fresh_totp_enrollment():
+    client = Client()
+    user = _privileged_user(username="mfa-break-glass")
+    static_device = StaticDevice.objects.create(
+        user=user,
+        name="Emergency token",
+        confirmed=True,
+    )
+    token = StaticToken.objects.create(
+        device=static_device,
+        token=StaticToken.random_token(),
+    )
+
+    password = _begin_password_login(client, user)
+    assert password.status_code == 302
+    assert password.url == reverse("mfa:challenge")
+
+    challenge = client.post(
+        reverse("mfa:challenge"),
+        {
+            "otp_device": static_device.persistent_id,
+            "otp_token": token.token,
+        },
+    )
+
+    assert challenge.status_code == 302
+    assert challenge.url == reverse("mfa:setup")
+    assert str(client.session["_auth_user_id"]) == str(user.id)
+    assert client.session[DEVICE_ID_SESSION_KEY] == static_device.persistent_id
+    assert StaticToken.objects.filter(pk=token.pk).exists() is False
+
+    setup = client.get(reverse("mfa:setup"))
+    assert setup.status_code == 200
+    assert TOTPDevice.objects.filter(
+        user=user,
+        confirmed=False,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_verified_privileged_user_can_regenerate_recovery_codes(client):
+    user = _privileged_user(username="mfa-regenerate")
+    client.force_login(user)
+    old_device = StaticDevice.objects.create(
+        user=user,
+        name="Recovery codes",
+        confirmed=True,
+    )
+    old_token = StaticToken.objects.create(
+        device=old_device,
+        token=StaticToken.random_token(),
+    )
+
+    page = client.get(reverse("mfa:security"))
+    assert page.status_code == 200
+    assert "1" in page.content.decode()
+    assert page["Cache-Control"].startswith("no-store")
+
+    response = client.post(
+        reverse("mfa:regenerate_recovery_codes"),
+        {"password": "secret-password"},
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("mfa:recovery_codes")
+    assert StaticToken.objects.filter(pk=old_token.pk).exists() is False
+    assert StaticToken.objects.filter(
+        device__user=user,
+        device__confirmed=True,
+    ).count() == 10
+    assert AuditEvent.objects.filter(
+        event_type="MFARecoveryCodesRegenerated",
+        aggregate_id=user.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_recovery_code_regeneration_requires_current_password(client):
+    user = _privileged_user(username="mfa-regenerate-wrong-password")
+    client.force_login(user)
+    recovery_device = StaticDevice.objects.create(
+        user=user,
+        name="Recovery codes",
+        confirmed=True,
+    )
+    token = StaticToken.objects.create(
+        device=recovery_device,
+        token=StaticToken.random_token(),
+    )
+
+    response = client.post(
+        reverse("mfa:regenerate_recovery_codes"),
+        {"password": "wrong-password"},
+    )
+
+    assert response.status_code == 400
+    assert StaticToken.objects.filter(pk=token.pk).exists()
+    assert AuditEvent.objects.filter(
+        event_type="MFARecoveryCodesRegenerated",
+        aggregate_id=user.id,
+    ).exists() is False
+
+
+@pytest.mark.django_db
+def test_verified_privileged_user_can_replace_authenticator(client):
+    user = _privileged_user(username="mfa-replace")
+    client.force_login(user)
+    old_device = TOTPDevice.objects.get(user=user, confirmed=True)
+    recovery_device = StaticDevice.objects.create(
+        user=user,
+        name="Recovery codes",
+        confirmed=True,
+    )
+    recovery_token = StaticToken.objects.create(
+        device=recovery_device,
+        token=StaticToken.random_token(),
+    )
+
+    response = client.post(
+        reverse("mfa:replace_authenticator"),
+        {"password": "secret-password"},
+    )
+
+    assert response.status_code == 302
+    assert response.url == reverse("mfa:setup")
+    assert TOTPDevice.objects.filter(pk=old_device.pk).exists() is False
+    assert StaticToken.objects.filter(pk=recovery_token.pk).exists()
+    assert DEVICE_ID_SESSION_KEY not in client.session
+    assert AuditEvent.objects.filter(
+        event_type="MFAAuthenticatorReplacementStarted",
+        aggregate_id=user.id,
+    ).exists()
+
+    setup = client.get(reverse("mfa:setup"))
+    assert setup.status_code == 200
+    assert TOTPDevice.objects.filter(
+        user=user,
+        confirmed=False,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_authenticator_replacement_requires_current_password(client):
+    user = _privileged_user(username="mfa-replace-wrong-password")
+    client.force_login(user)
+    old_device = TOTPDevice.objects.get(user=user, confirmed=True)
+
+    response = client.post(
+        reverse("mfa:replace_authenticator"),
+        {"password": "wrong-password"},
+    )
+
+    assert response.status_code == 400
+    assert TOTPDevice.objects.filter(pk=old_device.pk).exists()
+    assert client.session[DEVICE_ID_SESSION_KEY] == old_device.persistent_id
+
+
+@pytest.mark.django_db
+def test_mfa_security_mutations_are_post_only(client):
+    user = _privileged_user(username="mfa-post-only")
+    client.force_login(user)
+
+    regenerate = client.get(reverse("mfa:regenerate_recovery_codes"))
+    replace = client.get(reverse("mfa:replace_authenticator"))
+
+    assert regenerate.status_code == 405
+    assert replace.status_code == 405
