@@ -685,6 +685,11 @@ This prevents invitation/recovery tokens, OAuth authorization callbacks and
 Django password-reset tokens from being copied into proxy logs. Do not remove
 these exclusions when changing access-log formatting.
 
+Gunicorn access logging is deliberately disabled; otherwise the same sensitive
+request target would be logged a second time behind Caddy and bypass these
+path exclusions. Gunicorn error logs remain enabled. Caddy is the single
+source of ordinary HTTP access logs.
+
 All production services use Docker's `json-file` driver with bounded rotation
 to avoid an unattended host filling its disk. Defaults are:
 

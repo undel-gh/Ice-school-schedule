@@ -23,4 +23,4 @@ USER app
 
 EXPOSE 8000
 
-CMD ["gunicorn", "ice_school.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "30", "--access-logfile", "-", "--error-logfile", "-"]
+CMD ["gunicorn", "ice_school.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "30", "--error-logfile", "-"]

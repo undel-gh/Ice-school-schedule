@@ -52,8 +52,7 @@ services:
         exec gunicorn ice_school.wsgi:application
         --bind 0.0.0.0:8000
         --workers "$${GUNICORN_WORKERS:-3}"
-        --timeout "$${GUNICORN_TIMEOUT_SECONDS:-30}"
-        --access-logfile -
+        --timeout "${GUNICORN_TIMEOUT_SECONDS:-30}"
         --error-logfile -
     depends_on:
       db:
