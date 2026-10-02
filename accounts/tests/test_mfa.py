@@ -235,15 +235,33 @@ def test_existing_privileged_password_session_is_intercepted_until_verified():
 
 
 @pytest.mark.django_db
-def test_existing_privileged_session_without_totp_is_forced_to_setup():
+def test_existing_privileged_session_without_totp_requires_fresh_password_before_setup():
     client = Client()
     user = _privileged_user()
     client.force_login(user)
 
-    response = client.get(reverse("subscriptions:manager_operations"))
+    blocked = client.get(reverse("subscriptions:manager_operations"))
+    assert blocked.status_code == 302
+    assert blocked.url == reverse("mfa:setup")
 
-    assert response.status_code == 302
-    assert response.url == reverse("mfa:setup")
+    setup = client.get(reverse("mfa:setup"))
+
+    assert setup.status_code == 302
+    assert setup.url.startswith(reverse("login"))
+    assert "_auth_user_id" not in client.session
+    assert TOTPDevice.objects.filter(user=user).exists() is False
+
+    password = client.post(
+        setup.url,
+        {
+            "username": user.username,
+            "password": "secret-password",
+            "next": reverse("subscriptions:manager_operations"),
+        },
+    )
+    assert password.status_code == 302
+    assert password.url == reverse("mfa:setup")
+    assert "_auth_user_id" not in client.session
 
 
 @pytest.mark.django_db
@@ -650,3 +668,18 @@ def test_manager_permission_via_group_requires_mfa():
     assert response.status_code == 302
     assert response.url == reverse("mfa:setup")
     assert "_auth_user_id" not in client.session
+
+
+
+@pytest.mark.django_db
+def test_direct_setup_from_old_unverified_session_cannot_enroll_without_password():
+    client = Client()
+    user = _privileged_user(username="mfa-old-session-direct-setup")
+    client.force_login(user)
+
+    setup = client.get(reverse("mfa:setup"))
+
+    assert setup.status_code == 302
+    assert setup.url.startswith(reverse("login"))
+    assert "_auth_user_id" not in client.session
+    assert TOTPDevice.objects.filter(user=user).exists() is False
