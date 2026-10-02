@@ -695,3 +695,42 @@ def test_direct_setup_from_old_unverified_session_cannot_enroll_without_password
     assert setup.url.startswith(reverse("login"))
     assert "_auth_user_id" not in client.session
     assert TOTPDevice.objects.filter(user=user).exists() is False
+
+
+
+@pytest.mark.django_db
+def test_authenticated_mfa_upgrade_rotates_session_key():
+    client = Client()
+    user = _privileged_user(username="mfa-session-rotation")
+    device = TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    client.force_login(user)
+    old_session_key = client.session.session_key
+
+    blocked = client.get(reverse("subscriptions:manager_operations"))
+    assert blocked.status_code == 302
+    assert "_auth_user_id" not in client.session
+
+    password = client.post(
+        blocked.url,
+        {
+            "username": user.username,
+            "password": "secret-password",
+            "next": reverse("subscriptions:manager_operations"),
+        },
+    )
+    assert password.url == reverse("mfa:challenge")
+
+    verified = client.post(
+        reverse("mfa:challenge"),
+        {
+            "otp_device": device.persistent_id,
+            "otp_token": _totp_token(device),
+        },
+    )
+
+    assert verified.status_code == 302
+    assert client.session.session_key != old_session_key

@@ -136,6 +136,7 @@ def _finish_verified_login(request, *, identity, device) -> None:
             user,
             backend=identity.backend,
         )
+        request.session.cycle_key()
         otp_login(request, device)
     request.session.set_expiry(
         int(getattr(settings, "MFA_PRIVILEGED_SESSION_AGE_SECONDS", 43200))
@@ -408,8 +409,14 @@ def mfa_security(request):
             "accounts/mfa_security.html",
             {
                 "recovery_code_count": recovery_code_count,
-                "regenerate_form": MFAPasswordReauthForm(user),
-                "replace_form": MFAPasswordReauthForm(user),
+                "regenerate_form": MFAPasswordReauthForm(
+                    user,
+                    request=request,
+                ),
+                "replace_form": MFAPasswordReauthForm(
+                    user,
+                    request=request,
+                ),
             },
         )
     )
@@ -422,7 +429,11 @@ def mfa_regenerate_recovery_codes(request):
     if user is None:
         return redirect("mfa:challenge")
 
-    form = MFAPasswordReauthForm(user, request.POST)
+    form = MFAPasswordReauthForm(
+        user,
+        request.POST,
+        request=request,
+    )
     if not form.is_valid():
         recovery_code_count = StaticToken.objects.filter(
             device__user=user,
@@ -435,7 +446,10 @@ def mfa_regenerate_recovery_codes(request):
                 {
                     "recovery_code_count": recovery_code_count,
                     "regenerate_form": form,
-                    "replace_form": MFAPasswordReauthForm(user),
+                    "replace_form": MFAPasswordReauthForm(
+                        user,
+                        request=request,
+                    ),
                 },
                 status=400,
             )
@@ -462,7 +476,11 @@ def mfa_replace_authenticator(request):
     if user is None:
         return redirect("mfa:challenge")
 
-    form = MFAPasswordReauthForm(user, request.POST)
+    form = MFAPasswordReauthForm(
+        user,
+        request.POST,
+        request=request,
+    )
     if not form.is_valid():
         recovery_code_count = StaticToken.objects.filter(
             device__user=user,
@@ -474,7 +492,10 @@ def mfa_replace_authenticator(request):
                 "accounts/mfa_security.html",
                 {
                     "recovery_code_count": recovery_code_count,
-                    "regenerate_form": MFAPasswordReauthForm(user),
+                    "regenerate_form": MFAPasswordReauthForm(
+                        user,
+                        request=request,
+                    ),
                     "replace_form": form,
                 },
                 status=400,

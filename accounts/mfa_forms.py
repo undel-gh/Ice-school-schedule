@@ -1,4 +1,5 @@
 from django import forms
+from django.contrib.auth import authenticate
 
 
 class MFASetupTokenForm(forms.Form):
@@ -27,12 +28,18 @@ class MFAPasswordReauthForm(forms.Form):
         ),
     )
 
-    def __init__(self, user, *args, **kwargs):
+    def __init__(self, user, *args, request=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.user = user
+        self.request = request
 
     def clean_password(self):
         password = self.cleaned_data["password"]
-        if not self.user.check_password(password):
+        authenticated = authenticate(
+            self.request,
+            username=self.user.get_username(),
+            password=password,
+        )
+        if authenticated is None or authenticated.pk != self.user.pk:
             raise forms.ValidationError("Неверный текущий пароль.")
         return password
