@@ -227,7 +227,13 @@ jobs:
               -U "$POSTGRES_USER" \
               ice_school_restore_ci
 
-          cat "$dump" | \
+          dump_name="$(basename "$dump")"
+
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            run --rm --no-deps -T backup \
+              cat "/backups/$dump_name" | \
             docker compose \
               --env-file .env.production \
               -f compose.production.yaml \

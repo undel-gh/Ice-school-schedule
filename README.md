@@ -801,12 +801,20 @@ set -a
 source .env.production
 set +a
 
-cat /var/backups/ice-school/ice_school_YYYYMMDDTHHMMSSZ.dump | \
+BACKUP_FILE=ice_school_YYYYMMDDTHHMMSSZ.dump
+
+docker compose --env-file .env.production -f compose.production.yaml \
+  run --rm --no-deps -T backup cat "/backups/$BACKUP_FILE" | \
   docker compose --env-file .env.production -f compose.production.yaml \
   exec -T db pg_restore \
     --clean --if-exists --no-owner --no-privileges \
     -U "$POSTGRES_USER" -d "$POSTGRES_DB"
 ```
+
+The dump is deliberately read through a one-shot backup container instead of
+the host shell. Backup files are created with `umask 077` and may therefore
+be unreadable by the unprivileged host operator account; do not weaken dump
+permissions merely to make restore piping convenient.
 
 After restoring, apply any migrations required by the currently deployed
 application image and start services again:
