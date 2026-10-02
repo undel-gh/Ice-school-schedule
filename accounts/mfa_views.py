@@ -382,6 +382,15 @@ def mfa_setup_qr(request):
     if failure is not None:
         return failure
     user = identity.user
+    if (
+        request.user.is_authenticated
+        and not identity.preauthenticated
+        and not authenticated_mfa_setup_is_authorized(
+            request,
+            user=user,
+        )
+    ):
+        return HttpResponse(status=404)
     raw_id = request.session.get(MFA_SETUP_DEVICE_SESSION_KEY)
     device = TOTPDevice.objects.filter(
         pk=raw_id,
