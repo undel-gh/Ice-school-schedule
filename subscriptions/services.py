@@ -2209,13 +2209,29 @@ def authorize_paid_makeup_from_case(
         target_rule
         == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
     ):
+        explicit_target = None
+        if target_subscription_id is not None:
+            explicit_target = _lock_compensation_target_subscription(
+                case=case,
+                subscription_id=target_subscription_id,
+            )
+            # Preserve the precise validation error for an explicitly supplied
+            # overlapping/otherwise invalid target before comparing it with
+            # the automatically resolved next period.
+            _validate_paid_makeup_target(
+                case=case,
+                action=action,
+                source_subscription=source_subscription,
+                target_subscription=explicit_target,
+            )
+
         target_subscription, _resolution = _lock_next_student_period_target(
             case=case,
             source_subscription=source_subscription,
         )
         if (
-            target_subscription_id is not None
-            and target_subscription_id != target_subscription.id
+            explicit_target is not None
+            and explicit_target.id != target_subscription.id
         ):
             raise ValidationError(
                 {
