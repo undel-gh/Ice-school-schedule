@@ -104,7 +104,6 @@ MANAGER_LABELS = {
         "target_subscription_required": "Требуется целевой абонемент",
         "fee_and_target_subscription_required": "Требуются оплата и целевой абонемент",
     },
-,
     "subscription_period_state": {
         "pending": "Ожидает активации",
         "active": "Активен",
