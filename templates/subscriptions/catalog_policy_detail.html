@@ -1,8 +1,8 @@
 {% load manager_labels %}
 {% extends "base.html" %}
-{% block title %}{{ policy.name }} v{{ policy.version }}{% endblock %}
+{% block title %}{{ policy.name }} · версия {{ policy.version }}{% endblock %}
 {% block content %}
-<header class="page-header"><h1>{{ policy.name }} · v{{ policy.version }}</h1><p class="page-header__meta">{{ policy.code }} · {{ policy.absence_reason|manager_label:"absence_reason" }}</p></header>
+<header class="page-header"><h1>{{ policy.name }} · · версия {{ policy.version }}</h1><p class="page-header__meta">{{ policy.code }} · {{ policy.absence_reason|manager_label:"absence_reason" }}</p></header>
 <article class="report-card">
 <div class="lesson-card__top"><h2>Версия политики</h2>{% if policy.is_active %}<span class="badge badge--covered">активна</span>{% else %}<span class="badge badge--cancelled">неактивна</span>{% endif %}</div>
 <p>Период: {{ policy.effective_from|date:"d.m.Y" }}—{% if policy.effective_until %}{{ policy.effective_until|date:"d.m.Y" }}{% else %}∞{% endif %}</p>
