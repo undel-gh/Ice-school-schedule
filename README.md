@@ -414,6 +414,33 @@ successful MFA authentication, recovery-code use/regeneration, and the start
 of authenticator replacement; OTP values, QR secrets and recovery-code
 contents are never copied into AuditEvent payloads.
 
+### MFA deployment / rollout
+
+Before deploying the MFA-enabled build:
+
+1. Make sure at least one emergency superuser has a **usable local Django
+   password** that is known through the normal privileged credential-handling
+   procedure. An external-only account cannot bootstrap privileged MFA.
+2. Install the updated application dependencies.
+3. Run `python manage.py migrate` before serving the new build. The
+   `django_otp` TOTP/static-device tables are required by middleware and the
+   login flow.
+4. Deploy the application, then sign in with the emergency/local privileged
+   account and complete TOTP enrollment.
+5. Store the 10 displayed recovery codes outside the application session in an
+   appropriately protected operational secret store.
+6. Confirm access to both the manager UI and `/admin/` through a fresh
+   password + TOTP login.
+
+Existing privileged password sessions are intentionally not exempt from the
+rollout. If they have no enrolled TOTP yet, the user must prove the local
+password again before the application reveals a new MFA secret.
+
+If a privileged user later loses both the authenticator and all recovery
+codes, use the documented server-side `addstatictoken` break-glass path,
+authenticate with password + that one-time token, and complete a fresh TOTP
+enrollment. Do not disable the MFA middleware as a recovery procedure.
+
 ## Production checks
 
 Production defaults are closed: `DJANGO_DEBUG` defaults to off and
