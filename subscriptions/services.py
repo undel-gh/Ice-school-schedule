@@ -2057,16 +2057,6 @@ def _validate_paid_makeup_target(
                         )
                     }
                 )
-            if target_period.reference_date <= source_start:
-                raise ValidationError(
-                    {
-                        "target_subscription": (
-                            "Pending rolling target subscription reference "
-                            "date must be after the source subscription "
-                            "starts."
-                        )
-                    }
-                )
             effective_start = max(
                 target_period.reference_date,
                 source_end + timedelta(days=1),
@@ -2085,6 +2075,30 @@ def _validate_paid_makeup_target(
                             "Target subscription exceeds the maximum "
                             "NEXT_STUDENT_PERIOD gap of one source-period "
                             "length."
+                        )
+                    }
+                )
+            candidate = next_student_period_candidate_resolution(
+                source_subscription=source_subscription,
+                target_subscription=target_subscription,
+            )
+            if candidate is None:
+                if target_period.reference_date <= source_start:
+                    raise ValidationError(
+                        {
+                            "target_subscription": (
+                                "Pending rolling target subscription issued "
+                                "before/at the source start is only eligible "
+                                "when it is a later-created item from the same "
+                                "rolling package."
+                            )
+                        }
+                    )
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription is not eligible as the next "
+                            "student period."
                         )
                     }
                 )
