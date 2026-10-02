@@ -5,7 +5,7 @@ from django.shortcuts import redirect
 from django.urls import reverse
 
 from .mfa import (
-    has_confirmed_totp,
+    has_confirmed_mfa_device,
     mfa_required_for_user,
     remember_mfa_next,
 )
@@ -31,7 +31,7 @@ class PrivilegedMFAMiddleware:
             and not self._is_exempt(request)
         ):
             remember_mfa_next(request, request.get_full_path())
-            if has_confirmed_totp(user):
+            if has_confirmed_mfa_device(user):
                 return redirect("mfa:challenge")
             return redirect("mfa:setup")
         return self.get_response(request)

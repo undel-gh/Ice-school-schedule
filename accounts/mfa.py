@@ -7,6 +7,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
+from django_otp import user_has_device
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
 from core.permissions import has_manager_operations_assignment
@@ -43,6 +44,10 @@ def has_confirmed_totp(user) -> bool:
         user=user,
         confirmed=True,
     ).exists()
+
+
+def has_confirmed_mfa_device(user) -> bool:
+    return user_has_device(user, confirmed=True)
 
 
 def begin_mfa_preauth(

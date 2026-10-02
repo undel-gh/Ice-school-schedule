@@ -26,6 +26,7 @@ from .mfa import (
     MFA_SETUP_DEVICE_SESSION_KEY,
     begin_mfa_preauth,
     clear_mfa_transient_session,
+    has_confirmed_mfa_device,
     has_confirmed_totp,
     mfa_required_for_user,
     pop_mfa_next,
@@ -85,7 +86,7 @@ class LocalLoginView(LoginView):
             ),
             next_url=self.get_success_url(),
         )
-        if has_confirmed_totp(user):
+        if has_confirmed_mfa_device(user):
             return redirect("mfa:challenge")
         return redirect("mfa:setup")
 
@@ -132,7 +133,7 @@ def mfa_challenge(request):
     if not mfa_required_for_user(user):
         clear_mfa_transient_session(request)
         return redirect("scheduling:home")
-    if not has_confirmed_totp(user):
+    if not has_confirmed_mfa_device(user):
         return redirect("mfa:setup")
 
     form = OTPTokenForm(
@@ -169,6 +170,8 @@ def mfa_challenge(request):
                     payload={},
                 )
             messages.success(request, "Дополнительная проверка пройдена.")
+            if not has_confirmed_totp(user):
+                return redirect("mfa:setup")
             target = pop_mfa_next(
                 request,
                 fallback=reverse("scheduling:home"),
