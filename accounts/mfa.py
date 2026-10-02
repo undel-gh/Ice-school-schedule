@@ -22,6 +22,7 @@ MFA_SETUP_DEVICE_SESSION_KEY = "mfa_setup_device_id"
 MFA_SETUP_AUTH_SESSION_KEY = "mfa_setup_auth"
 MFA_RECOVERY_CODES_SESSION_KEY = "mfa_recovery_codes"
 MFA_VERIFIED_AT_SESSION_KEY = "mfa_verified_at"
+MFA_TOTP_REPLACEMENT_SESSION_KEY = "mfa_totp_replacement"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +103,7 @@ def clear_mfa_transient_session(request) -> None:
     request.session.pop(MFA_PREAUTH_SESSION_KEY, None)
     request.session.pop(MFA_SETUP_DEVICE_SESSION_KEY, None)
     request.session.pop(MFA_SETUP_AUTH_SESSION_KEY, None)
+    request.session.pop(MFA_TOTP_REPLACEMENT_SESSION_KEY, None)
     request.session.modified = True
 
 
@@ -142,6 +144,36 @@ def authenticated_mfa_setup_is_authorized(request, *, user) -> bool:
         request.session.pop(MFA_SETUP_AUTH_SESSION_KEY, None)
         request.session.modified = True
     return valid
+
+
+def begin_totp_replacement(
+    request,
+    *,
+    user,
+    old_device_ids: list[int],
+) -> None:
+    request.session[MFA_TOTP_REPLACEMENT_SESSION_KEY] = {
+        "user_id": str(user.pk),
+        "old_device_ids": [int(device_id) for device_id in old_device_ids],
+    }
+    request.session.modified = True
+
+
+def totp_replacement_old_device_ids(request, *, user) -> list[int] | None:
+    data = request.session.get(MFA_TOTP_REPLACEMENT_SESSION_KEY)
+    if not isinstance(data, dict):
+        return None
+    if str(data.get("user_id") or "") != str(user.pk):
+        request.session.pop(MFA_TOTP_REPLACEMENT_SESSION_KEY, None)
+        request.session.modified = True
+        return None
+    raw_ids = data.get("old_device_ids")
+    if not isinstance(raw_ids, list):
+        return None
+    try:
+        return [int(device_id) for device_id in raw_ids]
+    except (TypeError, ValueError):
+        return None
 
 
 def remember_mfa_next(request, value: str) -> None:

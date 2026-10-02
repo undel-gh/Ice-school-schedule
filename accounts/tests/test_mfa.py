@@ -509,9 +509,9 @@ def test_verified_privileged_user_can_replace_authenticator(client):
 
     assert response.status_code == 302
     assert response.url == reverse("mfa:setup")
-    assert TOTPDevice.objects.filter(pk=old_device.pk).exists() is False
+    assert TOTPDevice.objects.filter(pk=old_device.pk).exists()
     assert StaticToken.objects.filter(pk=recovery_token.pk).exists()
-    assert DEVICE_ID_SESSION_KEY not in client.session
+    assert client.session[DEVICE_ID_SESSION_KEY] == old_device.persistent_id
     assert AuditEvent.objects.filter(
         event_type="MFAAuthenticatorReplacementStarted",
         aggregate_id=user.id,
@@ -845,3 +845,89 @@ def test_privileged_mfa_absolute_age_allows_session_inside_limit():
     response = client.get(reverse("subscriptions:manager_operations"))
 
     assert response.status_code == 200
+
+
+
+@pytest.mark.django_db
+def test_abandoned_authenticator_replacement_keeps_old_totp_usable():
+    client = Client()
+    user = _privileged_user(username="mfa-replace-abandoned")
+    old_device = TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    client.force_login(user)
+    session = client.session
+    session[DEVICE_ID_SESSION_KEY] = old_device.persistent_id
+    from accounts.mfa import MFA_VERIFIED_AT_SESSION_KEY
+    session[MFA_VERIFIED_AT_SESSION_KEY] = timezone.now().timestamp()
+    session.save()
+
+    started = client.post(
+        reverse("mfa:replace_authenticator"),
+        {"password": "secret-password"},
+    )
+    assert started.status_code == 302
+    assert started.url == reverse("mfa:setup")
+    pending = TOTPDevice.objects.get(
+        user=user,
+        confirmed=False,
+    )
+    assert pending.pk != old_device.pk
+    assert TOTPDevice.objects.filter(pk=old_device.pk, confirmed=True).exists()
+
+    client.logout()
+    password = _begin_password_login(client, user)
+    assert password.status_code == 302
+    assert password.url == reverse("mfa:challenge")
+    challenge = client.post(
+        reverse("mfa:challenge"),
+        {
+            "otp_device": old_device.persistent_id,
+            "otp_token": _totp_token(old_device),
+        },
+    )
+
+    assert challenge.status_code == 302
+    assert challenge.url == reverse("scheduling:home")
+    assert TOTPDevice.objects.filter(pk=old_device.pk, confirmed=True).exists()
+
+
+@pytest.mark.django_db
+def test_confirming_replacement_revokes_old_totp_in_same_flow():
+    client = Client()
+    user = _privileged_user(username="mfa-replace-confirmed")
+    old_device = TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    client.force_login(user)
+    session = client.session
+    session[DEVICE_ID_SESSION_KEY] = old_device.persistent_id
+    from accounts.mfa import MFA_VERIFIED_AT_SESSION_KEY
+    session[MFA_VERIFIED_AT_SESSION_KEY] = timezone.now().timestamp()
+    session.save()
+
+    started = client.post(
+        reverse("mfa:replace_authenticator"),
+        {"password": "secret-password"},
+    )
+    assert started.status_code == 302
+    pending = TOTPDevice.objects.get(user=user, confirmed=False)
+
+    confirmed = client.post(
+        reverse("mfa:setup"),
+        {"token": _totp_token(pending)},
+    )
+
+    assert confirmed.status_code == 302
+    assert confirmed.url == reverse("mfa:recovery_codes")
+    pending.refresh_from_db()
+    assert pending.confirmed is True
+    assert TOTPDevice.objects.filter(pk=old_device.pk).exists() is False
+    assert AuditEvent.objects.filter(
+        event_type="MFAAuthenticatorReplaced",
+        aggregate_id=user.id,
+    ).exists()

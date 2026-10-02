@@ -30,6 +30,7 @@ from .mfa import (
     authenticated_mfa_setup_is_authorized,
     authorize_authenticated_mfa_setup,
     begin_mfa_preauth,
+    begin_totp_replacement,
     clear_mfa_transient_session,
     has_confirmed_mfa_device,
     has_confirmed_totp,
@@ -37,6 +38,7 @@ from .mfa import (
     mfa_required_for_user,
     pop_mfa_next,
     resolve_mfa_identity,
+    totp_replacement_old_device_ids,
 )
 from .mfa_forms import MFAPasswordReauthForm, MFASetupTokenForm
 
@@ -273,7 +275,14 @@ def mfa_setup(request):
     if not mfa_required_for_user(user):
         clear_mfa_transient_session(request)
         return redirect("scheduling:home")
-    if has_confirmed_totp(user):
+    replacement_old_device_ids = totp_replacement_old_device_ids(
+        request,
+        user=user,
+    )
+    if (
+        has_confirmed_totp(user)
+        and replacement_old_device_ids is None
+    ):
         return redirect("mfa:challenge")
     if (
         request.user.is_authenticated
@@ -310,6 +319,12 @@ def mfa_setup(request):
                 )
                 locked.confirmed = True
                 locked.save(update_fields=["confirmed"])
+                if replacement_old_device_ids is not None:
+                    TOTPDevice.objects.filter(
+                        user=user,
+                        pk__in=replacement_old_device_ids,
+                        confirmed=True,
+                    ).exclude(pk=locked.pk).delete()
                 TOTPDevice.objects.filter(
                     user=user,
                     confirmed=False,
@@ -326,7 +341,11 @@ def mfa_setup(request):
             request.session[MFA_RECOVERY_CODES_SESSION_KEY] = codes
             request.session.modified = True
             record_event(
-                event_type="MFAEnrolled",
+                event_type=(
+                    "MFAAuthenticatorReplaced"
+                    if replacement_old_device_ids is not None
+                    else "MFAEnrolled"
+                ),
                 aggregate_type="User",
                 aggregate_id=user.id,
                 actor=user,
@@ -511,9 +530,26 @@ def mfa_replace_authenticator(request):
         )
 
     with transaction.atomic():
-        TOTPDevice.objects.filter(user=user).delete()
-    request.session.pop(MFA_SETUP_DEVICE_SESSION_KEY, None)
-    request.session.pop(DEVICE_ID_SESSION_KEY, None)
+        old_device_ids = list(
+            TOTPDevice.objects.select_for_update()
+            .filter(user=user, confirmed=True)
+            .values_list("id", flat=True)
+        )
+        TOTPDevice.objects.filter(
+            user=user,
+            confirmed=False,
+        ).delete()
+        pending_device = TOTPDevice.objects.create(
+            user=user,
+            name="Replacement authenticator",
+            confirmed=False,
+        )
+    request.session[MFA_SETUP_DEVICE_SESSION_KEY] = pending_device.pk
+    begin_totp_replacement(
+        request,
+        user=user,
+        old_device_ids=old_device_ids,
+    )
     authorize_authenticated_mfa_setup(request, user=user)
     request.session.modified = True
     record_event(

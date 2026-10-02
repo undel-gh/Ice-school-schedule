@@ -396,9 +396,12 @@ Verified users manage MFA at:
 Self-service recovery-code regeneration and authenticator replacement both
 require the current local password in addition to the already MFA-verified
 session. Regeneration revokes all old recovery codes immediately.
-Authenticator replacement revokes the old TOTP device, keeps existing recovery
-codes until the replacement TOTP is successfully enrolled, and then issues a
-fresh recovery-code set.
+Authenticator replacement is two-phase. The old confirmed TOTP remains valid
+while a separate replacement device is pending. Only after the new TOTP code
+is successfully verified does one transaction confirm the new device and
+revoke the old device(s); a fresh recovery-code set is then issued. Abandoning
+or timing out replacement therefore does not remove the last working
+authenticator.
 
 For server-side emergency recovery, `django-otp` provides
 `addstatictoken`. Use:
