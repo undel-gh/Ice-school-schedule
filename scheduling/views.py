@@ -78,8 +78,6 @@ def _assert_lesson_actor(request: HttpRequest, lesson: Lesson) -> None:
 def home(request: HttpRequest) -> HttpResponse:
     if _active_student_accesses(request).exists():
         return redirect("scheduling:student_schedule")
-    if student_accesses_for_user(request.user).exists():
-        return redirect("student_account:account")
     try:
         coach = request.user.coach_profile
     except CoachProfile.DoesNotExist:
@@ -88,6 +86,8 @@ def home(request: HttpRequest) -> HttpResponse:
         return redirect("scheduling:coach_schedule")
     if has_manager_operations_access(request.user):
         return redirect("subscriptions:manager_operations")
+    if student_accesses_for_user(request.user).exists():
+        return redirect("student_account:account")
     if request.user.is_staff:
         return redirect("admin:index")
     raise PermissionDenied("No active school role is assigned.")

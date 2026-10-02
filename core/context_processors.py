@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from accounts.selectors import student_accesses_for_user
+from accounts.selectors import student_navigation_availability
 
 from .permissions import has_manager_operations_access
 
@@ -14,15 +14,12 @@ def manager_operations(request):
 
 
 def student_navigation(request):
-    accesses = student_accesses_for_user(request.user)
-    if not accesses.exists():
-        return {
-            "student_account_available": False,
-            "student_schedule_available": False,
-        }
+    cache_attr = "_student_navigation_availability"
+    availability = getattr(request, cache_attr, None)
+    if availability is None:
+        availability = student_navigation_availability(request.user)
+        setattr(request, cache_attr, availability)
     return {
-        "student_account_available": True,
-        "student_schedule_available": accesses.filter(
-            student__is_active=True
-        ).exists(),
+        "student_account_available": availability.account_available,
+        "student_schedule_available": availability.schedule_available,
     }

@@ -65,12 +65,18 @@
         <div class="account-balance">
           <span>{{ balance.allowance.category|manager_label:"subscription_category" }}</span>
           <strong>{{ balance.balance }}</strong>
-          <small>остаток · базовый лимит {{ balance.allowance.visit_limit_snapshot }}</small>
+          <small>
+            {% if item.state == "expired" or item.state == "cancelled" %}исторический остаток{% else %}остаток{% endif %}
+            · базовый лимит {{ balance.allowance.visit_limit_snapshot }}
+          </small>
         </div>
       {% empty %}
         <div class="muted">Лимиты не настроены.</div>
       {% endfor %}
     </div>
+    {% if item.state == "expired" or item.state == "cancelled" %}
+      <p class="muted">Остаток сохранён для истории и недоступен для новых посещений.</p>
+    {% endif %}
   </article>
 {% empty %}
   <div class="empty-state">Абонементов пока нет.</div>
@@ -128,6 +134,12 @@
       {% if right.entitlement.target_lesson %}
         · для {{ right.entitlement.target_lesson.starts_at|school_datetime:"%d.%m.%Y %H:%M" }}
       {% endif %}
+    </p>
+    <p class="lesson-card__meta">
+      Использует остаток
+      {{ right.entitlement.category|manager_label:"subscription_category" }}
+      абонемента «{{ right.entitlement.source_subscription_allowance.subscription.plan_name_snapshot }}»;
+      отдельный визит не добавляется.
     </p>
   </article>
 {% empty %}

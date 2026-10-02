@@ -206,9 +206,10 @@ The named actor must possess the Django model permission required by the
 underlying application service. Direct editing of lifecycle/ledger rows in
 Django Admin remains prohibited.
 
-Coverage rebinds and one-time entitlement administration currently remain
-service-level operations and are intended for a
-dedicated administrative UI rather than direct model editing.
+Coverage rebinds and one-time entitlement administration are available through
+the authenticated manager UI. The underlying services/management commands
+remain secondary interfaces for automation, diagnostics and emergency
+operations rather than a substitute for normal manager workflows.
 
 ## Financial responsibility boundary
 
@@ -370,6 +371,12 @@ by default).
 Enrollment also creates 10 one-time recovery codes. They are shown once, may
 be used in any order, and each is deleted by the OTP backend when consumed.
 MFA setup/challenge/recovery pages use `Cache-Control: no-store`.
+
+TOTP replay protection remains enabled. A code that was already accepted in
+the current 30-second authenticator window cannot be reused. If an
+administrator signs out and immediately signs in again, wait for the next code
+in the authenticator application instead of weakening or bypassing replay
+protection.
 
 The privileged verified session has an **absolute** maximum age controlled by
 `MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS` (43200 seconds / 12 hours by default).
