@@ -34,6 +34,7 @@ from subscriptions.services import (
     create_absence_compensation_policy_action,
     issue_subscription_for_period,
     update_subscription_period_scheme,
+    version_absence_compensation_policy,
 )
 
 
@@ -725,3 +726,80 @@ def test_billing_recalculation_is_outside_manager_catalog_and_services(manager):
         )
 
     assert not policy.actions.exists()
+
+
+
+@pytest.mark.django_db
+def test_policy_versioning_drops_legacy_billing_recalculation(manager):
+    source = AbsenceCompensationPolicy.objects.create(
+        code="legacy-billing-version",
+        version=1,
+        name="Legacy billing policy",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.OTHER,
+        justification_requirement=(
+            AbsenceCompensationPolicy.JustificationRequirement.NONE
+        ),
+        max_eligible_absences=None,
+        limit_scope=AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD,
+        effective_from=date(2026, 1, 1),
+        is_active=True,
+    )
+    free_action = AbsenceCompensationPolicyAction.objects.create(
+        policy=source,
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=10,
+    )
+    legacy_billing = AbsenceCompensationPolicyAction.objects.create(
+        policy=source,
+        action_type=(
+            AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ),
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=20,
+    )
+    AbsenceCompensationPolicyWindow.objects.create(
+        policy_action=legacy_billing,
+        name="Legacy billing window",
+        source_from=date(2026, 5, 1),
+        source_until=date(2026, 5, 31),
+        target_from=date(2026, 6, 1),
+        target_until=date(2026, 6, 30),
+        priority=10,
+    )
+
+    replacement = version_absence_compensation_policy(
+        policy_id=source.id,
+        name="Operational policy",
+        justification_requirement=source.justification_requirement,
+        max_eligible_absences=None,
+        limit_scope=source.limit_scope,
+        effective_from=date(2026, 10, 15),
+        effective_until=None,
+        actor=manager,
+        now=make_school_aware(datetime(2026, 10, 1, 12, 0)),
+    )
+
+    copied_actions = list(replacement.actions.order_by("priority"))
+    assert [action.action_type for action in copied_actions] == [
+        AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP
+    ]
+    assert copied_actions[0].target_period_rule == free_action.target_period_rule
+    assert not AbsenceCompensationPolicyWindow.objects.filter(
+        policy_action__policy=replacement,
+        name="Legacy billing window",
+    ).exists()
+
+    event = AuditEvent.objects.get(
+        event_type="AbsenceCompensationPolicyVersioned",
+        aggregate_id=source.id,
+    )
+    assert event.payload["skipped_action_types"] == [
+        AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+    ]

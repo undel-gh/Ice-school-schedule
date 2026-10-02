@@ -709,7 +709,14 @@ def version_absence_compensation_policy(
         .order_by("policy_action_id", "priority", "source_from", "id")
     )
     action_map = {}
+    skipped_action_types = []
     for action in source_actions:
+        if (
+            action.action_type
+            == AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ):
+            skipped_action_types.append(action.action_type)
+            continue
         copied = AbsenceCompensationPolicyAction.objects.create(
             policy=replacement,
             action_type=action.action_type,
@@ -721,7 +728,9 @@ def version_absence_compensation_policy(
         )
         action_map[action.id] = copied
     for window in source_windows:
-        copied_action = action_map[window.policy_action_id]
+        copied_action = action_map.get(window.policy_action_id)
+        if copied_action is None:
+            continue
         AbsenceCompensationPolicyWindow.objects.create(
             policy_action=copied_action,
             name=window.name,
@@ -746,6 +755,7 @@ def version_absence_compensation_policy(
             "replacement_version": replacement.version,
             "effective_from": replacement.effective_from.isoformat(),
             "source_effective_until": source.effective_until.isoformat(),
+            "skipped_action_types": skipped_action_types,
         },
     )
     return replacement

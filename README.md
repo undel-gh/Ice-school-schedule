@@ -225,8 +225,11 @@ paid.
 
 `BILLING_RECALCULATION` remains a reserved model enum for historical/future
 compatibility, but it is not offered by the manager catalog and the application
-service rejects creation or conversion of policy actions to that type. Adding
-a monetary ledger or payment-provider integration is a separate future scope.
+service rejects creation or conversion of policy actions to that type. When a
+legacy policy containing this action is versioned, the historical action stays
+on the old version and is deliberately not copied to the new operational
+version. Adding a monetary ledger or payment-provider integration is a separate
+future scope.
 
 ## External identity login and invitations
 

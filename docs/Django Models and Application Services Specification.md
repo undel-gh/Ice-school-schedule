@@ -3355,6 +3355,8 @@ payment-provider integration
 `BILLING_RECALCULATION` remains a reserved enum for historical/future
 compatibility, but manager catalog forms do not offer it and application
 services reject creation or conversion of policy actions to that type.
+Versioning a legacy policy also omits BILLING_RECALCULATION (and its windows)
+from the replacement version while preserving the historical source version.
 
 The implemented FREE_MAKEUP and PAID_MAKEUP materialization paths:
 
