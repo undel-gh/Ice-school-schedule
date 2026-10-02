@@ -116,14 +116,90 @@ jobs:
             -f compose.production.yaml \
             logs web migrate db
           exit 1
-      - name: Smoke PostgreSQL backup
+      - name: Smoke scheduler
         run: |
           docker compose \
             --env-file .env.production \
             -f compose.production.yaml \
-            run --rm backup /ops/postgres_backup.sh --once
+            up -d scheduler
+
+          scheduler_id="$(
+            docker compose \
+              --env-file .env.production \
+              -f compose.production.yaml \
+              ps -q scheduler
+          )"
+
+          for attempt in $(seq 1 30); do
+            logs="$(
+              docker logs "$scheduler_id" 2>&1 || true
+            )"
+            lifecycle_ok="$(
+              printf '%s' "$logs" | \
+              grep -c 'job=subscription_lifecycle event=finish exit_code=0' || true
+            )"
+            generation_ok="$(
+              printf '%s' "$logs" | \
+              grep -c 'job=lesson_generation event=finish exit_code=0' || true
+            )"
+            if [ "$lifecycle_ok" -ge 1 ] && [ "$generation_ok" -ge 1 ]; then
+              exit 0
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' "$scheduler_id")" != "true" ]; then
+              docker logs "$scheduler_id"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          docker logs "$scheduler_id"
+          exit 1
+      - name: Smoke PostgreSQL backup service
+        run: |
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            up -d backup
+
+          backup_id="$(
+            docker compose \
+              --env-file .env.production \
+              -f compose.production.yaml \
+              ps -q backup
+          )"
+
+          for attempt in $(seq 1 40); do
+            status="$(
+              docker inspect \
+                --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$backup_id"
+            )"
+            if [ "$status" = "healthy" ]; then
+              break
+            fi
+            if [ "$status" = "unhealthy" ]; then
+              docker logs "$backup_id"
+              exit 1
+            fi
+            sleep 2
+          done
+
+          status="$(
+            docker inspect \
+              --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+              "$backup_id"
+          )"
+          if [ "$status" != "healthy" ]; then
+            docker logs "$backup_id"
+            exit 1
+          fi
 
           test -n "$(find backups -maxdepth 1 -name 'ice_school_*.dump' -print -quit)"
+
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            exec -T backup /ops/postgres_backup.sh --once
       - name: Stop production smoke stack
         if: always()
         run: |
