@@ -19,6 +19,7 @@ User = get_user_model()
 MFA_PREAUTH_SESSION_KEY = "mfa_preauth"
 MFA_NEXT_SESSION_KEY = "mfa_next"
 MFA_SETUP_DEVICE_SESSION_KEY = "mfa_setup_device_id"
+MFA_SETUP_AUTH_SESSION_KEY = "mfa_setup_auth"
 MFA_RECOVERY_CODES_SESSION_KEY = "mfa_recovery_codes"
 
 
@@ -74,7 +75,47 @@ def begin_mfa_preauth(
 def clear_mfa_transient_session(request) -> None:
     request.session.pop(MFA_PREAUTH_SESSION_KEY, None)
     request.session.pop(MFA_SETUP_DEVICE_SESSION_KEY, None)
+    request.session.pop(MFA_SETUP_AUTH_SESSION_KEY, None)
     request.session.modified = True
+
+
+def authorize_authenticated_mfa_setup(request, *, user) -> None:
+    request.session[MFA_SETUP_AUTH_SESSION_KEY] = {
+        "user_id": str(user.pk),
+        "issued_at": timezone.now().timestamp(),
+        "auth_hash": user.get_session_auth_hash(),
+    }
+    request.session.modified = True
+
+
+def authenticated_mfa_setup_is_authorized(request, *, user) -> bool:
+    data = request.session.get(MFA_SETUP_AUTH_SESSION_KEY)
+    if not isinstance(data, dict):
+        return False
+    if str(data.get("user_id") or "") != str(user.pk):
+        request.session.pop(MFA_SETUP_AUTH_SESSION_KEY, None)
+        request.session.modified = True
+        return False
+
+    ttl = int(getattr(settings, "MFA_PREAUTH_TTL_SECONDS", 300))
+    try:
+        age = timezone.now().timestamp() - float(data.get("issued_at"))
+    except (TypeError, ValueError):
+        age = ttl + 1
+
+    auth_hash = str(data.get("auth_hash") or "")
+    valid = (
+        0 <= age <= ttl
+        and bool(auth_hash)
+        and constant_time_compare(
+            auth_hash,
+            user.get_session_auth_hash(),
+        )
+    )
+    if not valid:
+        request.session.pop(MFA_SETUP_AUTH_SESSION_KEY, None)
+        request.session.modified = True
+    return valid
 
 
 def remember_mfa_next(request, value: str) -> None:
