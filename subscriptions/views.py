@@ -14,6 +14,7 @@ from django.views.decorators.http import require_POST
 from accounts.models import Student
 from audit.models import AuditEvent
 from core.permissions import require_permission
+from core.presentation import validation_message
 from core.time import school_date
 from subscriptions.forms import (
     ManagerAllowanceAdjustmentForm,
@@ -152,7 +153,7 @@ def manager_subscription_issue_view(
                     now=timezone.now(),
                 )
             except ValidationError as exc:
-                form.add_error(None, " ".join(exc.messages))
+                form.add_error(None, validation_message(exc))
             else:
                 messages.success(
                     request,
@@ -247,7 +248,7 @@ def manager_place_hold_create_view(
                         actor=request.user,
                     )
                 except ValidationError as exc:
-                    form.add_error(None, " ".join(exc.messages))
+                    form.add_error(None, validation_message(exc))
                 else:
                     messages.success(
                         request,
@@ -288,7 +289,7 @@ def manager_place_hold_confirm_view(
     except GroupPlaceHold.DoesNotExist as exc:
         raise Http404("Place hold not found.") from exc
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Оплата сохранения места подтверждена.")
     return redirect("subscriptions:manager_place_holds")
@@ -310,7 +311,7 @@ def manager_place_hold_restore_view(
     except GroupPlaceHold.DoesNotExist as exc:
         raise Http404("Place hold not found.") from exc
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(
             request,
@@ -341,7 +342,7 @@ def manager_place_hold_cancel_view(
         except GroupPlaceHold.DoesNotExist as exc:
             raise Http404("Place hold not found.") from exc
         except ValidationError as exc:
-            messages.error(request, " ".join(exc.messages))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Сохранение места отменено.")
     else:
@@ -424,7 +425,7 @@ def manager_allowance_adjust_view(
                 actor=request.user,
             )
         except ValidationError as exc:
-            messages.error(request, " ".join(exc.messages))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Остаток абонемента скорректирован.")
     else:
@@ -466,7 +467,7 @@ def manager_makeup_cancel_view(
                 now=timezone.now(),
             )
         except ValidationError as exc:
-            messages.error(request, " ".join(exc.messages))
+            messages.error(request, validation_message(exc))
         else:
             messages.success(request, "Право на отработку отменено.")
     return redirect(
@@ -490,7 +491,7 @@ def manager_subscription_rolling_recovery_view(
     except Subscription.DoesNotExist as exc:
         raise Http404("Subscription not found.") from exc
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(
             request,
@@ -523,7 +524,7 @@ def manager_subscription_cancel_view(
             at=timezone.now(),
         )
     except ValidationError as exc:
-        messages.error(request, " ".join(exc.messages))
+        messages.error(request, validation_message(exc))
     else:
         messages.success(request, "Абонемент отменён.")
     return redirect(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied
 from django.db.models import Q
+from django.utils.translation import gettext
 
 
 MANAGER_OPERATION_PERMISSIONS = (
@@ -109,7 +110,7 @@ def has_manager_operations_access(actor) -> bool:
 def require_manager_operations_access(actor) -> None:
     if has_manager_operations_access(actor):
         return
-    raise PermissionDenied("Manager operations permission is required.")
+    raise PermissionDenied(gettext("Manager operations permission is required."))
 
 
 def require_permission(actor, permission: str, message: str) -> None:
@@ -117,7 +118,7 @@ def require_permission(actor, permission: str, message: str) -> None:
         actor.is_superuser or actor.has_perm(permission)
     ):
         return
-    raise PermissionDenied(message)
+    raise PermissionDenied(gettext(message))
 
 
 def require_student_access(*, actor, student_id) -> None:
@@ -130,7 +131,7 @@ def require_student_access(*, actor, student_id) -> None:
     ).exists():
         return
     raise PermissionDenied(
-        "Active SELF or GUARDIAN access to this student is required."
+        gettext("Active SELF or GUARDIAN access to this student is required.")
     )
 
 

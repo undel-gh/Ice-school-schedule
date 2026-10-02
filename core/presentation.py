@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError
+from django.utils.translation import gettext
+
+
+def localize_message(message: str) -> str:
+    """Translate a user-visible domain message at the presentation boundary."""
+    return gettext(str(message))
 
 
 def validation_message(exc: ValidationError) -> str:
     if hasattr(exc, "message_dict"):
         return " ".join(
-            message
+            localize_message(message)
             for messages_ in exc.message_dict.values()
             for message in messages_
         )
-    return " ".join(exc.messages)
+    return " ".join(localize_message(message) for message in exc.messages)
 
 
 MANAGER_LABELS = {
