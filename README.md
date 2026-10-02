@@ -335,6 +335,123 @@ Every unlink records `ExternalIdentityUnlinked`; recovery records
 Local username/password login remains the staff and emergency administration
 channel.
 
+## Privileged MFA
+
+Local password authentication for privileged accounts is protected by TOTP
+multi-factor authentication using `django-otp`.
+
+MFA is mandatory when a User is any of:
+
+- `is_staff=True`;
+- `is_superuser=True`;
+- assigned at least one manager-operation permission directly or through a
+  Django Group.
+
+External Yandex/VK login remains disabled for these accounts. The first factor
+is the local Django password (and therefore remains protected by
+`django-axes`); the second factor is TOTP from an authenticator application.
+SMS and email OTP are deliberately not enabled.
+
+Privilege promotion does not turn an existing external-auth session into a
+valid first factor. If a signed-in external-only User gains staff/manager
+privileges while it still has an unusable Django password, privileged access
+is terminated and MFA enrollment is refused. A local password must first be
+established through an administrative recovery procedure (for example Django
+Admin or `changepassword`) or, preferably, a separate privileged account
+must be used.
+
+On the first successful password login, a privileged user must enroll a TOTP
+device before an authenticated application session is created. The setup page
+shows an `otpauth://` QR code and a manual secret. The enrollment code is
+verified before the device is marked confirmed. The temporary password-only
+pre-authentication state expires after `MFA_PREAUTH_TTL_SECONDS` (300 seconds
+by default).
+
+Enrollment also creates 10 one-time recovery codes. They are shown once, may
+be used in any order, and each is deleted by the OTP backend when consumed.
+MFA setup/challenge/recovery pages use `Cache-Control: no-store`.
+
+The privileged verified session has an **absolute** maximum age controlled by
+`MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS` (43200 seconds / 12 hours by default).
+The timestamp of the successful MFA verification is stored in the server-side
+session and checked by middleware on every privileged request. Ordinary session
+activity cannot extend this deadline; after it expires, the user must enter the
+local password and MFA again.
+The MFA middleware also intercepts privileged Django sessions that existed
+before MFA deployment, including access to `/admin/`; a password-only
+session is therefore not grandfathered into privileged access. **Any**
+privileged authenticated session that is not OTP-verified is signed out and
+must re-enter the local password through the MFA-aware login flow before a
+TOTP challenge or enrollment. This prevents stale/externally-created sessions
+from being treated as the required local-password first factor. Anonymous
+`/admin/login/` is redirected to the same MFA-aware local login flow, so
+Django Admin cannot establish a separate password-only staff session.
+
+Verified users manage MFA at:
+
+```text
+/accounts/mfa/security/
+```
+
+Self-service recovery-code regeneration and authenticator replacement both
+require the current local password in addition to the already MFA-verified
+session. Regeneration revokes all old recovery codes immediately.
+Authenticator replacement is two-phase. The old confirmed TOTP remains valid
+while a separate replacement device is pending. Only after the new TOTP code
+is successfully verified does one transaction confirm the new device and
+revoke the old device(s); a fresh recovery-code set is then issued. Abandoning
+or timing out replacement therefore does not remove the last working
+authenticator.
+
+For server-side emergency recovery, `django-otp` provides
+`addstatictoken`. Use:
+
+```bash
+python manage.py addstatictoken -h
+```
+
+to create a single emergency static token for the affected privileged account.
+A static-only emergency login is allowed to pass the MFA challenge, but if the
+account has no confirmed TOTP device it is immediately forced through fresh
+TOTP enrollment. This makes the command a break-glass recovery mechanism, not
+a permanent static-code MFA mode.
+
+Sensitive TOTP/static-token admin helpers are hidden with
+`OTP_ADMIN_HIDE_SENSITIVE_DATA=True`. Audit events record enrollment,
+successful MFA authentication, recovery-code use/regeneration, and the start
+of authenticator replacement; OTP values, QR secrets and recovery-code
+contents are never copied into AuditEvent payloads.
+
+### MFA deployment / rollout
+
+Before deploying the MFA-enabled build:
+
+1. Make sure at least one emergency superuser has a **usable local Django
+   password** that is known through the normal privileged credential-handling
+   procedure. An external-only account cannot bootstrap privileged MFA.
+2. Install the updated application dependencies.
+3. Run `python manage.py migrate` before serving the new build. The
+   `django_otp` TOTP/static-device tables are required by middleware and the
+   login flow.
+4. Deploy the application, then sign in with the emergency/local privileged
+   account and complete TOTP enrollment. For every newly created privileged
+   employee account, deliver the initial local password over a trusted channel
+   and require MFA enrollment immediately on the first login; whoever knows
+   that password first can otherwise become the first person to bind TOTP.
+5. Store the 10 displayed recovery codes outside the application session in an
+   appropriately protected operational secret store.
+6. Confirm access to both the manager UI and `/admin/` through a fresh
+   password + TOTP login.
+
+Existing privileged password sessions are intentionally not exempt from the
+rollout. If they have no enrolled TOTP yet, the user must prove the local
+password again before the application reveals a new MFA secret.
+
+If a privileged user later loses both the authenticator and all recovery
+codes, use the documented server-side `addstatictoken` break-glass path,
+authenticate with password + that one-time token, and complete a fresh TOTP
+enrollment. Do not disable the MFA middleware as a recovery procedure.
+
 ## Production checks
 
 Production defaults are closed: `DJANGO_DEBUG` defaults to off and

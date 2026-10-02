@@ -47,6 +47,9 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "axes",
+    "django_otp",
+    "django_otp.plugins.otp_totp",
+    "django_otp.plugins.otp_static",
     "core",
     "accounts",
     "scheduling",
@@ -61,7 +64,9 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django_otp.middleware.OTPMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
+    "accounts.mfa_middleware.PrivilegedMFAMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "axes.middleware.AxesMiddleware",
 ]
@@ -146,6 +151,18 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "scheduling:home"
 LOGOUT_REDIRECT_URL = "login"
+
+MFA_PREAUTH_TTL_SECONDS = int(
+    os.environ.get("MFA_PREAUTH_TTL_SECONDS", "300")
+)
+MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS = int(
+    os.environ.get("MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS", "43200")
+)
+OTP_LOGIN_URL = "mfa:challenge"
+OTP_TOTP_ISSUER = os.environ.get("MFA_TOTP_ISSUER", "Ice School").strip()
+OTP_ADMIN_HIDE_SENSITIVE_DATA = True
+OTP_TOTP_THROTTLE_FACTOR = 1
+OTP_STATIC_THROTTLE_FACTOR = 1
 
 
 SCHEDULING_RSVP_DEADLINE_MINUTES_BEFORE_START = int(

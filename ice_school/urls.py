@@ -1,8 +1,12 @@
 from django.contrib import admin
 from django.urls import include, path
 
+from accounts.mfa_views import LocalLoginView
+
 urlpatterns = [
     path("", include("scheduling.urls")),
+    path("accounts/login/", LocalLoginView.as_view(), name="login"),
+    path("accounts/mfa/", include("accounts.mfa_urls")),
     path("accounts/external/", include("accounts.external_urls")),
     path("manager/school/", include("accounts.manager_urls")),
     path("manager/school/", include("scheduling.school_admin_urls")),

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Резервные коды MFA{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <h1>Резервные коды</h1>
+  <p><strong>Сохраните эти коды сейчас.</strong> Каждый код можно использовать только один раз. Эта страница повторно их не покажет.</p>
+  <ul>
+    {% for code in codes %}
+      <li><code>{{ code }}</code></li>
+    {% endfor %}
+  </ul>
+  <p><a class="btn btn-primary" href="{{ next_url }}">Продолжить</a></p>
+</section>
+{% endblock %}

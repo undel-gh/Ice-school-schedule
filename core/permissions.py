@@ -95,6 +95,11 @@ def has_manager_operations_assignment(actor) -> bool:
 def has_manager_operations_access(actor) -> bool:
     if actor is None or not getattr(actor, "is_authenticated", False):
         return False
+
+    cache_attr = "_manager_operations_assignment_request_cache"
+    if hasattr(actor, cache_attr):
+        return bool(getattr(actor, cache_attr))
+
     return actor.is_superuser or any(
         actor.has_perm(permission)
         for permission in MANAGER_OPERATION_PERMISSIONS
