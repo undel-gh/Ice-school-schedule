@@ -131,7 +131,7 @@ def require_student_access(*, actor, student_id) -> None:
     ).exists():
         return
     raise PermissionDenied(
-        gettext("Active SELF or GUARDIAN access to this student is required.")
+        localize_message("Active SELF or GUARDIAN access to this student is required.")
     )
 
 
