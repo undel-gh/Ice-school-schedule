@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import Group, Permission
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -625,4 +625,28 @@ def test_password_change_invalidates_privileged_mfa_preauth():
     assert challenge.status_code == 302
     assert challenge.url == reverse("login")
     assert MFA_PREAUTH_SESSION_KEY not in client.session
+    assert "_auth_user_id" not in client.session
+
+
+
+@pytest.mark.django_db
+def test_manager_permission_via_group_requires_mfa():
+    client = Client()
+    user = User.objects.create_user(
+        username="group-manager-mfa",
+        password="secret-password",
+    )
+    group = Group.objects.create(name="MFA managers")
+    group.permissions.add(
+        Permission.objects.get(
+            content_type__app_label="accounts",
+            codename="view_student",
+        )
+    )
+    user.groups.add(group)
+
+    response = _begin_password_login(client, user)
+
+    assert response.status_code == 302
+    assert response.url == reverse("mfa:setup")
     assert "_auth_user_id" not in client.session
