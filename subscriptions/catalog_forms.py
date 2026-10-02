@@ -53,10 +53,6 @@ LIMIT_SCOPE_CHOICES = (
 ACTION_TYPE_CHOICES = (
     (AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP, "Бесплатная отработка"),
     (AbsenceCompensationPolicyAction.ActionType.PAID_MAKEUP, "Платная отработка"),
-    (
-        AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION,
-        "Перерасчёт оплаты",
-    ),
 )
 
 TARGET_PERIOD_CHOICES = (

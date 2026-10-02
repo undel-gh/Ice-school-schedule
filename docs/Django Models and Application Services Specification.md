@@ -2899,7 +2899,7 @@ Attendance ──► AttendanceCoverage
 
 # 90. Рекомендуемый следующий этап реализации
 
-После утверждения консолидированной модели реализация идёт в порядке: accounts/scheduling → Attendance → allowance-based subscriptions + ledger → AttendanceCoverage + concurrency tests → OneTimeEntitlement → Makeup flow → Admin/UI → future Billing.
+После утверждения консолидированной модели реализация идёт в порядке: accounts/scheduling → Attendance → allowance-based subscriptions + ledger → AttendanceCoverage + concurrency tests → OneTimeEntitlement → Makeup flow → Admin/UI → production operations. Денежный Billing остаётся вне текущего product scope; при необходимости он проектируется отдельно от entitlement-модели.
 
 Server-rendered presentation layer должен соблюдать UX-контракт раздела:
 
@@ -3087,22 +3087,25 @@ AbsenceCompensationCase
     resolved_at
 ```
 
-Possible results include:
+Possible in-application results include:
 
 ```text
 free makeup entitlement
 paid/deferred makeup entitlement
-billing recalculation reference
 no compensation
 ```
+
+Monetary discounts, recalculations, credits and refunds are handled by
+accounting outside this application. They are not compensation action results.
 
 The current school policy is provisional and includes a configurable four-miss
 limit for unexcused absences plus May→June and June→August seasonal
 exceptions. These values must not be hard-coded.
 
 The original Subscription dates, Attendance history and ledger remain
-immutable. Any entitlement/recalculation must retain a traceable reference to
-its source compensation case.
+immutable. Every entitlement must retain a traceable reference to its source
+compensation case. Accounting adjustments may reference the same business
+event operationally, but are not persisted as entitlement actions here.
 
 The existing medical `AbsenceJustification` / `MakeupEntitlement` flow
 must continue to work during migration toward the generalized mechanism.
@@ -3239,18 +3242,52 @@ Target-period resolution:
 - EXPLICIT_TARGET_WINDOW uses the snapshotted window; when a target
   Subscription is required, entitlement validity is the intersection of the
   window and that Subscription;
-- NEXT_STUDENT_PERIOD requires an explicitly supplied target Subscription
-  before authorization. Until the subscription-period resolver exists, the
-  case stays OPEN and no paid grant is materialized without that concrete
-  target. The grant uses the target Subscription valid_from/valid_until.
+- NEXT_STUDENT_PERIOD is resolved automatically for the same Student and
+  ICE/HALL category. Sequencing is relative to source `valid_from`, not
+  nominal `valid_until`: dated subscriptions are ordered by `valid_from`,
+  pending rolling subscriptions by `billing_period.reference_date`.
+  Normally the ordering date must be strictly after source `valid_from`;
+- prepaid rolling packages are the explicit exception. If source is an ACTIVE
+  rolling subscription and a PENDING target has the same
+  `billing_period.reference_date`, a target created after source is a valid
+  continuation even when that reference date precedes source `valid_from`.
+  Multiple remaining PENDING package items are sequenced by
+  `Subscription.created_at`; equal timestamps are ambiguous, and UUID is not
+  a business tie-break. A pending item created before source is not pulled
+  forward merely because the reference date matches. If a later-created
+  package item is already ACTIVE, it takes precedence over still-PENDING
+  package items: for A(active 03.10) -> B(active 20.10) -> C(pending), the
+  next period for A is B, not C. Creation order is only a queue among pending
+  package items and cannot skip an activated successor;
+- an ACTIVE rolling target may overlap the source nominal validity window,
+  because early source exhaustion can legitimately activate the replacement
+  before source `valid_until`. Other overlapping period types are not valid
+  next-period candidates;
+- for a PENDING rolling target bought before source expiry, provisional
+  effective start is `max(reference_date, source.valid_until + 1 day)`;
+- the uncovered gap may not exceed one full source-period length
+  (`valid_until - valid_from + 1`). A subscription beyond that horizon is not
+  treated as NEXT_STUDENT_PERIOD. Cancelled subscriptions and subscriptions
+  without the required category are ignored. Equal earliest ordinary
+  candidates are a configuration error; `created_at` ordering is used only
+  inside the recognised prepaid rolling-package case;
+- PAID_MAKEUP fixes the resolved target Subscription during authorization.
+  An explicitly supplied target must validate normally and match the resolver;
+- FREE_MAKEUP materializes immediately for a resolved dated target. If the
+  resolved target is a pending rolling subscription, the case stays OPEN until
+  that period is activated and concrete dates exist. Activation does not
+  auto-materialize compensation; manager lists/details explicitly mark the
+  case as waiting, then as ready for repeated materialization after activation.
 
-Manual payment confirmation is currently provided by
-`confirm_paid_makeup_fee(...)`. Future Billing integration may replace this
-manual confirmation without changing the grant/entitlement lifecycle.
+Manual fee confirmation is provided by
+`confirm_paid_makeup_fee(...)`. The application stores only the fact that the
+operational fee prerequisite was confirmed; it does not calculate or persist
+the monetary amount. Personal discounts, recalculations, credits and refunds
+belong to accounting outside this application.
 
-Paid reversal has explicit financial semantics. Once `fee_confirmed_at` is
-set, automatic source invalidation (attendance correction, medical
-supersession/revocation, etc.) must not silently reverse the paid grant.
+Once `fee_confirmed_at` is set, automatic source invalidation (attendance
+correction, medical supersession/revocation, etc.) must not silently reverse
+the paid grant.
 Instead it raises a validation error directing the manager to
 `reverse_absence_compensation_case(...)`. The error also includes the
 structured key `manager_action_required`, so the future trainer-facing web UI
@@ -3267,7 +3304,9 @@ limit slot forever. `process_subscription_lifecycle(...)` reverses them with
 reason `authorization_expired` after their authorization deadline:
 
 - CURRENT_PERIOD: source Subscription `valid_until`;
-- NEXT_STUDENT_PERIOD: target Subscription `valid_until`;
+- NEXT_STUDENT_PERIOD: target Subscription `valid_until`; for a pending
+  rolling target, the provisional 28-day deadline starts at
+  `max(reference_date, source.valid_until + 1 day)`;
 - EXPLICIT_TARGET_WINDOW: snapshotted `target_until`.
 
 Paid pending grants are never expired automatically. During expiry processing,
@@ -3331,32 +3370,35 @@ reverse_absence_compensation_case(
 The service is idempotent for an already REVERSED case. It refuses to reverse
 a compensation makeup that is already used by active AttendanceCoverage.
 
-Intentionally not yet implemented:
+Out of current product scope:
 
 ```text
 BILLING_RECALCULATION
-automatic NEXT_STUDENT_PERIOD resolution
+monetary ledger / invoice calculation
+payment-provider integration
 ```
 
-The first future service that grants a makeup entitlement, paid freeze or
-billing recalculation from a case must, in the same transaction:
+`BILLING_RECALCULATION` remains a reserved enum for historical/future
+compatibility, but manager catalog forms do not offer it and both application
+services and model validation reject creation or conversion of policy actions
+to that type. Existing legacy rows remain valid for historical reads.
+Versioning a legacy policy also omits BILLING_RECALCULATION (and its windows)
+from the replacement version while preserving the historical source version.
+
+The implemented FREE_MAKEUP and PAID_MAKEUP materialization paths:
 
 1. lock the Student and AbsenceCompensationCase using the established lock
    order;
 2. validate that the case is OPEN and ELIGIBLE;
 3. persist the exact eligibility/action snapshot used for the grant;
 4. mark that eligibility decision as materialized/frozen;
-5. create the entitlement or billing operation and correlated audit events.
+5. create the entitlement/grant and correlated audit events.
 
 After materialization, later backdated cases or cancellations must not revoke
 or rewrite the already granted right automatically. The materialized case is
 historical evidence of the decision made at grant time. If the school needs to
-reverse an already granted right, that is an explicit compensated/reversal
+reverse an already granted right, that is an explicit compensation-reversal
 workflow, not ordinary eligibility reevaluation.
-
-The concrete lock fields and grant service are deliberately introduced together
-with the first action-materialization implementation, rather than exposing a
-partially enforced lock before any grant exists.
 
 
 ### Source invalidation

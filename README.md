@@ -210,6 +210,28 @@ Coverage rebinds and one-time entitlement administration currently remain
 service-level operations and are intended for a
 dedicated administrative UI rather than direct model editing.
 
+## Financial responsibility boundary
+
+The application owns operational school rules: schedules, attendance,
+Subscription periods and ICE/HALL visit rights, make-up entitlements, paid
+freeze/deferred-make-up eligibility, and the fact that a required fee was
+confirmed by a manager.
+
+It is **not** the accounting or payment system. Monetary tariff calculation,
+personal discounts, price recalculation, credits, refunds, debt and the final
+amount due are handled by accounting outside this application. A paid workflow
+may store `fee_confirmed_at`, but it does not calculate or persist the amount
+paid.
+
+`BILLING_RECALCULATION` remains a reserved model enum for historical/future
+compatibility, but it is not offered by the manager catalog; application
+services and model validation reject creation or conversion of policy actions
+to that type (including Django Admin/ModelForm paths). When a
+legacy policy containing this action is versioned, the historical action stays
+on the old version and is deliberately not copied to the new operational
+version. Adding a monetary ledger or payment-provider integration is a separate
+future scope.
+
 ## External identity login and invitations
 
 Student, guardian and coach onboarding is invitation-only. An unknown Yandex or

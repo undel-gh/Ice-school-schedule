@@ -14,9 +14,11 @@ from django.utils import timezone
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
+from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
 from core.time import make_school_aware, school_date
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
+from subscriptions.catalog_forms import ACTION_TYPE_CHOICES
 from subscriptions.models import (
     AbsenceCompensationCase,
     AbsenceCompensationPolicy,
@@ -33,6 +35,7 @@ from subscriptions.services import (
     create_absence_compensation_policy_action,
     issue_subscription_for_period,
     update_subscription_period_scheme,
+    version_absence_compensation_policy,
 )
 
 
@@ -681,3 +684,173 @@ def test_plan_allowance_validation_tracks_subscription_category_values(
     assert set(
         plan.allowances.values_list("category", flat=True)
     ) == set(SubscriptionCategory.values)
+
+
+
+@pytest.mark.django_db
+def test_billing_recalculation_is_outside_manager_catalog_and_services(manager):
+    assert (
+        AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        not in {value for value, _label in ACTION_TYPE_CHOICES}
+    )
+    policy = AbsenceCompensationPolicy.objects.create(
+        code="no-billing-recalculation",
+        version=1,
+        name="No billing recalculation",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.OTHER,
+        justification_requirement=(
+            AbsenceCompensationPolicy.JustificationRequirement.NONE
+        ),
+        max_eligible_absences=None,
+        limit_scope=AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD,
+        effective_from=date(2026, 1, 1),
+        is_active=True,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="outside the scheduling system",
+    ):
+        create_absence_compensation_policy_action(
+            policy_id=policy.id,
+            action_type=(
+                AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+            ),
+            target_period_rule=(
+                AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+            ),
+            requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+            validity_days=None,
+            priority=100,
+            is_active=True,
+            actor=manager,
+        )
+
+    assert not policy.actions.exists()
+
+
+
+@pytest.mark.django_db
+def test_policy_versioning_drops_legacy_billing_recalculation(manager):
+    source = AbsenceCompensationPolicy.objects.create(
+        code="legacy-billing-version",
+        version=1,
+        name="Legacy billing policy",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.OTHER,
+        justification_requirement=(
+            AbsenceCompensationPolicy.JustificationRequirement.NONE
+        ),
+        max_eligible_absences=None,
+        limit_scope=AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD,
+        effective_from=date(2026, 1, 1),
+        is_active=True,
+    )
+    free_action = AbsenceCompensationPolicyAction.objects.create(
+        policy=source,
+        action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=10,
+    )
+    legacy_billing = AbsenceCompensationPolicyAction.objects.create(
+        policy=source,
+        action_type=(
+            AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ),
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=20,
+    )
+    AbsenceCompensationPolicyWindow.objects.create(
+        policy_action=legacy_billing,
+        name="Legacy billing window",
+        source_from=date(2026, 5, 1),
+        source_until=date(2026, 5, 31),
+        target_from=date(2026, 6, 1),
+        target_until=date(2026, 6, 30),
+        priority=10,
+    )
+
+    replacement = version_absence_compensation_policy(
+        policy_id=source.id,
+        name="Operational policy",
+        justification_requirement=source.justification_requirement,
+        max_eligible_absences=None,
+        limit_scope=source.limit_scope,
+        effective_from=date(2026, 10, 15),
+        effective_until=None,
+        actor=manager,
+        now=make_school_aware(datetime(2026, 10, 1, 12, 0)),
+    )
+
+    copied_actions = list(replacement.actions.order_by("priority"))
+    assert [action.action_type for action in copied_actions] == [
+        AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP
+    ]
+    assert copied_actions[0].target_period_rule == free_action.target_period_rule
+    assert not AbsenceCompensationPolicyWindow.objects.filter(
+        policy_action__policy=replacement,
+        name="Legacy billing window",
+    ).exists()
+
+    event = AuditEvent.objects.get(
+        event_type="AbsenceCompensationPolicyVersioned",
+        aggregate_id=source.id,
+    )
+    assert event.payload["skipped_action_types"] == [
+        AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+    ]
+
+
+
+@pytest.mark.django_db
+def test_billing_recalculation_model_validation_blocks_new_admin_style_action(
+    manager,
+):
+    policy = AbsenceCompensationPolicy.objects.create(
+        code="billing-model-validation",
+        version=1,
+        name="Billing model validation",
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.OTHER,
+        justification_requirement=(
+            AbsenceCompensationPolicy.JustificationRequirement.NONE
+        ),
+        max_eligible_absences=None,
+        limit_scope=AbsenceCompensationPolicy.LimitScope.STUDENT_PERIOD,
+        effective_from=date(2026, 1, 1),
+        is_active=True,
+    )
+    candidate = AbsenceCompensationPolicyAction(
+        policy=policy,
+        action_type=(
+            AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ),
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=10,
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="outside the scheduling system",
+    ):
+        candidate.full_clean()
+
+    legacy = AbsenceCompensationPolicyAction.objects.create(
+        policy=policy,
+        action_type=(
+            AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ),
+        target_period_rule=(
+            AbsenceCompensationPolicyAction.TargetPeriodRule.CURRENT_PERIOD
+        ),
+        requirement=AbsenceCompensationPolicyAction.Requirement.NONE,
+        priority=20,
+    )
+    legacy.full_clean()

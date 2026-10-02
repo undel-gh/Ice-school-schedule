@@ -50,17 +50,18 @@ unused balance → next period
 ```
 
 Вместо этого система должна уметь представить компенсацию конкретного
-`Attendance=ABSENT` / пропущенного Lesson с различными условиями:
+`Attendance=ABSENT` / пропущенного Lesson с различными operational
+условиями:
 
 - бесплатная отработка в текущем расчётном периоде;
 - бесплатная отработка в другом разрешённом периоде;
 - платная отработка/перенос в последующий период;
-- перерасчёт стоимости;
-- сочетание перерасчёта и бесплатной отработки, если политика школы это
-  допускает;
 - отсутствие права на компенсацию.
 
-Исходный Subscription, Attendance и ledger не переписываются задним числом.
+Денежный перерасчёт может существовать как отдельное решение бухгалтерии и
+может сопровождать любой из этих случаев, но не является action
+`AbsenceCompensationCase`. Исходный Subscription, Attendance и ledger не
+переписываются задним числом.
 
 ## 2.3. Сохранение места в группе
 
@@ -452,15 +453,12 @@ process_subscription_lifecycle(...)
 
 ### Болезнь со справкой
 
-При подтверждённом медицинском пропуске школа может предоставить:
+При подтверждённом медицинском пропуске система может предоставить
+бесплатную отработку согласно versioned policy.
 
-```text
-перерасчёт
-и/или
-бесплатную отработку
-```
-
-Точный набор вариантов и сочетаний ещё уточняется.
+Если школа принимает решение о денежном перерасчёте, скидке или возврате, это
+оформляется бухгалтерией вне приложения и не добавляется в
+`AbsenceCompensationPolicyAction`.
 
 ### Пропуск без уважительной причины
 
@@ -521,49 +519,36 @@ compensation case
 ```
 
 Это важнее, чем перенос абстрактного остатка allowance: система должна уметь
-объяснить, **какое именно пропущенное занятие** породило право на отработку или
-перерасчёт.
+объяснить, **какое именно пропущенное занятие** породило право на отработку.
+Денежные решения по тому же событию ведутся бухгалтерией отдельно.
 
 Для существующего medical flow источником причины остаётся
 `AbsenceJustification`.
 
-## 5.3. Архитектурное направление
+## 5.3. Граница ответственности: entitlement accounting, не бухгалтерия
 
-Предпочтительное направление — ввести обобщённый concept, рабочее имя:
-
-```text
-AbsenceCompensationCase
-```
-
-Он фиксирует:
+`AbsenceCompensationCase` является источником операционного решения по
+пропуску. Система расписания отвечает за права на посещения и их lifecycle:
 
 ```text
-student
-source_lesson
-attendance
-absence_reason
-source_subscription_allowance (optional)
-policy_version / policy_snapshot
-status
-created_at
-resolved_at
-```
-
-Из одного case политика может разрешить один или несколько результатов:
-
-```text
-MAKEUP entitlement
-PAID_FREEZE / deferred makeup entitlement
-BILLING recalculation reference
+FREE_MAKEUP
+PAID_MAKEUP / deferred makeup
 NO_COMPENSATION
 ```
 
-Это позволяет не смешивать финансовый перерасчёт с entitlement accounting и
-одновременно поддержать формулировку «перерасчёт и/или бесплатная отработка».
+Наличие тарифов и платных услуг не превращает приложение в бухгалтерский
+контур. Персональные скидки, денежные перерасчёты, credits, возвраты, долг и
+итоговая сумма к оплате определяются бухгалтерией вне приложения.
 
-Текущий `MakeupEntitlement` может быть либо расширен, либо позднее
-мигрирован в более общий механизм. Конкретное решение принимается перед
-реализацией миграций; на этом этапе важно сохранить существующий medical flow.
+Для платного operational workflow приложение хранит только факт выполнения
+предусловия оплаты (`fee_confirmed_at/by`). Размер платежа и способ его
+расчёта не являются частью доменной модели расписания.
+
+`BILLING_RECALCULATION` остаётся зарезервированным enum для исторической и
+будущей совместимости, но не является исполняемым action текущего продукта:
+manager catalog его не предлагает, application-service не позволяет создать
+или переключить policy action на этот тип. Полноценный Billing/эквайринг —
+отдельный будущий scope.
 
 ## 5.4. Policy должна описывать условия, а не сценарий в коде
 
@@ -572,9 +557,9 @@ NO_COMPENSATION
 ```text
 reason / justification requirement
 maximum eligible missed lessons
-compensation kind
+compensation kind (FREE_MAKEUP / PAID_MAKEUP)
 target-period rule
-fee requirement
+fee-confirmation requirement
 target Subscription requirement
 validity window
 seasonal exception
@@ -615,8 +600,8 @@ case-layer расчётный период идентифицируется по
 пересчитываться при появлении более раннего пропуска или отмене другого case.
 
 **Граница ретроактивности:** как только из case фактически выдано первое право
-на отработку, платную заморозку или финансовый перерасчёт, использованная
-eligibility должна быть атомарно зафиксирована вместе с этим действием.
+на отработку или платную заморозку, использованная eligibility должна быть
+атомарно зафиксирована вместе с этим действием.
 Последующие backdated case не должны автоматически отзывать или переписывать
 уже предоставленное право.
 
@@ -713,25 +698,86 @@ PAID_MAKEUP без требования оплаты считается ошиб
 нужен target Subscription, usable window ограничивается пересечением его дат
 с seasonal window.
 
-Для NEXT_STUDENT_PERIOD до появления общего period resolver менеджер обязан
-выбрать target Subscription **до authorization**. Пока следующего абонемента
-нет, case остаётся OPEN и не занимает лимит как MATERIALIZED paid grant.
-Target Subscription должен принадлежать тому же ученику, содержать нужную
-ICE/HALL category и не быть отменён.
+Для NEXT_STUDENT_PERIOD общий resolver определяет **не произвольный будущий
+абонемент**, а ближайший следующий расчётный период этого ученика для нужной
+ICE/HALL category.
 
-Для pending rolling target допускается отсутствие `valid_from/valid_until`:
-authorization проверяет его сохранённую `billing_period.reference_date`,
-которая должна быть позже окончания source Subscription. Сам PAID_MAKEUP
-entitlement до активации target rolling period не создаётся. После первого
-обычного занятия target Subscription получает реальные даты, и paid grant
-можно активировать с этими `valid_from/valid_until`.
+Последовательность определяется относительно **начала** source Subscription,
+а не его nominal `valid_until`. Это необходимо для обычного rolling-flow:
+следующий абонемент часто покупается заранее, а при раннем исчерпании текущего
+allowance следующий rolling-период может активироваться ещё внутри nominal
+окна source Subscription.
 
-Для уже активного target Subscription по-прежнему требуется начало после
-окончания source Subscription.
+Правила выбора:
 
-Пока полноценного Billing нет, оплату подтверждает менеджер через
-`confirm_paid_makeup_fee(...)`. В будущем Billing должен заменить это
-подтверждение, не меняя grant/entitlement semantics.
+- для Subscription с известными датами ordering key = `valid_from`;
+- для PENDING rolling Subscription ordering key =
+  `billing_period.reference_date` (дата выдачи/reference);
+- обычно ordering key должен быть строго позже
+  `source_subscription.valid_from`;
+- исключение — **предоплаченный пакет rolling-абонементов**. Если source уже
+  ACTIVE rolling, а PENDING target имеет тот же
+  `billing_period.reference_date`, target считается продолжением пакета,
+  когда его `Subscription.created_at` позже `source.created_at`. Это
+  позволяет купить несколько rolling-абонементов в один день до активации
+  первого;
+- если в таком пакете остаётся несколько PENDING Subscription с одной
+  `reference_date`, resolver выбирает самый ранний по `created_at` после
+  source. Совпавший `created_at` считается неоднозначностью; UUID не
+  используется как бизнес tie-break;
+- если один из следующих элементов того же пакета уже ACTIVE, он имеет
+  приоритет над более поздними PENDING элементами пакета. Иначе старая
+  `reference_date` ожидающего C могла бы поставить его раньше фактически
+  активированного B. Пример: A активирован 03.10, B — 20.10, C ещё pending;
+  для source A следующим является B, а не C;
+- порядок `created_at` применяется только между ещё PENDING элементами
+  пакета. Он не может перескочить уже активированный successor;
+- PENDING Subscription, созданный **до** текущего source, не подтягивается
+  вперёд только из-за совпавшей `reference_date`;
+- overlap с nominal source window допускается только для уже ACTIVE rolling
+  target; обычный overlapping calendar/fixed/legacy Subscription остаётся
+  ошибочной конфигурацией;
+- для PENDING rolling, выданного до конца source-периода, до фактической
+  активации его effective transition считается не раньше
+  `source_subscription.valid_until + 1 day`;
+- cancelled Subscription и Subscription без нужной category не участвуют;
+- допустимый uncovered gap ограничен **одной длиной source-периода**:
+  `source_length = valid_until - valid_from + 1 day`. Например, для
+  28-дневного source допускается не более 28 пустых дней между периодами, для
+  октября — не более 31. Более поздний абонемент не считается
+  NEXT_STUDENT_PERIOD;
+- для обычных кандидатов одинаковый самый ранний ordering key остаётся
+  неоднозначностью. `created_at` используется как последовательность только
+  внутри распознанного предоплаченного rolling-пакета.
+
+PAID_MAKEUP при authorization автоматически фиксирует найденный
+`target_subscription`. Если manager/web всё же передал target явно, он
+сначала проходит обычную валидацию target, а затем обязан совпасть с
+результатом resolver; выбрать более поздний период вручную нельзя. Пока
+следующего Subscription ещё нет, case остаётся OPEN и не занимает лимит как
+MATERIALIZED paid grant.
+
+Для PENDING rolling target отсутствие `valid_from/valid_until` нормально:
+authorization фиксирует найденный Subscription, но MakeupEntitlement до
+активации rolling period не создаётся. После первого обычного занятия target
+Subscription получает реальные даты, и paid grant активируется в этом окне.
+
+FREE_MAKEUP с NEXT_STUDENT_PERIOD материализуется сразу, если следующий период
+уже имеет реальные даты. Если resolver нашёл PENDING rolling Subscription,
+case остаётся OPEN: без фактических дат нельзя создать usable entitlement.
+Автоматическая выдача в момент активации rolling-периода сознательно не
+выполняется, чтобы не смешивать activation первого AttendanceCoverage с
+отдельным compensation workflow и его permission/lock semantics.
+
+Manager report явно показывает такой OPEN case как
+«Ждёт активации следующего периода». После активации badge меняется на
+«Следующий период готов — можно выдать», и менеджер повторяет materialization.
+Eligibility замораживается только в момент реальной выдачи права.
+
+Оплату PAID_MAKEUP в текущем scope подтверждает менеджер через
+`confirm_paid_makeup_fee(...)`. Приложение фиксирует факт подтверждения, но
+не рассчитывает денежную сумму: скидки, перерасчёты и возвраты остаются в
+бухгалтерии.
 
 После подтверждения оплаты никакой автоматический процесс не может молча
 отменить PAID_MAKEUP. Исправление Attendance, medical supersession/revocation
@@ -755,16 +801,18 @@ Selector `get_reversed_paid_makeups(...)` даёт отчёт «оплачено
 CURRENT_PERIOD          → source Subscription.valid_until
 NEXT_STUDENT_PERIOD     → target Subscription.valid_until
                           или, для PENDING rolling target,
-                          конец 28-дневного окна от billing_period.reference_date
+                          конец 28-дневного окна от effective transition:
+                          max(reference_date, source.valid_until + 1 day)
 EXPLICIT_TARGET_WINDOW  → target_until
 ```
 
 Для pending rolling target deadline вычисляется детерминированно до его
-фактической активации: `reference_date` считается возможным первым днём
-28-дневного окна, поэтому deadline равен его 28-му дню
-(`reference_date + 27 days`). Это не позволяет неоплаченной authorization
-бессрочно занимать eligibility slot и блокировать отмену связанных
-Subscription, даже если ученик так и не пришёл на первое занятие.
+фактической активации. Если Subscription куплен заранее, до окончания source
+периода, provisional first day равен
+`max(reference_date, source.valid_until + 1 day)`; deadline — его 28-й день.
+Так ранняя покупка не сокращает срок authorization, но неоплаченная
+authorization всё равно не может бессрочно занимать eligibility slot и
+блокировать отмену связанных Subscription.
 
 Поэтому заморозка «на следующий период» не истекает в первый день этого
 периода: неоплаченная authorization остаётся действующей до конца выбранного
@@ -828,8 +876,8 @@ require_target_subscription = true
 Makeup/deferred entitlement хранит ссылку на источник и используется
 `AttendanceCoverage` явно.
 
-Перерасчёт стоимости относится к будущему Billing и должен ссылаться на тот же
-compensation case/correlation ID, не изменяя entitlement ledger.
+Денежный перерасчёт не является частью текущего Billing/entitlement domain:
+он выполняется бухгалтерией вне приложения и не меняет entitlement ledger.
 
 ## 5.10. Смешанные ICE/HALL планы
 
@@ -883,8 +931,9 @@ cancelled_at / cancelled_by
 
 `GroupPlaceHold` не должен участвовать в `FindCoverage`.
 
-В MVP факт оплаты может подтверждаться административной операцией без хранения
-платёжных реквизитов. Полноценный платёж относится к будущему Billing.
+Факт оплаты может подтверждаться административной операцией без хранения
+суммы или платёжных реквизитов. Денежный расчёт и проведение платежа относятся
+к внешней бухгалтерии.
 
 Открытый бизнес-вопрос перед реализацией: допускаются ли два последовательных
 периода сохранения места или услуга ограничена одним периодом подряд.
@@ -1002,8 +1051,6 @@ MakeupEntitlementGranted
 MakeupEntitlementUsed
 PaidFreezeAuthorized
 PaidFreezeCancelled
-BillingRecalculationRequested
-
 GroupPlaceHoldCreated
 GroupPlaceHoldCancelled
 GroupPlaceHoldExpired
@@ -1011,7 +1058,7 @@ GroupPlaceHoldExpired
 
 Конкретные event names могут быть уточнены при реализации, но audit должен
 позволять пройти от пропущенного Lesson до выданного права, его использования
-и, при наличии, финансового перерасчёта.
+и административного подтверждения платного operational workflow.
 
 События, относящиеся к одной бизнес-операции, используют общий
 `correlation_id`, как уже сделано для template occurrence skip.
@@ -1028,12 +1075,13 @@ unexcused absence compensation
 school reschedule makeup
 administrative makeup
 paid freeze / deferred makeup
-billing recalculation
 group place hold
 ```
 
 Они могут использовать общий compensation case и entitlement primitives, но
-имеют разные основания, требования к оплате, target periods и audit semantics.
+имеют разные основания, требования к подтверждению оплаты, target periods и
+audit semantics. Денежные перерасчёты относятся к внешней бухгалтерии и в
+этот список доменных механизмов не входят.
 
 Платная заморозка не должна выглядеть как произвольное увеличение остатка
 Subscription, а сохранение места в группе не должно создавать посещения или

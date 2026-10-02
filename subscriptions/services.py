@@ -47,8 +47,11 @@ from .models import (
     SubscriptionPlanAllowance,
 )
 from .selectors import (
+    NextStudentPeriodResolution,
     get_applicable_absence_policy,
+    next_student_period_candidate_resolution,
     resolve_compensation_actions,
+    resolve_next_student_period,
     usable_makeups_for_subscription,
 )
 
@@ -707,7 +710,14 @@ def version_absence_compensation_policy(
         .order_by("policy_action_id", "priority", "source_from", "id")
     )
     action_map = {}
+    skipped_action_types = []
     for action in source_actions:
+        if (
+            action.action_type
+            == AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+        ):
+            skipped_action_types.append(action.action_type)
+            continue
         copied = AbsenceCompensationPolicyAction.objects.create(
             policy=replacement,
             action_type=action.action_type,
@@ -719,7 +729,9 @@ def version_absence_compensation_policy(
         )
         action_map[action.id] = copied
     for window in source_windows:
-        copied_action = action_map[window.policy_action_id]
+        copied_action = action_map.get(window.policy_action_id)
+        if copied_action is None:
+            continue
         AbsenceCompensationPolicyWindow.objects.create(
             policy_action=copied_action,
             name=window.name,
@@ -744,6 +756,7 @@ def version_absence_compensation_policy(
             "replacement_version": replacement.version,
             "effective_from": replacement.effective_from.isoformat(),
             "source_effective_until": source.effective_until.isoformat(),
+            "skipped_action_types": skipped_action_types,
         },
     )
     return replacement
@@ -844,6 +857,22 @@ def _require_unreferenced_policy(policy: AbsenceCompensationPolicy) -> None:
         )
 
 
+def _reject_out_of_scope_billing_action(action_type: str) -> None:
+    if (
+        action_type
+        == AbsenceCompensationPolicyAction.ActionType.BILLING_RECALCULATION
+    ):
+        raise ValidationError(
+            {
+                "action_type": (
+                    "Billing recalculation is outside the scheduling system. "
+                    "Personal discounts, recalculations, credits and refunds "
+                    "must be handled by accounting."
+                )
+            }
+        )
+
+
 @transaction.atomic
 def create_absence_compensation_policy_action(
     *,
@@ -865,6 +894,7 @@ def create_absence_compensation_policy_action(
         pk=policy_id
     )
     _require_unreferenced_policy(policy)
+    _reject_out_of_scope_billing_action(action_type)
     action = AbsenceCompensationPolicyAction(
         policy=policy,
         action_type=action_type,
@@ -915,6 +945,7 @@ def update_absence_compensation_policy_action(
         pk=action_ref.policy_id
     )
     _require_unreferenced_policy(policy)
+    _reject_out_of_scope_billing_action(action_type)
     action = (
         AbsenceCompensationPolicyAction.objects.select_for_update()
         .select_related("policy")
@@ -1725,6 +1756,7 @@ def materialize_free_makeup_from_case(
     target_rule = action.get("target_period_rule")
     target_from = action.get("target_from")
     target_until = action.get("target_until")
+    target_subscription = None
 
     if (
         target_rule
@@ -1736,14 +1768,22 @@ def materialize_free_makeup_from_case(
         target_rule
         == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
     ):
-        raise ValidationError(
-            {
-                "case": (
-                    "NEXT_STUDENT_PERIOD materialization requires the "
-                    "subscription-period model and is not implemented yet."
-                )
-            }
+        target_subscription, resolution = _lock_next_student_period_target(
+            case=case,
+            source_subscription=subscription,
         )
+        if resolution.pending_activation:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Next student period is a pending rolling "
+                        "subscription. Activate its billing period before "
+                        "materializing the free make-up."
+                    )
+                }
+            )
+        valid_from = resolution.starts_on
+        valid_until = resolution.ends_on
     elif (
         target_rule
         == AbsenceCompensationPolicyAction.TargetPeriodRule.EXPLICIT_TARGET_WINDOW
@@ -1783,6 +1823,7 @@ def materialize_free_makeup_from_case(
         action_type=AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP,
         action_snapshot=action,
         makeup_entitlement=entitlement,
+        target_subscription=target_subscription,
         activated_at=materialized_at,
         created_by=actor,
     )
@@ -1816,6 +1857,11 @@ def materialize_free_makeup_from_case(
             ),
             "valid_until": (
                 valid_until.isoformat() if valid_until is not None else None
+            ),
+            "target_subscription_id": (
+                str(target_subscription.id)
+                if target_subscription is not None
+                else None
             ),
         },
     )
@@ -1865,7 +1911,7 @@ def _paid_makeup_requirement_flags(
     )
 
 
-def _lock_paid_makeup_target_subscription(
+def _lock_compensation_target_subscription(
     *,
     case: AbsenceCompensationCase,
     subscription_id: UUID,
@@ -1893,6 +1939,45 @@ def _lock_paid_makeup_target_subscription(
             }
         )
     return subscription
+
+
+def _lock_next_student_period_target(
+    *,
+    case: AbsenceCompensationCase,
+    source_subscription: Subscription,
+) -> tuple[Subscription, NextStudentPeriodResolution]:
+    resolution = resolve_next_student_period(
+        source_subscription=source_subscription,
+        category=case.category,
+    )
+    if resolution is None:
+        raise ValidationError(
+            {
+                "target_subscription": (
+                    "No next student period subscription is available yet."
+                )
+            }
+        )
+
+    target = _lock_compensation_target_subscription(
+        case=case,
+        subscription_id=resolution.subscription.id,
+    )
+
+    current = resolve_next_student_period(
+        source_subscription=source_subscription,
+        category=case.category,
+    )
+    if current is None or current.subscription.id != target.id:
+        raise ValidationError(
+            {
+                "target_subscription": (
+                    "Next student period changed concurrently. Retry the "
+                    "operation."
+                )
+            }
+        )
+    return target, current
 
 
 def _validate_paid_makeup_target(
@@ -1928,6 +2013,23 @@ def _validate_paid_makeup_target(
                 }
             )
         if (
+            source_subscription.valid_from is None
+            or source_subscription.valid_until is None
+        ):
+            raise ValidationError(
+                {
+                    "source_subscription": (
+                        "Source subscription must have resolved start and "
+                        "end dates."
+                    )
+                }
+            )
+
+        source_start = source_subscription.valid_from
+        source_end = source_subscription.valid_until
+        source_length_days = (source_end - source_start).days + 1
+
+        if (
             target_subscription.valid_from is None
             or target_subscription.valid_until is None
         ):
@@ -1955,23 +2057,114 @@ def _validate_paid_makeup_target(
                         )
                     }
                 )
-            if target_period.reference_date <= source_subscription.valid_until:
+            effective_start = max(
+                target_period.reference_date,
+                source_end + timedelta(days=1),
+            )
+            gap_days = max(
+                0,
+                (
+                    effective_start
+                    - (source_end + timedelta(days=1))
+                ).days,
+            )
+            if gap_days > source_length_days:
                 raise ValidationError(
                     {
                         "target_subscription": (
-                            "Pending rolling target subscription reference "
-                            "date must be after the source subscription ends."
+                            "Target subscription exceeds the maximum "
+                            "NEXT_STUDENT_PERIOD gap of one source-period "
+                            "length."
+                        )
+                    }
+                )
+            candidate = next_student_period_candidate_resolution(
+                source_subscription=source_subscription,
+                target_subscription=target_subscription,
+            )
+            if candidate is None:
+                if target_period.reference_date <= source_start:
+                    raise ValidationError(
+                        {
+                            "target_subscription": (
+                                "Pending rolling target subscription issued "
+                                "before/at the source start is only eligible "
+                                "when it is a later-created item from the same "
+                                "rolling package."
+                            )
+                        }
+                    )
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription is not eligible as the next "
+                            "student period."
                         )
                     }
                 )
             return None, None
 
-        if target_subscription.valid_from <= source_subscription.valid_until:
+        if target_subscription.valid_from <= source_start:
             raise ValidationError(
                 {
                     "target_subscription": (
                         "Target subscription for NEXT_STUDENT_PERIOD must "
-                        "start after the source subscription ends."
+                        "start after the source subscription starts."
+                    )
+                }
+            )
+
+        if target_subscription.valid_from <= source_end:
+            try:
+                target_period = target_subscription.billing_period
+            except SubscriptionPeriod.DoesNotExist:
+                target_period = None
+            if not (
+                target_period is not None
+                and target_period.mode_snapshot
+                == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+                and target_period.state == SubscriptionPeriod.State.ACTIVE
+            ):
+                # Preserve the historical validation for ordinary overlapping
+                # fixed/calendar/legacy targets. Only an activated rolling
+                # replacement may normally overlap source valid_until.
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription for NEXT_STUDENT_PERIOD must "
+                            "start after the source subscription ends."
+                        )
+                    }
+                )
+
+        effective_start = target_subscription.valid_from
+        gap_days = max(
+            0,
+            (
+                effective_start
+                - (source_end + timedelta(days=1))
+            ).days,
+        )
+        if gap_days > source_length_days:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target subscription exceeds the maximum "
+                        "NEXT_STUDENT_PERIOD gap of one source-period length."
+                    )
+                }
+            )
+
+        candidate = next_student_period_candidate_resolution(
+            source_subscription=source_subscription,
+            target_subscription=target_subscription,
+        )
+        if candidate is None:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target subscription is not eligible as the next "
+                        "student period."
                     )
                 }
             )
@@ -2129,28 +2322,50 @@ def authorize_paid_makeup_from_case(
             }
         )
 
+    target_rule = action.get("target_period_rule")
     target_subscription = None
-    if target_subscription_id is not None:
-        target_subscription = _lock_paid_makeup_target_subscription(
+    if (
+        target_rule
+        == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+    ):
+        explicit_target = None
+        if target_subscription_id is not None:
+            explicit_target = _lock_compensation_target_subscription(
+                case=case,
+                subscription_id=target_subscription_id,
+            )
+            # Preserve the precise validation error for an explicitly supplied
+            # overlapping/otherwise invalid target before comparing it with
+            # the automatically resolved next period.
+            _validate_paid_makeup_target(
+                case=case,
+                action=action,
+                source_subscription=source_subscription,
+                target_subscription=explicit_target,
+            )
+
+        target_subscription, _resolution = _lock_next_student_period_target(
+            case=case,
+            source_subscription=source_subscription,
+        )
+        if (
+            explicit_target is not None
+            and explicit_target.id != target_subscription.id
+        ):
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Selected target subscription is not the resolved "
+                        "next student period."
+                    )
+                }
+            )
+    elif target_subscription_id is not None:
+        target_subscription = _lock_compensation_target_subscription(
             case=case,
             subscription_id=target_subscription_id,
         )
 
-    target_rule = action.get("target_period_rule")
-    if (
-        target_rule
-        == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
-        and target_subscription is None
-    ):
-        raise ValidationError(
-            {
-                "target_subscription": (
-                    "NEXT_STUDENT_PERIOD requires an explicit target "
-                    "subscription before authorization until the "
-                    "subscription-period resolver is implemented."
-                )
-            }
-        )
     if target_subscription is not None:
         _validate_paid_makeup_target(
             case=case,
@@ -2352,7 +2567,7 @@ def activate_paid_makeup_grant(
         grant.target_subscription_id or target_subscription_id
     )
     if resolved_target_subscription_id is not None:
-        target_subscription = _lock_paid_makeup_target_subscription(
+        target_subscription = _lock_compensation_target_subscription(
             case=case,
             subscription_id=resolved_target_subscription_id,
         )
@@ -5640,10 +5855,17 @@ def _paid_makeup_authorization_deadline(
             != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
         ):
             return None, "target_subscription_pending_activation"
+        source_end = source_subscription.valid_until
+        if source_end is None:
+            return None, "source_subscription_missing_period_end"
+        effective_start = max(
+            target_period.reference_date,
+            source_end + timedelta(days=1),
+        )
         target_window = resolve_subscription_period_window(
             scheme=target_period.scheme,
             reference_date=target_period.reference_date,
-            first_lesson_date=target_period.reference_date,
+            first_lesson_date=effective_start,
         )
         if target_window is None:
             return None, "target_subscription_deadline_unresolved"

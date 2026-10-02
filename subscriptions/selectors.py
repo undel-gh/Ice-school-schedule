@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from uuid import UUID
 
 from django.core.exceptions import ValidationError
@@ -12,6 +12,7 @@ from scheduling.models import Lesson
 from .balances import ledger_balance
 from .models import (
     AbsenceCompensationActionGrant,
+    AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
     AbsenceCompensationPolicyWindow,
@@ -19,6 +20,7 @@ from .models import (
     GroupPlaceHold,
     Subscription,
     SubscriptionPeriod,
+    SubscriptionPeriodScheme,
     MakeupEntitlement,
     OneTimeEntitlement,
     SubscriptionAllowance,
@@ -86,6 +88,25 @@ class ResolvedCompensationAction:
     requirement: str
     target_from: date | None
     target_until: date | None
+
+
+@dataclass(frozen=True, slots=True)
+class NextStudentPeriodResolution:
+    subscription: Subscription
+    starts_on: date | None
+    ends_on: date | None
+    pending_activation: bool
+    ordering_date: date
+    effective_start: date
+    gap_days: int
+    package_sequence: bool = False
+
+
+class CompensationNextPeriodState:
+    MISSING = "missing"
+    PENDING_ACTIVATION = "pending_activation"
+    READY = "ready"
+    CONFIGURATION_ERROR = "configuration_error"
 
 
 def get_applicable_absence_policy(
@@ -192,6 +213,378 @@ def resolve_compensation_actions(
         )
     return tuple(resolved)
 
+
+def _subscription_billing_period(
+    subscription: Subscription,
+) -> SubscriptionPeriod | None:
+    try:
+        return subscription.billing_period
+    except SubscriptionPeriod.DoesNotExist:
+        return None
+
+
+def _source_period_bounds(
+    source_subscription: Subscription,
+) -> tuple[date, date, int]:
+    if (
+        source_subscription.valid_from is None
+        or source_subscription.valid_until is None
+    ):
+        raise ValidationError(
+            {
+                "source_subscription": (
+                    "Source subscription must have resolved start and end "
+                    "dates."
+                )
+            }
+        )
+    length_days = (
+        source_subscription.valid_until
+        - source_subscription.valid_from
+    ).days + 1
+    return (
+        source_subscription.valid_from,
+        source_subscription.valid_until,
+        length_days,
+    )
+
+
+def _next_student_period_candidate(
+    *,
+    source_subscription: Subscription,
+    target_subscription: Subscription,
+) -> NextStudentPeriodResolution | None:
+    source_start, source_end, source_length_days = _source_period_bounds(
+        source_subscription
+    )
+
+    if target_subscription.id == source_subscription.id:
+        return None
+    if target_subscription.student_id != source_subscription.student_id:
+        return None
+    if target_subscription.cancelled_at is not None:
+        return None
+
+    target_period = _subscription_billing_period(target_subscription)
+    source_period = _subscription_billing_period(source_subscription)
+
+    if (
+        target_subscription.valid_from is not None
+        and target_subscription.valid_until is not None
+    ):
+        ordering_date = target_subscription.valid_from
+        if ordering_date <= source_start:
+            return None
+
+        # Overlap is a normal rolling-flow case when the source allowance is
+        # exhausted before its nominal valid_until and the next rolling
+        # subscription activates immediately. Other overlapping period types
+        # remain configuration errors and are not candidates here.
+        if ordering_date <= source_end and not (
+            target_period is not None
+            and target_period.mode_snapshot
+            == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+            and target_period.state == SubscriptionPeriod.State.ACTIVE
+        ):
+            return None
+
+        effective_start = ordering_date
+        starts_on = target_subscription.valid_from
+        ends_on = target_subscription.valid_until
+        pending_activation = False
+    elif (
+        target_subscription.valid_from is None
+        and target_subscription.valid_until is None
+        and target_period is not None
+        and target_period.mode_snapshot
+        == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        and target_period.state == SubscriptionPeriod.State.PENDING
+    ):
+        ordering_date = target_period.reference_date
+        package_sequence = False
+        if ordering_date <= source_start:
+            # Rolling subscriptions may be sold as a package before any of
+            # them activates. Once the first item becomes the source period,
+            # later-created pending items with the same reference date form a
+            # deterministic continuation queue.
+            package_sequence = (
+                source_period is not None
+                and source_period.mode_snapshot
+                == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+                and source_period.state == SubscriptionPeriod.State.ACTIVE
+                and target_period.reference_date
+                == source_period.reference_date
+                and target_subscription.created_at
+                > source_subscription.created_at
+            )
+            if not package_sequence:
+                return None
+
+        # A rolling subscription may be bought while the source period is
+        # still active. Until it actually activates, treat its effective
+        # transition as no earlier than the day after source valid_until.
+        effective_start = max(
+            ordering_date,
+            source_end + timedelta(days=1),
+        )
+        starts_on = None
+        ends_on = None
+        pending_activation = True
+    else:
+        return None
+
+    if not pending_activation:
+        package_sequence = False
+
+    first_day_after_source = source_end + timedelta(days=1)
+    gap_days = max(0, (effective_start - first_day_after_source).days)
+    if gap_days > source_length_days:
+        return None
+
+    return NextStudentPeriodResolution(
+        subscription=target_subscription,
+        starts_on=starts_on,
+        ends_on=ends_on,
+        pending_activation=pending_activation,
+        ordering_date=ordering_date,
+        effective_start=effective_start,
+        gap_days=gap_days,
+        package_sequence=package_sequence,
+    )
+
+
+def _same_prepaid_rolling_package(
+    *,
+    source_subscription: Subscription,
+    target_subscription: Subscription,
+) -> bool:
+    source_period = _subscription_billing_period(source_subscription)
+    target_period = _subscription_billing_period(target_subscription)
+    return (
+        source_period is not None
+        and target_period is not None
+        and source_period.mode_snapshot
+        == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        and target_period.mode_snapshot
+        == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        and source_period.reference_date == target_period.reference_date
+        and target_subscription.created_at > source_subscription.created_at
+    )
+
+
+def next_student_period_candidate_resolution(
+    *,
+    source_subscription: Subscription,
+    target_subscription: Subscription,
+) -> NextStudentPeriodResolution | None:
+    """Evaluate one already ownership/category-validated target candidate."""
+    return _next_student_period_candidate(
+        source_subscription=source_subscription,
+        target_subscription=target_subscription,
+    )
+
+
+def resolve_next_student_period(
+    *,
+    source_subscription: Subscription,
+    category: str,
+    candidate_subscriptions: tuple[Subscription, ...] | list[Subscription] | None = None,
+) -> NextStudentPeriodResolution | None:
+    """
+    Resolve the student's immediate next subscription for one ICE/HALL category.
+
+    "Next" is sequenced after the *start* of the source subscription, not its
+    nominal end. This supports the normal rolling flow where a replacement is
+    bought early or activates after the old allowance is exhausted while the
+    old valid_until is still in the future.
+
+    A pending rolling subscription is ordered by billing_period.reference_date
+    (its issue/reference date). Its effective transition is conservatively no
+    earlier than source valid_until + 1 until real activation dates exist.
+
+    The uncovered gap between source and target may not exceed one full source
+    period length. A longer absence is not silently treated as the "next"
+    compensation period.
+    """
+    _source_period_bounds(source_subscription)
+
+    if candidate_subscriptions is None:
+        candidate_subscriptions = list(
+            Subscription.objects.filter(
+                student_id=source_subscription.student_id,
+                cancelled_at__isnull=True,
+                allowances__category=category,
+            )
+            .exclude(pk=source_subscription.pk)
+            .select_related("billing_period")
+            .order_by("created_at", "id")
+        )
+        category_prechecked = True
+    else:
+        category_prechecked = False
+
+    resolved: list[NextStudentPeriodResolution] = []
+    for subscription in candidate_subscriptions:
+        if subscription.student_id != source_subscription.student_id:
+            continue
+        if not category_prechecked and not any(
+            allowance.category == category
+            for allowance in subscription.allowances.all()
+        ):
+            continue
+        candidate = _next_student_period_candidate(
+            source_subscription=source_subscription,
+            target_subscription=subscription,
+        )
+        if candidate is not None:
+            resolved.append(candidate)
+
+    if not resolved:
+        return None
+
+    # When a prepaid rolling package has already advanced from source A to an
+    # active successor B, later pending package items (C, D, ...) must not
+    # compete by their old purchase/reference date. The active successor is
+    # the actual next period; pending package ordering becomes relevant only
+    # after there is no already-activated successor after the source.
+    active_package_successors = [
+        item
+        for item in resolved
+        if (
+            not item.pending_activation
+            and _same_prepaid_rolling_package(
+                source_subscription=source_subscription,
+                target_subscription=item.subscription,
+            )
+        )
+    ]
+    if active_package_successors:
+        resolved = [
+            item
+            for item in resolved
+            if not (
+                item.pending_activation
+                and item.package_sequence
+                and _same_prepaid_rolling_package(
+                    source_subscription=source_subscription,
+                    target_subscription=item.subscription,
+                )
+            )
+        ]
+
+    earliest_date = min(item.ordering_date for item in resolved)
+    earliest = [
+        item for item in resolved
+        if item.ordering_date == earliest_date
+    ]
+    if len(earliest) > 1:
+        if all(item.package_sequence for item in earliest):
+            # A multi-subscription rolling package is an ordered queue. Use
+            # creation time only inside that explicitly recognised package;
+            # ordinary equal-date candidates remain an ambiguity error.
+            earliest.sort(
+                key=lambda item: (
+                    item.subscription.created_at,
+                    str(item.subscription.id),
+                )
+            )
+            if (
+                len(earliest) > 1
+                and earliest[0].subscription.created_at
+                == earliest[1].subscription.created_at
+            ):
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Multiple rolling package subscriptions have the "
+                            "same issue order. Resolve the ambiguity before "
+                            "issuing compensation."
+                        )
+                    }
+                )
+            return earliest[0]
+        raise ValidationError(
+            {
+                "target_subscription": (
+                    "Multiple subscriptions match the next student period "
+                    f"starting/issued on {earliest_date.isoformat()}. Resolve "
+                    "the duplicate/overlap before issuing compensation."
+                )
+            }
+        )
+    return earliest[0]
+
+
+def manager_compensation_next_period_states(
+    cases: tuple[AbsenceCompensationCase, ...] | list[AbsenceCompensationCase],
+) -> dict[UUID, str]:
+    """
+    Return manager-facing state for OPEN FREE_MAKEUP/NEXT_STUDENT_PERIOD cases.
+
+    Candidate subscriptions are loaded in one batch so the manager list does
+    not introduce an N+1 query while surfacing cases that wait for a pending
+    rolling period to activate.
+    """
+    relevant = []
+    for case in cases:
+        if case.status != AbsenceCompensationCase.Status.OPEN:
+            continue
+        if (
+            case.eligibility_status
+            != AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+        ):
+            continue
+        if case.source_subscription_allowance_id is None:
+            continue
+        has_free_next = any(
+            isinstance(item, dict)
+            and item.get("action_type")
+            == AbsenceCompensationPolicyAction.ActionType.FREE_MAKEUP
+            and item.get("target_period_rule")
+            == AbsenceCompensationPolicyAction.TargetPeriodRule.NEXT_STUDENT_PERIOD
+            for item in case.actions_snapshot
+        )
+        if has_free_next:
+            relevant.append(case)
+
+    if not relevant:
+        return {}
+
+    student_ids = {case.student_id for case in relevant}
+    subscriptions = list(
+        Subscription.objects.filter(
+            student_id__in=student_ids,
+            cancelled_at__isnull=True,
+        )
+        .select_related("billing_period")
+        .prefetch_related("allowances")
+        .order_by("student_id", "created_at", "id")
+    )
+    by_student: dict[UUID, list[Subscription]] = {}
+    for subscription in subscriptions:
+        by_student.setdefault(subscription.student_id, []).append(subscription)
+
+    states: dict[UUID, str] = {}
+    for case in relevant:
+        source_subscription = (
+            case.source_subscription_allowance.subscription
+        )
+        try:
+            resolution = resolve_next_student_period(
+                source_subscription=source_subscription,
+                category=case.category,
+                candidate_subscriptions=by_student.get(case.student_id, []),
+            )
+        except ValidationError:
+            states[case.id] = CompensationNextPeriodState.CONFIGURATION_ERROR
+            continue
+        if resolution is None:
+            states[case.id] = CompensationNextPeriodState.MISSING
+        elif resolution.pending_activation:
+            states[case.id] = CompensationNextPeriodState.PENDING_ACTIVATION
+        else:
+            states[case.id] = CompensationNextPeriodState.READY
+    return states
 
 def allowance_balance(allowance_id: UUID) -> int:
     """Return the authoritative ledger balance for one allowance."""
