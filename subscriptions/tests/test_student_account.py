@@ -366,7 +366,8 @@ def test_historical_subscription_labels_balance_as_history(
     body = response.content.decode()
     assert response.status_code == 200
     assert "исторический остаток" in body
-    assert "недоступен для новых посещений" in body
+    assert "недоступен для обычных посещений" in body
+    assert "может использоваться уже выданными отработками" in body
 
 
 @pytest.mark.django_db

@@ -75,7 +75,7 @@
       {% endfor %}
     </div>
     {% if item.state == "expired" or item.state == "cancelled" %}
-      <p class="muted">Остаток сохранён для истории и недоступен для новых посещений.</p>
+      <p class="muted">Остаток недоступен для обычных посещений; он может использоваться уже выданными отработками.</p>
     {% endif %}
   </article>
 {% empty %}

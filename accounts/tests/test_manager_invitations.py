@@ -289,4 +289,7 @@ def test_manager_web_can_deactivate_unlink_and_issue_recovery_invitation(
     invitation = AccountInvitation.objects.get(kind=AccountInvitation.Kind.RECOVERY)
     assert invitation.recovery_user_id == user.id
     assert invitation.account_display_name == "Мама Лизы"
-    assert "/accounts/external/invite/" in created.content.decode()
+    created_body = created.content.decode()
+    assert "/accounts/external/invite/" in created_body
+    assert "независимому доверенному каналу" in created_body
+    assert "скомпрометированным аккаунтом" in created_body

@@ -403,6 +403,27 @@ def test_manager_subscription_detail_missing_returns_404(client):
 
 
 @pytest.mark.django_db
+def test_makeup_cancel_checks_permission_before_lookup(client):
+    import uuid
+
+    user = User.objects.create_user(
+        username="makeup-cancel-no-permission",
+        password="test",
+    )
+    client.force_login(user)
+
+    response = client.post(
+        reverse(
+            "subscriptions:manager_makeup_cancel",
+            kwargs={"makeup_id": uuid.uuid4()},
+        ),
+        {"reason": "should not reveal existence"},
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
 def test_manager_subscription_report_rejects_excessive_date_range(client):
     manager = User.objects.create_user(
         username="report-range-manager",

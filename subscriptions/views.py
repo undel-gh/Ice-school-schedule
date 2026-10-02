@@ -442,6 +442,11 @@ def manager_makeup_cancel_view(
     *,
     makeup_id: UUID,
 ) -> HttpResponse:
+    require_permission(
+        request.user,
+        "subscriptions.change_makeupentitlement",
+        "Make-up entitlement change permission is required.",
+    )
     makeup = get_object_or_404(
         MakeupEntitlement.objects.select_related(
             "source_subscription_allowance",
