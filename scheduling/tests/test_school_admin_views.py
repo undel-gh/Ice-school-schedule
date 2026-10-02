@@ -240,7 +240,7 @@ def test_manager_cannot_deactivate_group_with_active_template(client, manager):
     assert response.status_code == 200
     group.refresh_from_db()
     assert group.is_active is True
-    assert "schedule template" in response.content.decode().lower()
+    assert "шаблон расписания" in response.content.decode().lower()
 
 
 @pytest.mark.django_db
@@ -285,7 +285,7 @@ def test_manager_cannot_deactivate_group_with_future_lesson(client, manager):
     assert response.status_code == 200
     group.refresh_from_db()
     assert group.is_active is True
-    assert "future" in response.content.decode().lower()
+    assert "будущие неотменённые занятия" in response.content.decode().lower()
 
 
 @pytest.mark.django_db
