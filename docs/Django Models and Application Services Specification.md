@@ -3245,8 +3245,16 @@ Target-period resolution:
 - NEXT_STUDENT_PERIOD is resolved automatically for the same Student and
   ICE/HALL category. Sequencing is relative to source `valid_from`, not
   nominal `valid_until`: dated subscriptions are ordered by `valid_from`,
-  pending rolling subscriptions by `billing_period.reference_date`, and the
-  ordering date must be strictly after source `valid_from`;
+  pending rolling subscriptions by `billing_period.reference_date`.
+  Normally the ordering date must be strictly after source `valid_from`;
+- prepaid rolling packages are the explicit exception. If source is an ACTIVE
+  rolling subscription and a PENDING target has the same
+  `billing_period.reference_date`, a target created after source is a valid
+  continuation even when that reference date precedes source `valid_from`.
+  Multiple remaining package items are sequenced by `Subscription.created_at`;
+  equal timestamps are ambiguous, and UUID is not a business tie-break. A
+  pending item created before source is not pulled forward merely because the
+  reference date matches;
 - an ACTIVE rolling target may overlap the source nominal validity window,
   because early source exhaustion can legitimately activate the replacement
   before source `valid_until`. Other overlapping period types are not valid
@@ -3256,8 +3264,9 @@ Target-period resolution:
 - the uncovered gap may not exceed one full source-period length
   (`valid_until - valid_from + 1`). A subscription beyond that horizon is not
   treated as NEXT_STUDENT_PERIOD. Cancelled subscriptions and subscriptions
-  without the required category are ignored. Equal earliest candidates are a
-  configuration error rather than an implicit tie-break;
+  without the required category are ignored. Equal earliest ordinary
+  candidates are a configuration error; `created_at` ordering is used only
+  inside the recognised prepaid rolling-package case;
 - PAID_MAKEUP fixes the resolved target Subscription during authorization.
   An explicitly supplied target must validate normally and match the resolver;
 - FREE_MAKEUP materializes immediately for a resolved dated target. If the

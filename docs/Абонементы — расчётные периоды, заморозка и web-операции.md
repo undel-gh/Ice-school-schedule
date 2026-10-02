@@ -713,7 +713,20 @@ allowance следующий rolling-период может активиров�
 - для Subscription с известными датами ordering key = `valid_from`;
 - для PENDING rolling Subscription ordering key =
   `billing_period.reference_date` (дата выдачи/reference);
-- ordering key должен быть строго позже `source_subscription.valid_from`;
+- обычно ordering key должен быть строго позже
+  `source_subscription.valid_from`;
+- исключение — **предоплаченный пакет rolling-абонементов**. Если source уже
+  ACTIVE rolling, а PENDING target имеет тот же
+  `billing_period.reference_date`, target считается продолжением пакета,
+  когда его `Subscription.created_at` позже `source.created_at`. Это
+  позволяет купить несколько rolling-абонементов в один день до активации
+  первого;
+- если в таком пакете остаётся несколько PENDING Subscription с одной
+  `reference_date`, resolver выбирает самый ранний по `created_at` после
+  source. Совпавший `created_at` считается неоднозначностью; UUID не
+  используется как бизнес tie-break;
+- PENDING Subscription, созданный **до** текущего source, не подтягивается
+  вперёд только из-за совпавшей `reference_date`;
 - overlap с nominal source window допускается только для уже ACTIVE rolling
   target; обычный overlapping calendar/fixed/legacy Subscription остаётся
   ошибочной конфигурацией;
@@ -726,9 +739,9 @@ allowance следующий rolling-период может активиров�
   28-дневного source допускается не более 28 пустых дней между периодами, для
   октября — не более 31. Более поздний абонемент не считается
   NEXT_STUDENT_PERIOD;
-- если два кандидата имеют одинаковый самый ранний ordering key, resolver
-  считает конфигурацию неоднозначной и требует исправить overlap/duplicate
-  вместо выбора по `created_at`.
+- для обычных кандидатов одинаковый самый ранний ordering key остаётся
+  неоднозначностью. `created_at` используется как последовательность только
+  внутри распознанного предоплаченного rolling-пакета.
 
 PAID_MAKEUP при authorization автоматически фиксирует найденный
 `target_subscription`. Если manager/web всё же передал target явно, он
