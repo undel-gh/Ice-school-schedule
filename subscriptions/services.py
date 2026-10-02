@@ -4451,6 +4451,19 @@ def assign_attendance_coverage_from_source(
     return coverage
 
 
+def _lock_subscription_allowances_for_rolling_revert(
+    *,
+    subscription_id: UUID,
+) -> None:
+    """Serialize rollback against coverage/right creation on any category."""
+    list(
+        SubscriptionAllowance.objects.select_for_update()
+        .filter(subscription_id=subscription_id)
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+
+
 def _rolling_period_revert_dependencies(
     *,
     subscription_id: UUID,
@@ -4551,7 +4564,7 @@ def _revert_rolling_period_to_pending(
 def _maybe_revert_rolling_subscription_activation(
     *,
     coverage: AttendanceCoverage,
-    subscription_id: UUID,
+    subscription: Subscription,
     period: SubscriptionPeriod | None,
     actor: User | None,
     correlation_id: UUID,
@@ -4566,8 +4579,11 @@ def _maybe_revert_rolling_subscription_activation(
     ):
         return False
 
+    _lock_subscription_allowances_for_rolling_revert(
+        subscription_id=subscription.id,
+    )
     dependencies = _rolling_period_revert_dependencies(
-        subscription_id=subscription_id,
+        subscription_id=subscription.id,
         excluded_coverage_id=coverage.id,
     )
     if dependencies["active_coverages"]:
@@ -4577,7 +4593,7 @@ def _maybe_revert_rolling_subscription_activation(
             aggregate_id=period.id,
             actor=actor,
             payload={
-                "subscription_id": str(subscription_id),
+                "subscription_id": str(subscription.id),
                 "activation_lesson_id": str(period.activation_lesson_id),
                 "reversed_coverage_id": str(coverage.id),
                 "reason": "active_coverages_remain",
@@ -4601,7 +4617,7 @@ def _maybe_revert_rolling_subscription_activation(
             aggregate_id=period.id,
             actor=actor,
             payload={
-                "subscription_id": str(subscription_id),
+                "subscription_id": str(subscription.id),
                 "activation_lesson_id": str(period.activation_lesson_id),
                 "reversed_coverage_id": str(coverage.id),
                 "reason": "dependent_rights_exist",
@@ -4611,9 +4627,6 @@ def _maybe_revert_rolling_subscription_activation(
         )
         return False
 
-    subscription = Subscription.objects.select_for_update().get(
-        pk=subscription_id
-    )
     _revert_rolling_period_to_pending(
         subscription=subscription,
         period=period,
@@ -4693,6 +4706,9 @@ def recover_rolling_subscription_period_activation(
             }
         )
 
+    _lock_subscription_allowances_for_rolling_revert(
+        subscription_id=subscription.id,
+    )
     dependencies = _rolling_period_revert_dependencies(
         subscription_id=subscription.id,
     )
@@ -4749,16 +4765,18 @@ def reverse_attendance_coverage(
     if coverage.reversed_at is not None:
         return coverage
 
-    subscription_id = None
+    subscription = None
     period = None
     if coverage.subscription_allowance_id is not None:
         allowance_ref = SubscriptionAllowance.objects.only(
             "subscription_id"
         ).get(pk=coverage.subscription_allowance_id)
-        subscription_id = allowance_ref.subscription_id
+        subscription = Subscription.objects.select_for_update().get(
+            pk=allowance_ref.subscription_id
+        )
         period = (
             SubscriptionPeriod.objects.select_for_update()
-            .filter(subscription_id=subscription_id)
+            .filter(subscription_id=subscription.id)
             .first()
         )
         allowance, _ = locked_allowance_balance(
@@ -4799,10 +4817,10 @@ def reverse_attendance_coverage(
             },
             correlation_id=correlation_id,
         )
-    if subscription_id is not None:
+    if subscription is not None:
         _maybe_revert_rolling_subscription_activation(
             coverage=coverage,
-            subscription_id=subscription_id,
+            subscription=subscription,
             period=period,
             actor=actor,
             correlation_id=correlation_id,

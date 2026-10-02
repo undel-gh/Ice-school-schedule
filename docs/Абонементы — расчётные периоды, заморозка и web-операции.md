@@ -262,8 +262,13 @@ makeup отменяется только через revoke medical justification
 recovery не обходит source lifecycle и refund decision для платных действий.
 
 Для уменьшения риска взаимной блокировки activation и reversal используют
-совместимый порядок блокировок критических сущностей: SubscriptionPeriod
-блокируется до SubscriptionAllowance.
+совместимый порядок блокировок критических сущностей. Rollback сначала
+сериализуется по Subscription/SubscriptionPeriod, затем блокирует **все**
+SubscriptionAllowance этого абонемента в стабильном порядке `id` и только
+после этого проверяет active coverage/makeup/compensation dependencies.
+Это относится и к автоматическому reversal, и к ручному recovery: конкурентное
+списание другой категории ICE/HALL не может появиться между dependency-check
+и переходом периода ACTIVE → PENDING.
 
 Service API:
 

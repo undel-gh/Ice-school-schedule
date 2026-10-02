@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone as dt_timezone
+import threading
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.db import close_old_connections, connection, connections
 from django.urls import reverse
 
 from accounts.models import CoachProfile, Student
@@ -13,6 +16,7 @@ from audit.models import AuditEvent
 from core.choices import SubscriptionCategory
 from core.testing import school_dt
 from scheduling.models import GroupMembership, Lesson, LessonType, TrainingGroup, Venue
+import subscriptions.services as subscription_services
 from subscriptions.models import (
     GroupPlaceHold,
     MakeupEntitlement,
@@ -81,7 +85,13 @@ def context(db, actor):
     }
 
 
-def make_plan(*, code: str, scheme=None, ice: int = 3):
+def make_plan(
+    *,
+    code: str,
+    scheme=None,
+    ice: int = 3,
+    hall: int | None = None,
+):
     plan = SubscriptionPlan.objects.create(
         code=code,
         name=code,
@@ -92,6 +102,12 @@ def make_plan(*, code: str, scheme=None, ice: int = 3):
         category=SubscriptionCategory.ICE,
         visit_limit=ice,
     )
+    if hall is not None:
+        SubscriptionPlanAllowance.objects.create(
+            plan=plan,
+            category=SubscriptionCategory.HALL,
+            visit_limit=hall,
+        )
     return plan
 
 
@@ -108,10 +124,10 @@ def ensure_hold_membership(*, student, group, actor):
     return membership
 
 
-def make_lesson(*, context, starts_at):
+def make_lesson(*, context, starts_at, lesson_type=None):
     return Lesson.objects.create(
         group=context["group"],
-        lesson_type=context["ice"],
+        lesson_type=lesson_type or context["ice"],
         coach=context["coach"],
         venue=context["venue"],
         starts_at=starts_at,
@@ -909,6 +925,266 @@ def test_reversing_activation_coverage_keeps_period_after_other_coverage(
     assert AuditEvent.objects.filter(
         event_type="SubscriptionPeriodActivationRevertSkipped",
         aggregate_id=period.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_automatic_rolling_revert_locks_all_allowances_before_dependencies(
+    actor,
+    student,
+    context,
+    monkeypatch,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-lock-all-auto",
+        name="Rolling lock all auto",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(
+        code="rolling-lock-all-auto-plan",
+        scheme=scheme,
+        ice=2,
+        hall=2,
+    )
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    lesson = make_lesson(
+        context=context,
+        starts_at=school_dt(2026, 10, 10, 18, 0),
+    )
+    attendance = Attendance.objects.create(
+        lesson=lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=school_dt(2026, 10, 10, 19, 0),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    coverage = assign_attendance_coverage(
+        attendance_id=attendance.id,
+        actor=actor,
+        now=school_dt(2026, 10, 10, 19, 0),
+    )
+    assert coverage is not None
+
+    order = []
+    original_lock = (
+        subscription_services._lock_subscription_allowances_for_rolling_revert
+    )
+    original_dependencies = subscription_services._rolling_period_revert_dependencies
+
+    def recording_lock(*, subscription_id):
+        order.append(("lock", subscription_id))
+        return original_lock(subscription_id=subscription_id)
+
+    def recording_dependencies(**kwargs):
+        order.append(("dependencies", kwargs["subscription_id"]))
+        return original_dependencies(**kwargs)
+
+    monkeypatch.setattr(
+        subscription_services,
+        "_lock_subscription_allowances_for_rolling_revert",
+        recording_lock,
+    )
+    monkeypatch.setattr(
+        subscription_services,
+        "_rolling_period_revert_dependencies",
+        recording_dependencies,
+    )
+
+    reverse_attendance_coverage(
+        coverage_id=coverage.id,
+        actor=actor,
+        now=school_dt(2026, 10, 10, 20, 0),
+    )
+
+    assert order[:2] == [
+        ("lock", subscription.id),
+        ("dependencies", subscription.id),
+    ]
+    subscription.refresh_from_db()
+    assert subscription.valid_from is None
+    assert subscription.valid_until is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_manual_rolling_recovery_blocks_concurrent_other_category_coverage(
+    actor,
+    student,
+    context,
+    monkeypatch,
+):
+    if connection.vendor != "postgresql":
+        pytest.skip("Row-locking concurrency test requires PostgreSQL.")
+
+    hall_type = LessonType.objects.create(
+        code="period-hall-concurrent-recovery",
+        name="Period Hall Concurrent Recovery",
+        subscription_category=SubscriptionCategory.HALL,
+    )
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-manual-lock-all",
+        name="Rolling manual lock all",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = make_plan(
+        code="rolling-manual-lock-all-plan",
+        scheme=scheme,
+        ice=2,
+        hall=2,
+    )
+    subscription = issue_subscription_for_period(
+        student_id=student.id,
+        plan_id=plan.id,
+        reference_date=date(2026, 10, 1),
+        actor=actor,
+        now=datetime(2026, 10, 1, 12, tzinfo=dt_timezone.utc),
+    )
+    activation_lesson = make_lesson(
+        context=context,
+        starts_at=school_dt(2026, 10, 10, 18, 0),
+    )
+    activation_attendance = Attendance.objects.create(
+        lesson=activation_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=school_dt(2026, 10, 10, 19, 0),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    activation_coverage = assign_attendance_coverage(
+        attendance_id=activation_attendance.id,
+        actor=actor,
+        now=school_dt(2026, 10, 10, 19, 0),
+    )
+    assert activation_coverage is not None
+
+    ice_allowance = subscription.allowances.get(
+        category=SubscriptionCategory.ICE,
+    )
+    blocker_lesson = make_lesson(
+        context=context,
+        starts_at=school_dt(2026, 10, 11, 18, 0),
+    )
+    blocker = MakeupEntitlement.objects.create(
+        student=student,
+        source_lesson=blocker_lesson,
+        source_subscription_allowance=ice_allowance,
+        category=SubscriptionCategory.ICE,
+        reason=MakeupEntitlement.Reason.ADMINISTRATIVE,
+        valid_from=date(2026, 10, 11),
+        valid_until=date(2026, 10, 31),
+        created_by=actor,
+    )
+    reverse_attendance_coverage(
+        coverage_id=activation_coverage.id,
+        actor=actor,
+        now=school_dt(2026, 10, 11, 20, 0),
+    )
+    blocker.cancelled_at = school_dt(2026, 10, 11, 21, 0)
+    blocker.cancelled_by = actor
+    blocker.save(update_fields=["cancelled_at", "cancelled_by"])
+
+    hall_allowance = subscription.allowances.get(
+        category=SubscriptionCategory.HALL,
+    )
+    hall_lesson = make_lesson(
+        context=context,
+        starts_at=school_dt(2026, 10, 12, 18, 0),
+        lesson_type=hall_type,
+    )
+    hall_attendance = Attendance.objects.create(
+        lesson=hall_lesson,
+        student=student,
+        status=Attendance.Status.PRESENT,
+        marked_at=school_dt(2026, 10, 12, 19, 0),
+        marked_by=actor,
+        updated_by=actor,
+    )
+
+    dependencies_checked = threading.Event()
+    release_recovery = threading.Event()
+    hall_lock_attempted = threading.Event()
+    hall_lock_acquired = threading.Event()
+
+    original_dependencies = subscription_services._rolling_period_revert_dependencies
+    original_locked_balance = subscription_services.locked_allowance_balance
+
+    def paused_dependencies(**kwargs):
+        result = original_dependencies(**kwargs)
+        if kwargs.get("excluded_coverage_id") is None:
+            dependencies_checked.set()
+            assert release_recovery.wait(timeout=5)
+        return result
+
+    def instrumented_locked_balance(allowance_id):
+        if allowance_id == hall_allowance.id:
+            hall_lock_attempted.set()
+            result = original_locked_balance(allowance_id)
+            hall_lock_acquired.set()
+            return result
+        return original_locked_balance(allowance_id)
+
+    monkeypatch.setattr(
+        subscription_services,
+        "_rolling_period_revert_dependencies",
+        paused_dependencies,
+    )
+    monkeypatch.setattr(
+        subscription_services,
+        "locked_allowance_balance",
+        instrumented_locked_balance,
+    )
+
+    def recovery_worker():
+        close_old_connections()
+        try:
+            return recover_rolling_subscription_period_activation(
+                subscription_id=subscription.id,
+                actor=actor,
+            )
+        finally:
+            connections.close_all()
+
+    def coverage_worker():
+        close_old_connections()
+        try:
+            return assign_attendance_coverage(
+                attendance_id=hall_attendance.id,
+                actor=None,
+                now=school_dt(2026, 10, 12, 19, 0),
+            )
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        recovery_future = pool.submit(recovery_worker)
+        assert dependencies_checked.wait(timeout=5)
+
+        coverage_future = pool.submit(coverage_worker)
+        assert hall_lock_attempted.wait(timeout=5)
+        assert hall_lock_acquired.wait(timeout=0.5) is False
+
+        release_recovery.set()
+        recovered = recovery_future.result(timeout=5)
+        assert recovered.state == SubscriptionPeriod.State.PENDING
+        hall_coverage = coverage_future.result(timeout=5)
+
+    assert hall_coverage is not None
+    subscription.refresh_from_db()
+    period = subscription.billing_period
+    assert period.state == SubscriptionPeriod.State.ACTIVE
+    assert subscription.valid_from == date(2026, 10, 12)
+    assert subscription.valid_until == date(2026, 11, 8)
+    assert AttendanceCoverage.objects.filter(
+        pk=hall_coverage.id,
+        subscription_allowance=hall_allowance,
+        reversed_at__isnull=True,
     ).exists()
 
 
