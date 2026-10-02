@@ -105,6 +105,7 @@ class CompensationNextPeriodState:
     MISSING = "missing"
     PENDING_ACTIVATION = "pending_activation"
     READY = "ready"
+    CONFIGURATION_ERROR = "configuration_error"
 
 
 def get_applicable_absence_policy(
@@ -432,6 +433,11 @@ def manager_compensation_next_period_states(
     for case in cases:
         if case.status != AbsenceCompensationCase.Status.OPEN:
             continue
+        if (
+            case.eligibility_status
+            != AbsenceCompensationCase.EligibilityStatus.ELIGIBLE
+        ):
+            continue
         if case.source_subscription_allowance_id is None:
             continue
         has_free_next = any(
@@ -467,11 +473,15 @@ def manager_compensation_next_period_states(
         source_subscription = (
             case.source_subscription_allowance.subscription
         )
-        resolution = resolve_next_student_period(
-            source_subscription=source_subscription,
-            category=case.category,
-            candidate_subscriptions=by_student.get(case.student_id, []),
-        )
+        try:
+            resolution = resolve_next_student_period(
+                source_subscription=source_subscription,
+                category=case.category,
+                candidate_subscriptions=by_student.get(case.student_id, []),
+            )
+        except ValidationError:
+            states[case.id] = CompensationNextPeriodState.CONFIGURATION_ERROR
+            continue
         if resolution is None:
             states[case.id] = CompensationNextPeriodState.MISSING
         elif resolution.pending_activation:

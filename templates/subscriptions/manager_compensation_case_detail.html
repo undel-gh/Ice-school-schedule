@@ -18,6 +18,8 @@
     <p><span class="badge badge--covered">Следующий период активен: бесплатную отработку можно выдать.</span></p>
   {% elif next_period_state == "missing" %}
     <p><span class="badge badge--unknown">Для бесплатной отработки ещё нет подходящего следующего абонемента.</span></p>
+  {% elif next_period_state == "configuration_error" %}
+    <p><span class="badge badge--cancelled">Следующий период определяется неоднозначно. Исправьте конфликт/дубликат абонементов.</span></p>
   {% endif %}
   {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationCase&aggregate_id={{ case.id }}">Журнал действий</a></p>{% endif %}
 </article>

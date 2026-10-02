@@ -25,6 +25,8 @@
       <p><span class="badge badge--covered">Следующий период готов — можно выдать</span></p>
     {% elif case.next_period_state == "missing" %}
       <p><span class="badge badge--unknown">Ожидает следующий абонемент</span></p>
+    {% elif case.next_period_state == "configuration_error" %}
+      <p><span class="badge badge--cancelled">Конфликт следующего периода — требуется исправление</span></p>
     {% endif %}
     <p class="lesson-card__meta">{{ case.policy_name_snapshot }} v{{ case.policy_version_snapshot }}</p>
   </article>
