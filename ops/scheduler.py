@@ -152,7 +152,7 @@ def build_jobs() -> list[Job]:
             interval_seconds=generation_interval,
             timeout_seconds=_positive_int(
                 "SCHEDULER_GENERATION_TIMEOUT_SECONDS",
-                generation_interval,
+                min(generation_interval, lifecycle_interval),
             ),
             command=[
                 sys.executable,

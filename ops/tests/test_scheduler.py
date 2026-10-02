@@ -39,7 +39,7 @@ def test_scheduler_defaults(monkeypatch):
         "process_subscription_lifecycle",
     ]
     assert jobs[1].interval_seconds == 21600
-    assert jobs[1].timeout_seconds == 21600
+    assert jobs[1].timeout_seconds == 3600
     assert jobs[1].command == [
         sys.executable,
         "manage.py",
