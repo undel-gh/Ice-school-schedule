@@ -5,16 +5,22 @@ import re
 from .ui_messages_accounts import ACCOUNT_UI_MESSAGES
 from .ui_messages_attendance import ATTENDANCE_UI_MESSAGES
 from .ui_messages_scheduling import SCHEDULING_UI_MESSAGES
+from .ui_messages_subscriptions import (
+    SUBSCRIPTION_DYNAMIC_PATTERNS,
+    SUBSCRIPTION_UI_MESSAGES,
+)
 
 UI_MESSAGES = {
     **ACCOUNT_UI_MESSAGES,
     **ATTENDANCE_UI_MESSAGES,
     **SCHEDULING_UI_MESSAGES,
+    **SUBSCRIPTION_UI_MESSAGES,
 }
 
 _PERMISSION_RE = re.compile(r"^.+ permission is required\.$")
 
 _DYNAMIC_PATTERNS = (
+    *SUBSCRIPTION_DYNAMIC_PATTERNS,
     (
         re.compile(r'^External identity provider rejected the request \((?P<code>.+)\)\.$'),
         lambda m: f"Внешний провайдер входа отклонил запрос ({m.group('code')}).",
