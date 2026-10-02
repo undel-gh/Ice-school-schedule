@@ -914,6 +914,7 @@ def test_reversing_activation_coverage_keeps_period_after_other_coverage(
 
 @pytest.mark.django_db
 def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
+    client,
     actor,
     student,
     context,
