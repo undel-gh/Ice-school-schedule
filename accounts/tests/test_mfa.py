@@ -6,8 +6,10 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.test import Client, override_settings
-from django.urls import reverse
+from django.test.utils import CaptureQueriesContext
+from django.urls import URLPattern, URLResolver, get_resolver, reverse
 from django.utils import timezone
+from django.db import connection
 from django.utils.http import urlencode
 from django_otp import DEVICE_ID_SESSION_KEY
 from django_otp.oath import TOTP
@@ -17,7 +19,9 @@ from django_otp.plugins.otp_totp.models import TOTPDevice
 from accounts.mfa import (
     MFA_PREAUTH_SESSION_KEY,
     MFA_VERIFIED_AT_SESSION_KEY,
+    mfa_required_for_user,
 )
+from core.permissions import has_manager_operations_access
 from audit.models import AuditEvent
 
 
@@ -931,3 +935,81 @@ def test_confirming_replacement_revokes_old_totp_in_same_flow():
         event_type="MFAAuthenticatorReplaced",
         aggregate_id=user.id,
     ).exists()
+
+
+
+@pytest.mark.django_db
+def test_manager_permission_result_is_reused_across_mfa_and_context_checks():
+    user = User.objects.create_user(
+        username="mfa-permission-cache",
+        password="secret-password",
+    )
+
+    with CaptureQueriesContext(connection) as queries:
+        assert mfa_required_for_user(user) is False
+        first_query_count = len(queries)
+        assert first_query_count >= 1
+
+        assert mfa_required_for_user(user) is False
+        assert has_manager_operations_access(user) is False
+        assert len(queries) == first_query_count
+
+
+def _privileged_route_patterns():
+    routes = []
+
+    def walk(patterns, prefix=""):
+        for entry in patterns:
+            route = getattr(entry.pattern, "_route", str(entry.pattern))
+            full = f"{prefix}{route}"
+            if isinstance(entry, URLResolver):
+                walk(entry.url_patterns, full)
+            elif isinstance(entry, URLPattern) and full.startswith(
+                ("manager/", "admin/")
+            ):
+                routes.append(full)
+
+    walk(get_resolver().url_patterns)
+    return tuple(sorted(set(routes)))
+
+
+PRIVILEGED_ROUTE_PATTERNS = _privileged_route_patterns()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "route_pattern",
+    PRIVILEGED_ROUTE_PATTERNS,
+    ids=lambda value: value,
+)
+def test_all_manager_and_admin_routes_reject_unverified_privileged_session(
+    route_pattern,
+):
+    client = Client()
+    user = _privileged_user(
+        username=(
+            "mfa-route-"
+            + str(abs(hash(route_pattern)))
+        )
+    )
+    TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    client.force_login(user)
+
+    # Middleware runs before URL resolution. Using the concrete static prefix
+    # of every registered route keeps the test independent of each view's
+    # model fixtures while still exercising the real request path.
+    static_prefix = route_pattern.split("<", 1)[0]
+    static_prefix = static_prefix.split("(?", 1)[0]
+    path = "/" + static_prefix
+    if not path.endswith("/"):
+        path += "/"
+
+    response = client.get(path)
+
+    assert response.status_code == 302
+    assert response.url.startswith(reverse("login"))
+    assert "_auth_user_id" not in client.session

@@ -434,7 +434,10 @@ Before deploying the MFA-enabled build:
    `django_otp` TOTP/static-device tables are required by middleware and the
    login flow.
 4. Deploy the application, then sign in with the emergency/local privileged
-   account and complete TOTP enrollment.
+   account and complete TOTP enrollment. For every newly created privileged
+   employee account, deliver the initial local password over a trusted channel
+   and require MFA enrollment immediately on the first login; whoever knows
+   that password first can otherwise become the first person to bind TOTP.
 5. Store the 10 displayed recovery codes outside the application session in an
    appropriately protected operational secret store.
 6. Confirm access to both the manager UI and `/admin/` through a fresh

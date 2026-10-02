@@ -36,11 +36,23 @@ class MFAIdentity:
 def mfa_required_for_user(user) -> bool:
     if user is None:
         return False
-    return bool(
-        getattr(user, "is_staff", False)
-        or getattr(user, "is_superuser", False)
-        or has_manager_operations_assignment(user)
-    )
+    if getattr(user, "is_staff", False) or getattr(
+        user,
+        "is_superuser",
+        False,
+    ):
+        return True
+
+    cache_attr = "_manager_operations_assignment_request_cache"
+    if hasattr(user, cache_attr):
+        return bool(getattr(user, cache_attr))
+
+    assigned = has_manager_operations_assignment(user)
+    # request.user is a request-scoped model instance in normal Django
+    # request handling. Reuse the assignment result across middleware and
+    # context processors without persisting it anywhere.
+    setattr(user, cache_attr, assigned)
+    return assigned
 
 
 def has_confirmed_totp(user) -> bool:
