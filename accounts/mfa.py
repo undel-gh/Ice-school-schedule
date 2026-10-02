@@ -21,6 +21,7 @@ MFA_NEXT_SESSION_KEY = "mfa_next"
 MFA_SETUP_DEVICE_SESSION_KEY = "mfa_setup_device_id"
 MFA_SETUP_AUTH_SESSION_KEY = "mfa_setup_auth"
 MFA_RECOVERY_CODES_SESSION_KEY = "mfa_recovery_codes"
+MFA_VERIFIED_AT_SESSION_KEY = "mfa_verified_at"
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +51,31 @@ def has_confirmed_totp(user) -> bool:
 
 def has_confirmed_mfa_device(user) -> bool:
     return user_has_device(user, confirmed=True)
+
+
+def mark_privileged_mfa_verified(request) -> None:
+    request.session[MFA_VERIFIED_AT_SESSION_KEY] = (
+        timezone.now().timestamp()
+    )
+    request.session.modified = True
+
+
+def privileged_mfa_verification_is_fresh(request) -> bool:
+    raw = request.session.get(MFA_VERIFIED_AT_SESSION_KEY)
+    if raw is None:
+        return False
+    max_age = int(
+        getattr(
+            settings,
+            "MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS",
+            43200,
+        )
+    )
+    try:
+        age = timezone.now().timestamp() - float(raw)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age <= max_age
 
 
 def begin_mfa_preauth(

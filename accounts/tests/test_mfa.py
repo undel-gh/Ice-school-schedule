@@ -14,7 +14,10 @@ from django_otp.oath import TOTP
 from django_otp.plugins.otp_static.models import StaticDevice, StaticToken
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from accounts.mfa import MFA_PREAUTH_SESSION_KEY
+from accounts.mfa import (
+    MFA_PREAUTH_SESSION_KEY,
+    MFA_VERIFIED_AT_SESSION_KEY,
+)
 from audit.models import AuditEvent
 
 
@@ -775,3 +778,70 @@ def test_authenticator_replacement_rotates_verified_session_after_new_totp():
     assert confirmed.url == reverse("mfa:recovery_codes")
     assert client.session.session_key != before_confirm_key
     assert client.session[DEVICE_ID_SESSION_KEY] == new_device.persistent_id
+
+
+
+@pytest.mark.django_db
+@override_settings(MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS=43200)
+def test_privileged_mfa_absolute_age_does_not_slide_with_session_activity():
+    client = Client()
+    user = _privileged_user(username="mfa-absolute-age")
+    device = TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    _begin_password_login(client, user)
+    verified = client.post(
+        reverse("mfa:challenge"),
+        {
+            "otp_device": device.persistent_id,
+            "otp_token": _totp_token(device),
+        },
+    )
+    assert verified.status_code == 302
+
+    session = client.session
+    session[MFA_VERIFIED_AT_SESSION_KEY] = (
+        timezone.now() - timedelta(hours=33)
+    ).timestamp()
+    # Simulate unrelated activity that writes/saves the session and therefore
+    # would slide a Django integer set_expiry() deadline.
+    session["activity_marker"] = "still-active"
+    session.save()
+
+    response = client.get(reverse("subscriptions:manager_operations"))
+
+    assert response.status_code == 302
+    assert response.url.startswith(reverse("login"))
+    assert "_auth_user_id" not in client.session
+
+
+@pytest.mark.django_db
+@override_settings(MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS=43200)
+def test_privileged_mfa_absolute_age_allows_session_inside_limit():
+    client = Client()
+    user = _privileged_user(username="mfa-absolute-age-fresh")
+    device = TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    _begin_password_login(client, user)
+    client.post(
+        reverse("mfa:challenge"),
+        {
+            "otp_device": device.persistent_id,
+            "otp_token": _totp_token(device),
+        },
+    )
+    session = client.session
+    session[MFA_VERIFIED_AT_SESSION_KEY] = (
+        timezone.now() - timedelta(hours=11)
+    ).timestamp()
+    session["activity_marker"] = "still-active"
+    session.save()
+
+    response = client.get(reverse("subscriptions:manager_operations"))
+
+    assert response.status_code == 200

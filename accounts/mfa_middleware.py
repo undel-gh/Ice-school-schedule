@@ -7,7 +7,10 @@ from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.http import urlencode
 
-from .mfa import mfa_required_for_user
+from .mfa import (
+    mfa_required_for_user,
+    privileged_mfa_verification_is_fresh,
+)
 
 
 class PrivilegedMFAMiddleware:
@@ -37,9 +40,16 @@ class PrivilegedMFAMiddleware:
         if (
             user.is_authenticated
             and mfa_required_for_user(user)
-            and not getattr(user, "is_verified", lambda: False)()
             and not self._is_exempt(request)
         ):
+            is_verified = getattr(user, "is_verified", lambda: False)()
+            verification_fresh = (
+                is_verified
+                and privileged_mfa_verification_is_fresh(request)
+            )
+            if verification_fresh:
+                return self.get_response(request)
+
             target = request.get_full_path()
             has_password = user.has_usable_password()
             django_logout(request)
@@ -50,11 +60,18 @@ class PrivilegedMFAMiddleware:
                     "первый фактор. Обратитесь к администратору.",
                 )
                 return redirect("login")
-            messages.info(
-                request,
-                "Для привилегированного доступа войдите локальным паролем "
-                "и подтвердите MFA.",
-            )
+            if is_verified:
+                messages.info(
+                    request,
+                    "Срок MFA-сессии истёк. Войдите локальным паролем и "
+                    "подтвердите MFA снова.",
+                )
+            else:
+                messages.info(
+                    request,
+                    "Для привилегированного доступа войдите локальным паролем "
+                    "и подтвердите MFA.",
+                )
             query = urlencode({"next": target})
             return redirect(f"{reverse('login')}?{query}")
         return self.get_response(request)

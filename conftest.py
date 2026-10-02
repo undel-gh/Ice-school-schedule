@@ -3,7 +3,10 @@ from django.test import Client
 from django_otp import DEVICE_ID_SESSION_KEY
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from accounts.mfa import mfa_required_for_user
+from accounts.mfa import (
+    MFA_VERIFIED_AT_SESSION_KEY,
+    mfa_required_for_user,
+)
 
 
 class MFAAwareClient(Client):
@@ -32,6 +35,9 @@ class MFAAwareClient(Client):
             )
         session = self.session
         session[DEVICE_ID_SESSION_KEY] = device.persistent_id
+        from django.utils import timezone
+
+        session[MFA_VERIFIED_AT_SESSION_KEY] = timezone.now().timestamp()
         session.save()
 
 

@@ -33,6 +33,7 @@ from .mfa import (
     clear_mfa_transient_session,
     has_confirmed_mfa_device,
     has_confirmed_totp,
+    mark_privileged_mfa_verified,
     mfa_required_for_user,
     pop_mfa_next,
     resolve_mfa_identity,
@@ -138,8 +139,15 @@ def _finish_verified_login(request, *, identity, device) -> None:
             backend=identity.backend,
         )
         otp_login(request, device)
+    mark_privileged_mfa_verified(request)
     request.session.set_expiry(
-        int(getattr(settings, "MFA_PRIVILEGED_SESSION_AGE_SECONDS", 43200))
+        int(
+            getattr(
+                settings,
+                "MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS",
+                43200,
+            )
+        )
     )
 
 

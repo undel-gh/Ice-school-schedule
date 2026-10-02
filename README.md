@@ -371,8 +371,12 @@ Enrollment also creates 10 one-time recovery codes. They are shown once, may
 be used in any order, and each is deleted by the OTP backend when consumed.
 MFA setup/challenge/recovery pages use `Cache-Control: no-store`.
 
-The privileged verified session has a separate shorter lifetime controlled by
-`MFA_PRIVILEGED_SESSION_AGE_SECONDS` (43200 seconds / 12 hours by default).
+The privileged verified session has an **absolute** maximum age controlled by
+`MFA_PRIVILEGED_SESSION_MAX_AGE_SECONDS` (43200 seconds / 12 hours by default).
+The timestamp of the successful MFA verification is stored in the server-side
+session and checked by middleware on every privileged request. Ordinary session
+activity cannot extend this deadline; after it expires, the user must enter the
+local password and MFA again.
 The MFA middleware also intercepts privileged Django sessions that existed
 before MFA deployment, including access to `/admin/`; a password-only
 session is therefore not grandfathered into privileged access. **Any**
