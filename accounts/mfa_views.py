@@ -129,6 +129,7 @@ def _finish_verified_login(request, *, identity, device) -> None:
     if request.user.is_authenticated:
         if request.user.pk != user.pk:
             raise RuntimeError("MFA identity changed during verification.")
+        request.session.cycle_key()
         otp_login(request, device)
     else:
         django_login(
@@ -136,7 +137,6 @@ def _finish_verified_login(request, *, identity, device) -> None:
             user,
             backend=identity.backend,
         )
-        request.session.cycle_key()
         otp_login(request, device)
     request.session.set_expiry(
         int(getattr(settings, "MFA_PRIVILEGED_SESSION_AGE_SECONDS", 43200))

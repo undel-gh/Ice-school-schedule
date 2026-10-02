@@ -734,3 +734,44 @@ def test_authenticated_mfa_upgrade_rotates_session_key():
 
     assert verified.status_code == 302
     assert client.session.session_key != old_session_key
+
+
+
+@pytest.mark.django_db
+def test_authenticator_replacement_rotates_verified_session_after_new_totp():
+    client = Client()
+    user = _privileged_user(username="mfa-replace-session-rotation")
+    old_device = TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    client.force_login(user)
+    session = client.session
+    session[DEVICE_ID_SESSION_KEY] = old_device.persistent_id
+    session.save()
+
+    replacement = client.post(
+        reverse("mfa:replace_authenticator"),
+        {"password": "secret-password"},
+    )
+    assert replacement.status_code == 302
+    assert replacement.url == reverse("mfa:setup")
+
+    setup = client.get(reverse("mfa:setup"))
+    assert setup.status_code == 200
+    new_device = TOTPDevice.objects.get(
+        user=user,
+        confirmed=False,
+    )
+    before_confirm_key = client.session.session_key
+
+    confirmed = client.post(
+        reverse("mfa:setup"),
+        {"token": _totp_token(new_device)},
+    )
+
+    assert confirmed.status_code == 302
+    assert confirmed.url == reverse("mfa:recovery_codes")
+    assert client.session.session_key != before_confirm_key
+    assert client.session[DEVICE_ID_SESSION_KEY] == new_device.persistent_id
