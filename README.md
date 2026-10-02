@@ -672,6 +672,19 @@ docker compose --env-file .env.production -f compose.production.yaml \
   logs -f web proxy scheduler backup
 ```
 
+Caddy keeps ordinary HTTP access logs, but deliberately skips request logging
+for paths that can contain bearer/one-time secrets:
+
+```text
+/accounts/external/invite/*
+/accounts/external/callback/*
+/accounts/reset/*
+```
+
+This prevents invitation/recovery tokens, OAuth authorization callbacks and
+Django password-reset tokens from being copied into proxy logs. Do not remove
+these exclusions when changing access-log formatting.
+
 All production services use Docker's `json-file` driver with bounded rotation
 to avoid an unattended host filling its disk. Defaults are:
 
