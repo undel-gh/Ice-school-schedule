@@ -116,6 +116,7 @@ def test_privileged_enrollment_confirms_totp_and_issues_one_time_recovery_codes(
     assert len(codes) == 10
     assert str(client.session["_auth_user_id"]) == str(user.id)
     assert client.session[DEVICE_ID_SESSION_KEY] == device.persistent_id
+    assert 0 < client.session.get_expiry_age() <= 43200
     assert AuditEvent.objects.filter(
         event_type="MFAEnrolled",
         aggregate_id=user.id,

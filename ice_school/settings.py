@@ -155,6 +155,9 @@ LOGOUT_REDIRECT_URL = "login"
 MFA_PREAUTH_TTL_SECONDS = int(
     os.environ.get("MFA_PREAUTH_TTL_SECONDS", "300")
 )
+MFA_PRIVILEGED_SESSION_AGE_SECONDS = int(
+    os.environ.get("MFA_PRIVILEGED_SESSION_AGE_SECONDS", "43200")
+)
 OTP_LOGIN_URL = "mfa:challenge"
 OTP_TOTP_ISSUER = os.environ.get("MFA_TOTP_ISSUER", "Ice School").strip()
 OTP_ADMIN_HIDE_SENSITIVE_DATA = True

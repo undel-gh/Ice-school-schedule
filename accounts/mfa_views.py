@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from base64 import b32encode
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login as django_login
 from django.contrib.auth.views import LoginView
@@ -122,6 +123,9 @@ def _finish_verified_login(request, *, identity, device) -> None:
             backend=identity.backend,
         )
         otp_login(request, device)
+    request.session.set_expiry(
+        int(getattr(settings, "MFA_PRIVILEGED_SESSION_AGE_SECONDS", 43200))
+    )
 
 
 @never_cache
