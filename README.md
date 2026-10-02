@@ -743,7 +743,13 @@ database server. By default it:
 - uses `umask 077`;
 - writes to `.partial`, validates it with `pg_restore --list`, and only then
   atomically renames it to `.dump`;
-- removes dumps older than `BACKUP_RETENTION_DAYS` (default 14).
+- removes dumps older than `BACKUP_RETENTION_DAYS` (default 14);
+- updates a last-success marker only after a dump passes `pg_restore --list`.
+
+The backup container healthcheck becomes unhealthy when no successful dump has
+been produced for more than roughly two configured backup intervals
+(`2 * BACKUP_INTERVAL_SECONDS + 300s`). A failed dump therefore remains
+visible even though the loop intentionally stays alive to retry later.
 
 Settings:
 

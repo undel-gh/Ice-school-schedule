@@ -41,6 +41,7 @@ run_backup() {
   fi
 
   mv "$temp" "$final"
+  touch /tmp/backup_last_success
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) backup event=success target=$final"
 
   find "$BACKUP_DIR" -type f -name 'ice_school_*.dump' -mtime "+$BACKUP_RETENTION_DAYS" -print |
