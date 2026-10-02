@@ -14,7 +14,7 @@
 <p><a href="{% url 'attendance_manager:coverage_report' %}">← К отчёту покрытия</a></p>
 
 <article class="report-card">
-  <h2>Attendance</h2>
+  <h2>Посещение</h2>
   <p>
     Статус: <strong>{{ attendance.get_status_display }}</strong>
     · занятие: {{ attendance.lesson.status|manager_label:"lesson_status" }}
@@ -22,7 +22,7 @@
   {% if perms.audit.view_auditevent %}
     <p>
       <a href="{% url 'audit_manager:events' %}?aggregate_type=Attendance&aggregate_id={{ attendance.id }}">
-        Журнал Attendance
+        Журнал посещения
       </a>
     </p>
   {% endif %}
@@ -47,15 +47,15 @@
     {% if perms.audit.view_auditevent %}
       <p>
         <a href="{% url 'audit_manager:events' %}?aggregate_type=AttendanceCoverage&aggregate_id={{ coverage.id }}">
-          Журнал AttendanceCoverage
+          Журнал покрытия посещения
         </a>
       </p>
     {% endif %}
   {% else %}
     <p><span class="badge badge--cancelled">Без активного покрытия</span></p>
     <p class="muted">
-      Recovery повторяет обычный порядок покрытия: разовое право → отработка →
-      действующий абонемент → активация подходящего rolling-абонемента.
+      Повторное покрытие использует обычный порядок: разовое право → отработка →
+      действующий абонемент → активация подходящего 28-дневного абонемента.
     </p>
     {% if perms.subscriptions.change_attendancecoverage %}
       {% if lesson_is_completed and attendance.status == "present" %}
@@ -75,7 +75,7 @@
         {% endif %}
       {% elif attendance.lesson.status == "closed" %}
         <p class="empty-state">
-          Для восстановления сначала переоткройте CLOSED занятие.
+          Для восстановления сначала переоткройте закрытое занятие.
         </p>
       {% endif %}
     {% endif %}

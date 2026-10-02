@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load manager_labels %}
 {% block title %}Расписание тренера{% endblock %}
 {% block content %}
 <header class="page-header">
@@ -22,7 +23,7 @@
         <div class="lesson-card__time">{{ item.lesson.starts_at|date:"H:i" }}</div>
         <h2>{{ item.lesson.lesson_type.name }}</h2>
       </div>
-      <span class="badge">{{ item.lesson.status }}</span>
+      <span class="badge">{{ item.lesson.status|manager_label:"lesson_status" }</span>
     </div>
 
     <p class="lesson-card__meta">
