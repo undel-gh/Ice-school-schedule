@@ -600,3 +600,29 @@ def test_admin_password_login_via_unified_route_does_not_create_session_before_m
     assert password.url == reverse("mfa:setup")
     assert "_auth_user_id" not in client.session
     assert client.session[MFA_PREAUTH_SESSION_KEY]["user_id"] == str(user.id)
+
+
+
+@pytest.mark.django_db
+def test_password_change_invalidates_privileged_mfa_preauth():
+    client = Client()
+    user = _privileged_user(username="mfa-password-changed")
+    TOTPDevice.objects.create(
+        user=user,
+        name="Authenticator",
+        confirmed=True,
+    )
+    password = _begin_password_login(client, user)
+    assert password.status_code == 302
+    assert password.url == reverse("mfa:challenge")
+    assert MFA_PREAUTH_SESSION_KEY in client.session
+
+    user.set_password("new-secret-password")
+    user.save(update_fields=["password"])
+
+    challenge = client.get(reverse("mfa:challenge"))
+
+    assert challenge.status_code == 302
+    assert challenge.url == reverse("login")
+    assert MFA_PREAUTH_SESSION_KEY not in client.session
+    assert "_auth_user_id" not in client.session

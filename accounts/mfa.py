@@ -6,6 +6,7 @@ from typing import Any
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
+from django.utils.crypto import constant_time_compare
 from django.utils.http import url_has_allowed_host_and_scheme
 from django_otp import user_has_device
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -62,6 +63,7 @@ def begin_mfa_preauth(
         "user_id": str(user.pk),
         "backend": backend,
         "issued_at": timezone.now().timestamp(),
+        "auth_hash": user.get_session_auth_hash(),
         "next_url": next_url or "",
     }
     if next_url:
@@ -132,6 +134,14 @@ def resolve_mfa_identity(request) -> MFAIdentity | None:
         return None
 
     if not mfa_required_for_user(user):
+        clear_mfa_transient_session(request)
+        return None
+
+    auth_hash = str(data.get("auth_hash") or "")
+    if not auth_hash or not constant_time_compare(
+        auth_hash,
+        user.get_session_auth_hash(),
+    ):
         clear_mfa_transient_session(request)
         return None
 
