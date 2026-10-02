@@ -200,6 +200,60 @@ jobs:
             --env-file .env.production \
             -f compose.production.yaml \
             exec -T backup /ops/postgres_backup.sh --once
+      - name: Smoke PostgreSQL restore
+        run: |
+          set -a
+          . ./.env.production
+          set +a
+
+          dump="$(
+            find backups -maxdepth 1 -name 'ice_school_*.dump' \
+              -type f -print | sort | tail -n 1
+          )"
+          test -n "$dump"
+
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            exec -T db dropdb \
+              --if-exists \
+              -U "$POSTGRES_USER" \
+              ice_school_restore_ci
+
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            exec -T db createdb \
+              -U "$POSTGRES_USER" \
+              ice_school_restore_ci
+
+          cat "$dump" | \
+            docker compose \
+              --env-file .env.production \
+              -f compose.production.yaml \
+              exec -T db pg_restore \
+                --no-owner \
+                --no-privileges \
+                -U "$POSTGRES_USER" \
+                -d ice_school_restore_ci
+
+          migration_count="$(
+            docker compose \
+              --env-file .env.production \
+              -f compose.production.yaml \
+              exec -T db psql \
+                -U "$POSTGRES_USER" \
+                -d ice_school_restore_ci \
+                -Atqc 'SELECT COUNT(*) FROM django_migrations;'
+          )"
+          test "$migration_count" -gt 0
+
+          docker compose \
+            --env-file .env.production \
+            -f compose.production.yaml \
+            exec -T db dropdb \
+              -U "$POSTGRES_USER" \
+              ice_school_restore_ci
       - name: Stop production smoke stack
         if: always()
         run: |
