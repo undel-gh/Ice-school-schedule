@@ -14,4 +14,15 @@ urlpatterns = [
         mfa_views.mfa_recovery_codes,
         name="recovery_codes",
     ),
+    path("security/", mfa_views.mfa_security, name="security"),
+    path(
+        "security/recovery-codes/regenerate/",
+        mfa_views.mfa_regenerate_recovery_codes,
+        name="regenerate_recovery_codes",
+    ),
+    path(
+        "security/authenticator/replace/",
+        mfa_views.mfa_replace_authenticator,
+        name="replace_authenticator",
+    ),
 ]

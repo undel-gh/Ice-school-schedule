@@ -16,3 +16,23 @@ class MFASetupTokenForm(forms.Form):
 
     def clean_token(self):
         return self.cleaned_data["token"].strip()
+
+
+class MFAPasswordReauthForm(forms.Form):
+    password = forms.CharField(
+        label="Текущий пароль",
+        strip=False,
+        widget=forms.PasswordInput(
+            attrs={"autocomplete": "current-password"}
+        ),
+    )
+
+    def __init__(self, user, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+
+    def clean_password(self):
+        password = self.cleaned_data["password"]
+        if not self.user.check_password(password):
+            raise forms.ValidationError("Неверный текущий пароль.")
+        return password

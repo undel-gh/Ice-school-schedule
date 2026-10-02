@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Безопасность аккаунта{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <h1>Безопасность аккаунта</h1>
+  <p>MFA включена. Резервных одноразовых кодов осталось: <strong>{{ recovery_code_count }}</strong>.</p>
+
+  <h2>Новые резервные коды</h2>
+  <p>Старые резервные коды будут немедленно отозваны.</p>
+  <form method="post" action="{% url 'mfa:regenerate_recovery_codes' %}">
+    {% csrf_token %}
+    {{ regenerate_form.as_p }}
+    <button type="submit">Выпустить новые коды</button>
+  </form>
+
+  <h2>Заменить приложение-аутентификатор</h2>
+  <p>Текущий TOTP-ключ будет отозван. До завершения новой настройки доступ к служебным разделам будет заблокирован.</p>
+  <form method="post" action="{% url 'mfa:replace_authenticator' %}">
+    {% csrf_token %}
+    {{ replace_form.as_p }}
+    <button type="submit">Заменить аутентификатор</button>
+  </form>
+</section>
+{% endblock %}
