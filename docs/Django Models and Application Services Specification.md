@@ -158,7 +158,24 @@ last_name
 email
 ```
 
-Для staff/admin можно использовать отдельные username/password + MFA.
+Для привилегированных локальных аккаунтов применяется обязательный
+username/password + MFA. Привилегированным считается User с `is_staff`,
+`is_superuser` либо manager-operation permission (direct/group).
+
+MFA implementation использует стандартные `django-otp` device models:
+
+```text
+TOTPDevice   → постоянный authenticator
+StaticDevice → recovery/break-glass codes
+```
+
+TOTP enrollment подтверждается кодом до `confirmed=True`; recovery codes
+одноразовые и потребляются при verification. MFA device secrets не
+дублируются в собственной User/domain модели и не записываются в AuditEvent.
+
+Password-only pre-authentication хранится только в server-side Django session
+с коротким TTL. Полноценная privileged web-session должна быть OTP-verified;
+это требование применяется также к ранее созданным sessions и Django Admin.
 
 ---
 

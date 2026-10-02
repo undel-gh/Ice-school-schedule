@@ -335,6 +335,72 @@ Every unlink records `ExternalIdentityUnlinked`; recovery records
 Local username/password login remains the staff and emergency administration
 channel.
 
+## Privileged MFA
+
+Local password authentication for privileged accounts is protected by TOTP
+multi-factor authentication using `django-otp`.
+
+MFA is mandatory when a User is any of:
+
+- `is_staff=True`;
+- `is_superuser=True`;
+- assigned at least one manager-operation permission directly or through a
+  Django Group.
+
+External Yandex/VK login remains disabled for these accounts. The first factor
+is the local Django password (and therefore remains protected by
+`django-axes`); the second factor is TOTP from an authenticator application.
+SMS and email OTP are deliberately not enabled.
+
+On the first successful password login, a privileged user must enroll a TOTP
+device before an authenticated application session is created. The setup page
+shows an `otpauth://` QR code and a manual secret. The enrollment code is
+verified before the device is marked confirmed. The temporary password-only
+pre-authentication state expires after `MFA_PREAUTH_TTL_SECONDS` (300 seconds
+by default).
+
+Enrollment also creates 10 one-time recovery codes. They are shown once, may
+be used in any order, and each is deleted by the OTP backend when consumed.
+MFA setup/challenge/recovery pages use `Cache-Control: no-store`.
+
+The privileged verified session has a separate shorter lifetime controlled by
+`MFA_PRIVILEGED_SESSION_AGE_SECONDS` (43200 seconds / 12 hours by default).
+The MFA middleware also intercepts privileged Django sessions that existed
+before MFA deployment, including access to `/admin/`; a password-only
+session is therefore not grandfathered into privileged access.
+
+Verified users manage MFA at:
+
+```text
+/accounts/mfa/security/
+```
+
+Self-service recovery-code regeneration and authenticator replacement both
+require the current local password in addition to the already MFA-verified
+session. Regeneration revokes all old recovery codes immediately.
+Authenticator replacement revokes the old TOTP device, keeps existing recovery
+codes until the replacement TOTP is successfully enrolled, and then issues a
+fresh recovery-code set.
+
+For server-side emergency recovery, `django-otp` provides
+`addstatictoken`. Use:
+
+```bash
+python manage.py addstatictoken -h
+```
+
+to create a single emergency static token for the affected privileged account.
+A static-only emergency login is allowed to pass the MFA challenge, but if the
+account has no confirmed TOTP device it is immediately forced through fresh
+TOTP enrollment. This makes the command a break-glass recovery mechanism, not
+a permanent static-code MFA mode.
+
+Sensitive TOTP/static-token admin helpers are hidden with
+`OTP_ADMIN_HIDE_SENSITIVE_DATA=True`. Audit events record enrollment,
+successful MFA authentication, recovery-code use/regeneration, and the start
+of authenticator replacement; OTP values, QR secrets and recovery-code
+contents are never copied into AuditEvent payloads.
+
 ## Production checks
 
 Production defaults are closed: `DJANGO_DEBUG` defaults to off and
