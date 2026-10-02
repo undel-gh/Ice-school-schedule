@@ -4397,3 +4397,134 @@ def test_free_makeup_uses_activated_package_successor_not_later_pending_item(
     assert grant.makeup_entitlement is not None
     assert grant.makeup_entitlement.valid_from == second.valid_from
     assert grant.makeup_entitlement.valid_until == second.valid_until
+
+
+
+@pytest.mark.django_db
+def test_actual_coverage_flow_keeps_activated_b_before_pending_c_in_package(
+    actor,
+    context,
+):
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-package-real-flow-scheme",
+        name="Rolling package real flow",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="rolling-package-real-flow-plan",
+        name="Rolling package real flow",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=1,
+    )
+    package_reference = date(2026, 9, 25)
+    source = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=package_reference,
+        actor=actor,
+    )
+    second = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=package_reference,
+        actor=actor,
+    )
+    third = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=package_reference,
+        actor=actor,
+    )
+    Subscription.objects.filter(pk=source.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 0, tzinfo=dt_timezone.utc)
+    )
+    Subscription.objects.filter(pk=second.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 1, tzinfo=dt_timezone.utc)
+    )
+    Subscription.objects.filter(pk=third.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 2, tzinfo=dt_timezone.utc)
+    )
+    source.refresh_from_db()
+    second.refresh_from_db()
+    third.refresh_from_db()
+
+    first_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=school_dt(2026, 10, 3, 18, 0),
+        ends_at=school_dt(2026, 10, 3, 19, 0),
+        minimum_attendees=1,
+        rsvp_deadline=school_dt(2026, 10, 3, 16, 0),
+        decision_deadline=school_dt(2026, 10, 3, 17, 0),
+        status=Lesson.Status.COMPLETED,
+    )
+    first_attendance = Attendance.objects.create(
+        lesson=first_lesson,
+        student=context["student"],
+        status=Attendance.Status.PRESENT,
+        marked_at=school_dt(2026, 10, 3, 19, 0),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    first_coverage = assign_attendance_coverage(
+        attendance_id=first_attendance.id,
+        actor=actor,
+        now=school_dt(2026, 10, 3, 19, 0),
+    )
+    assert first_coverage is not None
+    assert (
+        first_coverage.subscription_allowance.subscription_id
+        == source.id
+    )
+
+    second_lesson = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=school_dt(2026, 10, 20, 18, 0),
+        ends_at=school_dt(2026, 10, 20, 19, 0),
+        minimum_attendees=1,
+        rsvp_deadline=school_dt(2026, 10, 20, 16, 0),
+        decision_deadline=school_dt(2026, 10, 20, 17, 0),
+        status=Lesson.Status.COMPLETED,
+    )
+    second_attendance = Attendance.objects.create(
+        lesson=second_lesson,
+        student=context["student"],
+        status=Attendance.Status.PRESENT,
+        marked_at=school_dt(2026, 10, 20, 19, 0),
+        marked_by=actor,
+        updated_by=actor,
+    )
+    second_coverage = assign_attendance_coverage(
+        attendance_id=second_attendance.id,
+        actor=actor,
+        now=school_dt(2026, 10, 20, 19, 0),
+    )
+    assert second_coverage is not None
+    assert (
+        second_coverage.subscription_allowance.subscription_id
+        == second.id
+    )
+
+    source.refresh_from_db()
+    second.refresh_from_db()
+    third.refresh_from_db()
+    assert source.valid_from == date(2026, 10, 3)
+    assert second.valid_from == date(2026, 10, 20)
+    assert third.valid_from is None
+
+    resolution = resolve_next_student_period(
+        source_subscription=source,
+        category=SubscriptionCategory.ICE,
+    )
+    assert resolution is not None
+    assert resolution.subscription.id == second.id
+    assert resolution.pending_activation is False
