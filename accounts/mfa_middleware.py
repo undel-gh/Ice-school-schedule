@@ -7,11 +7,7 @@ from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.http import urlencode
 
-from .mfa import (
-    has_confirmed_mfa_device,
-    mfa_required_for_user,
-    remember_mfa_next,
-)
+from .mfa import mfa_required_for_user
 
 
 class PrivilegedMFAMiddleware:
@@ -44,18 +40,23 @@ class PrivilegedMFAMiddleware:
             and not getattr(user, "is_verified", lambda: False)()
             and not self._is_exempt(request)
         ):
-            if not user.has_usable_password():
-                django_logout(request)
+            target = request.get_full_path()
+            has_password = user.has_usable_password()
+            django_logout(request)
+            if not has_password:
                 messages.error(
                     request,
                     "Привилегированный аккаунт требует локальный пароль как "
                     "первый фактор. Обратитесь к администратору.",
                 )
                 return redirect("login")
-            remember_mfa_next(request, request.get_full_path())
-            if has_confirmed_mfa_device(user):
-                return redirect("mfa:challenge")
-            return redirect("mfa:setup")
+            messages.info(
+                request,
+                "Для привилегированного доступа войдите локальным паролем "
+                "и подтвердите MFA.",
+            )
+            query = urlencode({"next": target})
+            return redirect(f"{reverse('login')}?{query}")
         return self.get_response(request)
 
     @staticmethod

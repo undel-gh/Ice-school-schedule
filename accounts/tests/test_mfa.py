@@ -206,7 +206,7 @@ def test_recovery_code_can_complete_login_and_is_consumed():
 
 
 @pytest.mark.django_db
-def test_existing_privileged_password_session_is_intercepted_until_verified():
+def test_existing_privileged_password_session_requires_fresh_local_login():
     client = Client()
     user = _privileged_user()
     device = TOTPDevice.objects.create(
@@ -219,7 +219,20 @@ def test_existing_privileged_password_session_is_intercepted_until_verified():
     blocked = client.get(reverse("subscriptions:manager_operations"))
 
     assert blocked.status_code == 302
-    assert blocked.url == reverse("mfa:challenge")
+    assert blocked.url.startswith(reverse("login"))
+    assert "_auth_user_id" not in client.session
+
+    password = client.post(
+        blocked.url,
+        {
+            "username": user.username,
+            "password": "secret-password",
+            "next": reverse("subscriptions:manager_operations"),
+        },
+    )
+    assert password.status_code == 302
+    assert password.url == reverse("mfa:challenge")
+    assert "_auth_user_id" not in client.session
 
     verified = client.post(
         reverse("mfa:challenge"),
@@ -242,18 +255,14 @@ def test_existing_privileged_session_without_totp_requires_fresh_password_before
     client.force_login(user)
 
     blocked = client.get(reverse("subscriptions:manager_operations"))
+
     assert blocked.status_code == 302
-    assert blocked.url == reverse("mfa:setup")
-
-    setup = client.get(reverse("mfa:setup"))
-
-    assert setup.status_code == 302
-    assert setup.url.startswith(reverse("login"))
+    assert blocked.url.startswith(reverse("login"))
     assert "_auth_user_id" not in client.session
     assert TOTPDevice.objects.filter(user=user).exists() is False
 
     password = client.post(
-        setup.url,
+        blocked.url,
         {
             "username": user.username,
             "password": "secret-password",
@@ -279,7 +288,8 @@ def test_admin_is_unavailable_to_unverified_privileged_session():
     response = client.get(reverse("admin:index"))
 
     assert response.status_code == 302
-    assert response.url == reverse("mfa:challenge")
+    assert response.url.startswith(reverse("login"))
+    assert "_auth_user_id" not in client.session
 
 
 @pytest.mark.django_db

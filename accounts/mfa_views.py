@@ -148,6 +148,17 @@ def mfa_challenge(request):
     if failure is not None:
         return failure
     user = identity.user
+    if (
+        request.user.is_authenticated
+        and not getattr(request.user, "is_verified", lambda: False)()
+    ):
+        target = request.session.get(
+            "mfa_next",
+            reverse("scheduling:home"),
+        )
+        django_logout(request)
+        query = urlencode({"next": target})
+        return redirect(f"{reverse('login')}?{query}")
     if not mfa_required_for_user(user):
         clear_mfa_transient_session(request)
         return redirect("scheduling:home")
