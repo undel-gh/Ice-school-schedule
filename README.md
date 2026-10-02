@@ -713,6 +713,38 @@ to make the warning disappear.
 Static files are collected into the application image and served by
 WhiteNoise. The proxy does not need a writable static-files volume.
 
+### External monitoring and alerting
+
+Container healthchecks are local status signals, not an alerting system.
+Docker's `restart: unless-stopped` policy does **not** restart a container
+merely because its health status becomes `unhealthy`, and Docker Compose does
+not notify an operator about that state.
+
+For production, configure at least:
+
+- an external HTTPS uptime check for
+  `https://<school-host>/healthz/`; this covers public DNS/TLS, Caddy,
+  Gunicorn and the database check behind the endpoint;
+- a dead-man check for each scheduler job and for PostgreSQL backups. Services
+  such as healthchecks.io, Uptime Kuma or an equivalent internal monitor can
+  alert when an expected success ping stops arriving.
+
+The stack can send optional success pings directly after verified successful
+work. Configure unique HTTPS endpoints in `.env.production`:
+
+```bash
+SCHEDULER_LIFECYCLE_SUCCESS_PING_URL=
+SCHEDULER_GENERATION_SUCCESS_PING_URL=
+BACKUP_SUCCESS_PING_URL=
+MONITORING_HTTP_TIMEOUT_SECONDS=10
+```
+
+These URLs are bearer-like secrets; do not commit or print them. A monitoring
+request failure is logged as `event=success_ping_failed`, but it does not turn
+already completed lifecycle/generation/backup work into a failure and does not
+remove the local success marker. This keeps monitoring outages separate from
+application correctness while the dead-man service still detects missed pings.
+
 ### Scheduler
 
 The `scheduler` container runs both jobs immediately after startup, then
@@ -732,6 +764,9 @@ Configure them with:
 SCHEDULER_LIFECYCLE_INTERVAL_SECONDS=3600
 SCHEDULER_GENERATION_INTERVAL_SECONDS=21600
 SCHEDULER_GENERATION_HORIZON_DAYS=60
+
+SCHEDULER_LIFECYCLE_TIMEOUT_SECONDS=3600
+SCHEDULER_GENERATION_TIMEOUT_SECONDS=3600
 ```
 
 A failed invocation is logged with its non-zero exit code and does **not**
@@ -739,12 +774,21 @@ terminate the scheduler process; the job is attempted again at its next
 interval. This is important for generation conflicts: they remain visible as
 command failures/audit events without taking down unrelated lifecycle work.
 
+Jobs are executed sequentially, so every command also has a hard timeout.
+Lifecycle defaults to its own interval. Generation defaults to the smaller of
+its generation interval and the lifecycle interval (3600 seconds with the
+default configuration), so a stuck generation process cannot block lifecycle
+processing indefinitely. An overrun is terminated by `subprocess.run`, is
+logged as `event=timeout`, and does not update the job's success marker or
+external success ping. Operators may set lower timeouts after observing normal
+production runtimes.
+
 Each successful job updates its own last-success marker. The scheduler
 container healthcheck requires both markers to remain newer than approximately
 `2 * job_interval + SCHEDULER_HEALTH_GRACE_SECONDS` (300 seconds by
-default). Repeated failure or a hung job therefore becomes visible as
-`unhealthy` in `docker compose ps`, while the scheduler process itself is
-left running so other jobs can continue and failed work can retry.
+default). Repeated failures or timeouts therefore become visible as
+`unhealthy` in `docker compose ps`. The scheduler process itself remains
+running so independent work can continue and failed work can retry.
 
 Normal operational inspection:
 
@@ -767,6 +811,25 @@ docker compose --env-file .env.production -f compose.production.yaml \
 Do not scale `scheduler` above one replica. The commands are designed to be
 idempotent, but duplicate schedulers create unnecessary concurrent work and
 duplicate operational noise.
+
+### Daily manual operations
+
+The production scheduler deliberately automates only subscription lifecycle
+processing and lesson generation. The following normal school operations are
+**not** run automatically:
+
+- publish the day's schedule (`publish_daily_schedule`) so students/parents
+  can see the lessons and coaches can work with the published roster;
+- evaluate lessons at the school's decision deadline when the business rules
+  require a manager decision;
+- after the lesson, record coach-confirmed attendance and move the lesson to
+  `COMPLETED` through the normal web workflow.
+
+The responsible manager/coach should therefore include these items in the
+daily operating checklist. If the school later decides to automate publication
+or lesson-state transitions, add them as explicit, independently monitored
+jobs only after the timing and audit/actor semantics are agreed. They are
+intentionally disabled by default in this pilot stack.
 
 ### PostgreSQL backups
 
@@ -793,7 +856,13 @@ Settings:
 BACKUP_HOST_PATH=/var/backups/ice-school
 BACKUP_INTERVAL_SECONDS=86400
 BACKUP_RETENTION_DAYS=14
+BACKUP_SUCCESS_PING_URL=
 ```
+
+When `BACKUP_SUCCESS_PING_URL` is configured, the backup service sends the
+dead-man success ping only after `pg_dump` has completed, `pg_restore --list`
+has validated the archive, and the success marker has been updated. Monitoring
+delivery failure is logged but does not invalidate the verified dump.
 
 Run an additional backup immediately:
 
