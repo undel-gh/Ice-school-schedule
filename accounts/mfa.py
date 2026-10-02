@@ -48,7 +48,7 @@ def mfa_required_for_user(
         return True
 
     cache_attr = "_manager_operations_assignment_request_cache"
-    if use_request_cache and hasattr(user, cache_attr):
+    if hasattr(user, cache_attr):
         return bool(getattr(user, cache_attr))
 
     assigned = has_manager_operations_assignment(user)
