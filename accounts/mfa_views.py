@@ -309,10 +309,17 @@ def mfa_recovery_codes(request):
     if not codes:
         return redirect("scheduling:home")
 
+    next_url = pop_mfa_next(
+        request,
+        fallback=reverse("scheduling:home"),
+    )
     return _response_no_store(
         render(
             request,
             "accounts/mfa_recovery_codes.html",
-            {"codes": codes},
+            {
+                "codes": codes,
+                "next_url": next_url,
+            },
         )
     )

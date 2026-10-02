@@ -9,6 +9,6 @@
       <li><code>{{ code }}</code></li>
     {% endfor %}
   </ul>
-  <p><a class="btn btn-primary" href="{% url 'scheduling:home' %}">Продолжить</a></p>
+  <p><a class="btn btn-primary" href="{{ next_url }}">Продолжить</a></p>
 </section>
 {% endblock %}

@@ -59,6 +59,8 @@ def begin_mfa_preauth(
         "issued_at": timezone.now().timestamp(),
         "next_url": next_url or "",
     }
+    if next_url:
+        request.session[MFA_NEXT_SESSION_KEY] = next_url
     request.session.modified = True
 
 
