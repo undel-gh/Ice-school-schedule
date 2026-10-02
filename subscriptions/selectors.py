@@ -12,6 +12,7 @@ from scheduling.models import Lesson
 from .balances import ledger_balance
 from .models import (
     AbsenceCompensationActionGrant,
+    AbsenceCompensationCase,
     AbsenceCompensationPolicy,
     AbsenceCompensationPolicyAction,
     AbsenceCompensationPolicyWindow,
@@ -326,6 +327,18 @@ def _next_student_period_candidate(
         ordering_date=ordering_date,
         effective_start=effective_start,
         gap_days=gap_days,
+    )
+
+
+def next_student_period_candidate_resolution(
+    *,
+    source_subscription: Subscription,
+    target_subscription: Subscription,
+) -> NextStudentPeriodResolution | None:
+    """Evaluate one already ownership/category-validated target candidate."""
+    return _next_student_period_candidate(
+        source_subscription=source_subscription,
+        target_subscription=target_subscription,
     )
 
 

@@ -49,6 +49,7 @@ from .models import (
 from .selectors import (
     NextStudentPeriodResolution,
     get_applicable_absence_policy,
+    next_student_period_candidate_resolution,
     resolve_compensation_actions,
     resolve_next_student_period,
     usable_makeups_for_subscription,
@@ -2012,6 +2013,23 @@ def _validate_paid_makeup_target(
                 }
             )
         if (
+            source_subscription.valid_from is None
+            or source_subscription.valid_until is None
+        ):
+            raise ValidationError(
+                {
+                    "source_subscription": (
+                        "Source subscription must have resolved start and "
+                        "end dates."
+                    )
+                }
+            )
+
+        source_start = source_subscription.valid_from
+        source_end = source_subscription.valid_until
+        source_length_days = (source_end - source_start).days + 1
+
+        if (
             target_subscription.valid_from is None
             or target_subscription.valid_until is None
         ):
@@ -2039,23 +2057,100 @@ def _validate_paid_makeup_target(
                         )
                     }
                 )
-            if target_period.reference_date <= source_subscription.valid_until:
+            if target_period.reference_date <= source_start:
                 raise ValidationError(
                     {
                         "target_subscription": (
                             "Pending rolling target subscription reference "
-                            "date must be after the source subscription ends."
+                            "date must be after the source subscription "
+                            "starts."
+                        )
+                    }
+                )
+            effective_start = max(
+                target_period.reference_date,
+                source_end + timedelta(days=1),
+            )
+            gap_days = max(
+                0,
+                (
+                    effective_start
+                    - (source_end + timedelta(days=1))
+                ).days,
+            )
+            if gap_days > source_length_days:
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription exceeds the maximum "
+                            "NEXT_STUDENT_PERIOD gap of one source-period "
+                            "length."
                         )
                     }
                 )
             return None, None
 
-        if target_subscription.valid_from <= source_subscription.valid_until:
+        if target_subscription.valid_from <= source_start:
             raise ValidationError(
                 {
                     "target_subscription": (
                         "Target subscription for NEXT_STUDENT_PERIOD must "
-                        "start after the source subscription ends."
+                        "start after the source subscription starts."
+                    )
+                }
+            )
+
+        if target_subscription.valid_from <= source_end:
+            try:
+                target_period = target_subscription.billing_period
+            except SubscriptionPeriod.DoesNotExist:
+                target_period = None
+            if not (
+                target_period is not None
+                and target_period.mode_snapshot
+                == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+                and target_period.state == SubscriptionPeriod.State.ACTIVE
+            ):
+                # Preserve the historical validation for ordinary overlapping
+                # fixed/calendar/legacy targets. Only an activated rolling
+                # replacement may normally overlap source valid_until.
+                raise ValidationError(
+                    {
+                        "target_subscription": (
+                            "Target subscription for NEXT_STUDENT_PERIOD must "
+                            "start after the source subscription ends."
+                        )
+                    }
+                )
+
+        effective_start = target_subscription.valid_from
+        gap_days = max(
+            0,
+            (
+                effective_start
+                - (source_end + timedelta(days=1))
+            ).days,
+        )
+        if gap_days > source_length_days:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target subscription exceeds the maximum "
+                        "NEXT_STUDENT_PERIOD gap of one source-period length."
+                    )
+                }
+            )
+
+        candidate = next_student_period_candidate_resolution(
+            source_subscription=source_subscription,
+            target_subscription=target_subscription,
+        )
+        if candidate is None:
+            raise ValidationError(
+                {
+                    "target_subscription": (
+                        "Target subscription is not eligible as the next "
+                        "student period."
                     )
                 }
             )
@@ -5746,10 +5841,17 @@ def _paid_makeup_authorization_deadline(
             != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
         ):
             return None, "target_subscription_pending_activation"
+        source_end = source_subscription.valid_until
+        if source_end is None:
+            return None, "source_subscription_missing_period_end"
+        effective_start = max(
+            target_period.reference_date,
+            source_end + timedelta(days=1),
+        )
         target_window = resolve_subscription_period_window(
             scheme=target_period.scheme,
             reference_date=target_period.reference_date,
-            first_lesson_date=target_period.reference_date,
+            first_lesson_date=effective_start,
         )
         if target_window is None:
             return None, "target_subscription_deadline_unresolved"
