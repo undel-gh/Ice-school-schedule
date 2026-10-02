@@ -3243,17 +3243,28 @@ Target-period resolution:
   Subscription is required, entitlement validity is the intersection of the
   window and that Subscription;
 - NEXT_STUDENT_PERIOD is resolved automatically for the same Student and
-  ICE/HALL category. Dated subscriptions are ordered by `valid_from`;
-  pending rolling subscriptions are ordered by
-  `billing_period.reference_date`. The ordering date must be strictly after
-  the source Subscription `valid_until`. Cancelled subscriptions and
-  subscriptions without the required category are ignored. Equal earliest
-  candidates are a configuration error rather than an implicit tie-break;
+  ICE/HALL category. Sequencing is relative to source `valid_from`, not
+  nominal `valid_until`: dated subscriptions are ordered by `valid_from`,
+  pending rolling subscriptions by `billing_period.reference_date`, and the
+  ordering date must be strictly after source `valid_from`;
+- an ACTIVE rolling target may overlap the source nominal validity window,
+  because early source exhaustion can legitimately activate the replacement
+  before source `valid_until`. Other overlapping period types are not valid
+  next-period candidates;
+- for a PENDING rolling target bought before source expiry, provisional
+  effective start is `max(reference_date, source.valid_until + 1 day)`;
+- the uncovered gap may not exceed one full source-period length
+  (`valid_until - valid_from + 1`). A subscription beyond that horizon is not
+  treated as NEXT_STUDENT_PERIOD. Cancelled subscriptions and subscriptions
+  without the required category are ignored. Equal earliest candidates are a
+  configuration error rather than an implicit tie-break;
 - PAID_MAKEUP fixes the resolved target Subscription during authorization.
   An explicitly supplied target must validate normally and match the resolver;
 - FREE_MAKEUP materializes immediately for a resolved dated target. If the
   resolved target is a pending rolling subscription, the case stays OPEN until
-  that period is activated and concrete dates exist.
+  that period is activated and concrete dates exist. Activation does not
+  auto-materialize compensation; manager lists/details explicitly mark the
+  case as waiting, then as ready for repeated materialization after activation.
 
 Manual fee confirmation is provided by
 `confirm_paid_makeup_fee(...)`. The application stores only the fact that the
@@ -3280,7 +3291,9 @@ limit slot forever. `process_subscription_lifecycle(...)` reverses them with
 reason `authorization_expired` after their authorization deadline:
 
 - CURRENT_PERIOD: source Subscription `valid_until`;
-- NEXT_STUDENT_PERIOD: target Subscription `valid_until`;
+- NEXT_STUDENT_PERIOD: target Subscription `valid_until`; for a pending
+  rolling target, the provisional 28-day deadline starts at
+  `max(reference_date, source.valid_until + 1 day)`;
 - EXPLICIT_TARGET_WINDOW: snapshotted `target_until`.
 
 Paid pending grants are never expired automatically. During expiry processing,

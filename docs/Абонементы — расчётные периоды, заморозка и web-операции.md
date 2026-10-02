@@ -700,16 +700,35 @@ PAID_MAKEUP без требования оплаты считается ошиб
 
 Для NEXT_STUDENT_PERIOD общий resolver определяет **не произвольный будущий
 абонемент**, а ближайший следующий расчётный период этого ученика для нужной
-ICE/HALL category:
+ICE/HALL category.
+
+Последовательность определяется относительно **начала** source Subscription,
+а не его nominal `valid_until`. Это необходимо для обычного rolling-flow:
+следующий абонемент часто покупается заранее, а при раннем исчерпании текущего
+allowance следующий rolling-период может активироваться ещё внутри nominal
+окна source Subscription.
+
+Правила выбора:
 
 - для Subscription с известными датами ordering key = `valid_from`;
 - для PENDING rolling Subscription ordering key =
-  `billing_period.reference_date`;
-- key должен быть строго позже `source_subscription.valid_until`;
+  `billing_period.reference_date` (дата выдачи/reference);
+- ordering key должен быть строго позже `source_subscription.valid_from`;
+- overlap с nominal source window допускается только для уже ACTIVE rolling
+  target; обычный overlapping calendar/fixed/legacy Subscription остаётся
+  ошибочной конфигурацией;
+- для PENDING rolling, выданного до конца source-периода, до фактической
+  активации его effective transition считается не раньше
+  `source_subscription.valid_until + 1 day`;
 - cancelled Subscription и Subscription без нужной category не участвуют;
-- если два кандидата имеют одинаковый самый ранний key, resolver считает
-  конфигурацию неоднозначной и требует исправить overlap/duplicate вместо
-  выбора по `created_at`.
+- допустимый uncovered gap ограничен **одной длиной source-периода**:
+  `source_length = valid_until - valid_from + 1 day`. Например, для
+  28-дневного source допускается не более 28 пустых дней между периодами, для
+  октября — не более 31. Более поздний абонемент не считается
+  NEXT_STUDENT_PERIOD;
+- если два кандидата имеют одинаковый самый ранний ordering key, resolver
+  считает конфигурацию неоднозначной и требует исправить overlap/duplicate
+  вместо выбора по `created_at`.
 
 PAID_MAKEUP при authorization автоматически фиксирует найденный
 `target_subscription`. Если manager/web всё же передал target явно, он
@@ -726,9 +745,14 @@ Subscription получает реальные даты, и paid grant акти�
 FREE_MAKEUP с NEXT_STUDENT_PERIOD материализуется сразу, если следующий период
 уже имеет реальные даты. Если resolver нашёл PENDING rolling Subscription,
 case остаётся OPEN: без фактических дат нельзя создать usable entitlement.
-После активации rolling period повторная manager-операция материализации
-выдаёт право на фактическое `valid_from/valid_until`. Eligibility
-замораживается только в момент реальной выдачи права.
+Автоматическая выдача в момент активации rolling-периода сознательно не
+выполняется, чтобы не смешивать activation первого AttendanceCoverage с
+отдельным compensation workflow и его permission/lock semantics.
+
+Manager report явно показывает такой OPEN case как
+«Ждёт активации следующего периода». После активации badge меняется на
+«Следующий период готов — можно выдать», и менеджер повторяет materialization.
+Eligibility замораживается только в момент реальной выдачи права.
 
 Оплату PAID_MAKEUP в текущем scope подтверждает менеджер через
 `confirm_paid_makeup_fee(...)`. Приложение фиксирует факт подтверждения, но
@@ -757,16 +781,18 @@ Selector `get_reversed_paid_makeups(...)` даёт отчёт «оплачено
 CURRENT_PERIOD          → source Subscription.valid_until
 NEXT_STUDENT_PERIOD     → target Subscription.valid_until
                           или, для PENDING rolling target,
-                          конец 28-дневного окна от billing_period.reference_date
+                          конец 28-дневного окна от effective transition:
+                          max(reference_date, source.valid_until + 1 day)
 EXPLICIT_TARGET_WINDOW  → target_until
 ```
 
 Для pending rolling target deadline вычисляется детерминированно до его
-фактической активации: `reference_date` считается возможным первым днём
-28-дневного окна, поэтому deadline равен его 28-му дню
-(`reference_date + 27 days`). Это не позволяет неоплаченной authorization
-бессрочно занимать eligibility slot и блокировать отмену связанных
-Subscription, даже если ученик так и не пришёл на первое занятие.
+фактической активации. Если Subscription куплен заранее, до окончания source
+периода, provisional first day равен
+`max(reference_date, source.valid_until + 1 day)`; deadline — его 28-й день.
+Так ранняя покупка не сокращает срок authorization, но неоплаченная
+authorization всё равно не может бессрочно занимать eligibility slot и
+блокировать отмену связанных Subscription.
 
 Поэтому заморозка «на следующий период» не истекает в первый день этого
 периода: неоплаченная authorization остаётся действующей до конца выбранного
