@@ -353,6 +353,25 @@ def _next_student_period_candidate(
     )
 
 
+def _same_prepaid_rolling_package(
+    *,
+    source_subscription: Subscription,
+    target_subscription: Subscription,
+) -> bool:
+    source_period = _subscription_billing_period(source_subscription)
+    target_period = _subscription_billing_period(target_subscription)
+    return (
+        source_period is not None
+        and target_period is not None
+        and source_period.mode_snapshot
+        == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        and target_period.mode_snapshot
+        == SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+        and source_period.reference_date == target_period.reference_date
+        and target_subscription.created_at > source_subscription.created_at
+    )
+
+
 def next_student_period_candidate_resolution(
     *,
     source_subscription: Subscription,
@@ -422,6 +441,36 @@ def resolve_next_student_period(
 
     if not resolved:
         return None
+
+    # When a prepaid rolling package has already advanced from source A to an
+    # active successor B, later pending package items (C, D, ...) must not
+    # compete by their old purchase/reference date. The active successor is
+    # the actual next period; pending package ordering becomes relevant only
+    # after there is no already-activated successor after the source.
+    active_package_successors = [
+        item
+        for item in resolved
+        if (
+            not item.pending_activation
+            and _same_prepaid_rolling_package(
+                source_subscription=source_subscription,
+                target_subscription=item.subscription,
+            )
+        )
+    ]
+    if active_package_successors:
+        resolved = [
+            item
+            for item in resolved
+            if not (
+                item.pending_activation
+                and item.package_sequence
+                and _same_prepaid_rolling_package(
+                    source_subscription=source_subscription,
+                    target_subscription=item.subscription,
+                )
+            )
+        ]
 
     earliest_date = min(item.ordering_date for item in resolved)
     earliest = [
