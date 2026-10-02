@@ -838,6 +838,20 @@ or lesson-state transitions, add them as explicit, independently monitored
 jobs only after the timing and audit/actor semantics are agreed. They are
 intentionally disabled by default in this pilot stack.
 
+### Rolling-period recovery
+
+If reversing the attendance coverage that originally activated a rolling
+28-day subscription cannot safely return the period to `PENDING`, the
+application keeps the period `ACTIVE` and records
+`SubscriptionPeriodActivationRevertSkipped`. The subscription detail page
+shows this unresolved recovery state and its blockers. A manager must first
+resolve active attendance coverage and/or dependent make-up/compensation
+rights through their normal web workflows, then use **Повторить откат периода**
+on the subscription page. A successful retry clears the activation dates,
+returns the period to `PENDING`, and records
+`SubscriptionPeriodActivationReverted` with reason `manager_recovery`.
+
+
 ### PostgreSQL backups
 
 The `backup` service uses the same PostgreSQL 17 client generation as the

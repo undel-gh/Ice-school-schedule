@@ -176,6 +176,11 @@ urlpatterns = [
         name="manager_subscription_detail",
     ),
     path(
+        "subscriptions/<uuid:subscription_id>/recover-rolling-period/",
+        views.manager_subscription_rolling_recovery_view,
+        name="manager_subscription_rolling_recovery",
+    ),
+    path(
         "subscriptions/<uuid:subscription_id>/cancel/",
         views.manager_subscription_cancel_view,
         name="manager_subscription_cancel",

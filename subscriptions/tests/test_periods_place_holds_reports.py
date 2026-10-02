@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone as dt_timezone
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.urls import reverse
 
 from accounts.models import CoachProfile, Student
 from attendance.models import Attendance
@@ -30,6 +31,7 @@ from subscriptions.services import (
     create_group_place_hold,
     issue_subscription,
     issue_subscription_for_period,
+    recover_rolling_subscription_period_activation,
     resolve_subscription_period_window,
     reverse_attendance_coverage,
 )
@@ -981,3 +983,63 @@ def test_reversing_activation_coverage_is_blocked_by_active_makeup_dependency(
     )
     assert event.payload["reason"] == "dependent_rights_exist"
     assert event.payload["dependencies"]["active_makeups"] is True
+
+    with pytest.raises(ValidationError, match="dependent"):
+        recover_rolling_subscription_period_activation(
+            subscription_id=subscription.id,
+            actor=actor,
+        )
+
+    client.force_login(actor)
+    detail = client.get(
+        reverse(
+            "subscriptions:manager_subscription_detail",
+            kwargs={"subscription_id": subscription.id},
+        )
+    )
+    body = detail.content.decode()
+    assert detail.status_code == 200
+    assert "Требуется восстановление расчётного периода" in body
+    assert "Повторить откат периода" in body
+    assert "зависимые права" in body
+
+    makeup = MakeupEntitlement.objects.get(
+        source_subscription_allowance=allowance,
+        source_lesson=source_lesson,
+    )
+    makeup.cancelled_at = school_dt(2026, 10, 12, 21, 0)
+    makeup.cancelled_by = actor
+    makeup.save(update_fields=["cancelled_at", "cancelled_by"])
+
+    recovered = client.post(
+        reverse(
+            "subscriptions:manager_subscription_rolling_recovery",
+            kwargs={"subscription_id": subscription.id},
+        )
+    )
+    assert recovered.status_code == 302
+
+    subscription.refresh_from_db()
+    period.refresh_from_db()
+    assert subscription.valid_from is None
+    assert subscription.valid_until is None
+    assert period.state == SubscriptionPeriod.State.PENDING
+    assert period.starts_on is None
+    assert period.ends_on is None
+    assert period.activation_lesson_id is None
+    recovery_event = AuditEvent.objects.filter(
+        event_type="SubscriptionPeriodActivationReverted",
+        aggregate_id=period.id,
+    ).latest("occurred_at")
+    assert recovery_event.payload["reason"] == "manager_recovery"
+    assert recovery_event.payload["recovery_event_id"] == str(event.id)
+
+    detail_after = client.get(
+        reverse(
+            "subscriptions:manager_subscription_detail",
+            kwargs={"subscription_id": subscription.id},
+        )
+    )
+    assert "Требуется восстановление расчётного периода" not in (
+        detail_after.content.decode()
+    )

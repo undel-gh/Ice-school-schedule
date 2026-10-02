@@ -4454,15 +4454,16 @@ def assign_attendance_coverage_from_source(
 def _rolling_period_revert_dependencies(
     *,
     subscription_id: UUID,
-    excluded_coverage_id: UUID,
+    excluded_coverage_id: UUID | None = None,
 ) -> dict[str, bool]:
+    active_coverages = AttendanceCoverage.objects.filter(
+        subscription_allowance__subscription_id=subscription_id,
+        reversed_at__isnull=True,
+    )
+    if excluded_coverage_id is not None:
+        active_coverages = active_coverages.exclude(pk=excluded_coverage_id)
     return {
-        "active_coverages": AttendanceCoverage.objects.filter(
-            subscription_allowance__subscription_id=subscription_id,
-            reversed_at__isnull=True,
-        )
-        .exclude(pk=excluded_coverage_id)
-        .exists(),
+        "active_coverages": active_coverages.exists(),
         "active_makeups": MakeupEntitlement.objects.filter(
             source_subscription_allowance__subscription_id=subscription_id,
             cancelled_at__isnull=True,
@@ -4479,6 +4480,72 @@ def _rolling_period_revert_dependencies(
             reversed_at__isnull=True,
         ).exists(),
     }
+
+
+def _revert_rolling_period_to_pending(
+    *,
+    subscription: Subscription,
+    period: SubscriptionPeriod,
+    actor: User | None,
+    correlation_id: UUID,
+    reason: str,
+    reverted_coverage_id: UUID | None = None,
+    recovery_event_id: UUID | None = None,
+) -> SubscriptionPeriod:
+    previous_starts_on = period.starts_on
+    previous_ends_on = period.ends_on
+    activation_lesson_id = period.activation_lesson_id
+
+    subscription.valid_from = None
+    subscription.valid_until = None
+    subscription.save(update_fields=["valid_from", "valid_until"])
+
+    period.state = SubscriptionPeriod.State.PENDING
+    period.starts_on = None
+    period.ends_on = None
+    period.activation_lesson = None
+    period.activated_at = None
+    period.save(
+        update_fields=[
+            "state",
+            "starts_on",
+            "ends_on",
+            "activation_lesson",
+            "activated_at",
+        ]
+    )
+    payload = {
+        "subscription_id": str(subscription.id),
+        "activation_lesson_id": (
+            str(activation_lesson_id)
+            if activation_lesson_id is not None
+            else None
+        ),
+        "previous_starts_on": (
+            previous_starts_on.isoformat()
+            if previous_starts_on is not None
+            else None
+        ),
+        "previous_ends_on": (
+            previous_ends_on.isoformat()
+            if previous_ends_on is not None
+            else None
+        ),
+        "reason": reason,
+    }
+    if reverted_coverage_id is not None:
+        payload["reverted_coverage_id"] = str(reverted_coverage_id)
+    if recovery_event_id is not None:
+        payload["recovery_event_id"] = str(recovery_event_id)
+    _audit(
+        event_type="SubscriptionPeriodActivationReverted",
+        aggregate_type="SubscriptionPeriod",
+        aggregate_id=period.id,
+        actor=actor,
+        payload=payload,
+        correlation_id=correlation_id,
+    )
+    return period
 
 
 def _maybe_revert_rolling_subscription_activation(
@@ -4547,52 +4614,123 @@ def _maybe_revert_rolling_subscription_activation(
     subscription = Subscription.objects.select_for_update().get(
         pk=subscription_id
     )
-    previous_starts_on = period.starts_on
-    previous_ends_on = period.ends_on
-    activation_lesson_id = period.activation_lesson_id
-
-    subscription.valid_from = None
-    subscription.valid_until = None
-    subscription.save(update_fields=["valid_from", "valid_until"])
-
-    period.state = SubscriptionPeriod.State.PENDING
-    period.starts_on = None
-    period.ends_on = None
-    period.activation_lesson = None
-    period.activated_at = None
-    period.save(
-        update_fields=[
-            "state",
-            "starts_on",
-            "ends_on",
-            "activation_lesson",
-            "activated_at",
-        ]
-    )
-    _audit(
-        event_type="SubscriptionPeriodActivationReverted",
-        aggregate_type="SubscriptionPeriod",
-        aggregate_id=period.id,
+    _revert_rolling_period_to_pending(
+        subscription=subscription,
+        period=period,
         actor=actor,
-        payload={
-            "subscription_id": str(subscription.id),
-            "activation_lesson_id": str(activation_lesson_id),
-            "reverted_coverage_id": str(coverage.id),
-            "previous_starts_on": (
-                previous_starts_on.isoformat()
-                if previous_starts_on is not None
-                else None
-            ),
-            "previous_ends_on": (
-                previous_ends_on.isoformat()
-                if previous_ends_on is not None
-                else None
-            ),
-            "reason": "attendance_coverage_reversed",
-        },
         correlation_id=correlation_id,
+        reason="attendance_coverage_reversed",
+        reverted_coverage_id=coverage.id,
     )
     return True
+
+@transaction.atomic
+def recover_rolling_subscription_period_activation(
+    *,
+    subscription_id: UUID,
+    actor: User,
+) -> SubscriptionPeriod:
+    """Retry a previously skipped rolling-period activation rollback."""
+    require_permission(
+        actor,
+        "subscriptions.change_subscription",
+        "Subscription change permission is required for rolling-period recovery.",
+    )
+    # Match the activation lock order: Subscription -> SubscriptionPeriod.
+    subscription = Subscription.objects.select_for_update().get(
+        pk=subscription_id
+    )
+    period = (
+        SubscriptionPeriod.objects.select_for_update()
+        .filter(subscription=subscription)
+        .first()
+    )
+    if period is None:
+        raise ValidationError(
+            {"period": "Subscription has no billing period to recover."}
+        )
+    if subscription.cancelled_at is not None:
+        raise ValidationError(
+            {"subscription": "Cancelled subscriptions cannot be recovered."}
+        )
+    if (
+        period.state != SubscriptionPeriod.State.ACTIVE
+        or period.mode_snapshot
+        != SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON
+    ):
+        raise ValidationError(
+            {
+                "period": (
+                    "Only an ACTIVE rolling 28-day period can use this "
+                    "recovery workflow."
+                )
+            }
+        )
+
+    latest_recovery_event = (
+        AuditEvent.objects.filter(
+            aggregate_type="SubscriptionPeriod",
+            aggregate_id=period.id,
+            event_type__in=[
+                "SubscriptionPeriodActivationRevertSkipped",
+                "SubscriptionPeriodActivationReverted",
+            ],
+        )
+        .order_by("-occurred_at", "-id")
+        .first()
+    )
+    if (
+        latest_recovery_event is None
+        or latest_recovery_event.event_type
+        != "SubscriptionPeriodActivationRevertSkipped"
+    ):
+        raise ValidationError(
+            {
+                "period": (
+                    "No unresolved skipped activation rollback exists for "
+                    "this billing period."
+                )
+            }
+        )
+
+    dependencies = _rolling_period_revert_dependencies(
+        subscription_id=subscription.id,
+    )
+    if dependencies["active_coverages"]:
+        raise ValidationError(
+            {
+                "period": (
+                    "Rolling-period rollback is still blocked by active "
+                    "attendance coverage. Reverse or rebind that coverage first."
+                )
+            }
+        )
+    if any(
+        dependencies[key]
+        for key in (
+            "active_makeups",
+            "active_compensation_cases",
+            "active_compensation_grants",
+        )
+    ):
+        raise ValidationError(
+            {
+                "period": (
+                    "Rolling-period rollback is still blocked by dependent "
+                    "make-up or compensation rights. Resolve them first."
+                )
+            }
+        )
+
+    return _revert_rolling_period_to_pending(
+        subscription=subscription,
+        period=period,
+        actor=actor,
+        correlation_id=uuid4(),
+        reason="manager_recovery",
+        recovery_event_id=latest_recovery_event.id,
+    )
+
 
 @transaction.atomic
 def reverse_attendance_coverage(
