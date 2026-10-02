@@ -3506,9 +3506,9 @@ def test_explicit_paid_target_cannot_override_resolved_next_period(
     later = issue_ice_subscription_range(
         actor=actor,
         context=context,
-        code="explicit-wrong-next-november",
-        valid_from=date(2026, 11, 1),
-        valid_until=date(2026, 11, 30),
+        code="explicit-wrong-next-second-october",
+        valid_from=date(2026, 10, 2),
+        valid_until=date(2026, 10, 31),
     )
     case = create_absence_compensation_case(
         attendance_id=attendance.id,
