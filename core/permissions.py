@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.contrib.auth.models import Permission
 from django.core.exceptions import PermissionDenied
 from django.db.models import Q
-from django.utils.translation import gettext
+from core.presentation import localize_message
 
 
 MANAGER_OPERATION_PERMISSIONS = (
@@ -110,7 +110,7 @@ def has_manager_operations_access(actor) -> bool:
 def require_manager_operations_access(actor) -> None:
     if has_manager_operations_access(actor):
         return
-    raise PermissionDenied(gettext("Manager operations permission is required."))
+    raise PermissionDenied(localize_message("Manager operations permission is required."))
 
 
 def require_permission(actor, permission: str, message: str) -> None:
@@ -118,7 +118,7 @@ def require_permission(actor, permission: str, message: str) -> None:
         actor.is_superuser or actor.has_perm(permission)
     ):
         return
-    raise PermissionDenied(gettext(message))
+    raise PermissionDenied(localize_message(message))
 
 
 def require_student_access(*, actor, student_id) -> None:
@@ -146,4 +146,4 @@ def require_lesson_coach_or_permission(
         return
     if lesson.coach.user_id == actor.id and lesson.coach.is_active:
         return
-    raise PermissionDenied(message)
+    raise PermissionDenied(localize_message(message))

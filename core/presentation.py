@@ -3,10 +3,16 @@ from __future__ import annotations
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext
 
+from core.ui_messages import localize_domain_message
+
 
 def localize_message(message: str) -> str:
     """Translate a user-visible domain message at the presentation boundary."""
-    return gettext(str(message))
+    raw = str(message)
+    translated = gettext(raw)
+    if translated != raw:
+        return translated
+    return localize_domain_message(raw)
 
 
 def validation_message(exc: ValidationError) -> str:
