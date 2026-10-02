@@ -33,7 +33,11 @@ class MFAIdentity:
     preauthenticated: bool
 
 
-def mfa_required_for_user(user) -> bool:
+def mfa_required_for_user(
+    user,
+    *,
+    use_request_cache: bool = False,
+) -> bool:
     if user is None:
         return False
     if getattr(user, "is_staff", False) or getattr(
@@ -44,14 +48,15 @@ def mfa_required_for_user(user) -> bool:
         return True
 
     cache_attr = "_manager_operations_assignment_request_cache"
-    if hasattr(user, cache_attr):
+    if use_request_cache and hasattr(user, cache_attr):
         return bool(getattr(user, cache_attr))
 
     assigned = has_manager_operations_assignment(user)
-    # request.user is a request-scoped model instance in normal Django
-    # request handling. Reuse the assignment result across middleware and
-    # context processors without persisting it anywhere.
-    setattr(user, cache_attr, assigned)
+    if use_request_cache:
+        # request.user is request-scoped in normal Django request handling.
+        # Do not cache when this helper is used by services/tests outside an
+        # HTTP request because permissions may be mutated on that same object.
+        setattr(user, cache_attr, assigned)
     return assigned
 
 

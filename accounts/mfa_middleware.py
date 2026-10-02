@@ -39,7 +39,7 @@ class PrivilegedMFAMiddleware:
 
         if (
             user.is_authenticated
-            and mfa_required_for_user(user)
+            and mfa_required_for_user(user, use_request_cache=True)
             and not self._is_exempt(request)
         ):
             is_verified = getattr(user, "is_verified", lambda: False)()

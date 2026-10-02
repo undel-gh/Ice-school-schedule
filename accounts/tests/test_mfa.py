@@ -945,11 +945,17 @@ def test_manager_permission_result_is_reused_across_mfa_and_context_checks():
     )
 
     with CaptureQueriesContext(connection) as queries:
-        assert mfa_required_for_user(user) is False
+        assert mfa_required_for_user(
+            user,
+            use_request_cache=True,
+        ) is False
         first_query_count = len(queries)
         assert first_query_count >= 1
 
-        assert mfa_required_for_user(user) is False
+        assert mfa_required_for_user(
+            user,
+            use_request_cache=True,
+        ) is False
         assert has_manager_operations_access(user) is False
         assert len(queries) == first_query_count
 

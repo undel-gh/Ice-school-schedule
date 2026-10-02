@@ -95,22 +95,15 @@ def has_manager_operations_assignment(actor) -> bool:
 def has_manager_operations_access(actor) -> bool:
     if actor is None or not getattr(actor, "is_authenticated", False):
         return False
-    if not getattr(actor, "is_active", False):
-        return False
-    if actor.is_superuser:
-        return True
 
     cache_attr = "_manager_operations_assignment_request_cache"
     if hasattr(actor, cache_attr):
         return bool(getattr(actor, cache_attr))
 
-    # With the configured Django ModelBackend, active-user access to these
-    # global permissions is equivalent to direct/group assignment. Cache the
-    # result on the request-scoped User instance so MFA middleware and context
-    # processors do not repeat permission/group queries.
-    assigned = has_manager_operations_assignment(actor)
-    setattr(actor, cache_attr, assigned)
-    return assigned
+    return actor.is_superuser or any(
+        actor.has_perm(permission)
+        for permission in MANAGER_OPERATION_PERMISSIONS
+    )
 
 
 def require_manager_operations_access(actor) -> None:
