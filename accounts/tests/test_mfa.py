@@ -1056,3 +1056,30 @@ def test_expired_verified_session_cannot_refresh_absolute_age_via_direct_challen
     assert response.status_code == 302
     assert response.url.startswith(reverse("login"))
     assert "_auth_user_id" not in client.session
+
+
+
+@pytest.mark.django_db
+@override_settings(MFA_PREAUTH_TTL_SECONDS=60)
+def test_replacement_qr_expires_with_setup_authorization(client):
+    user = _privileged_user(username="mfa-replacement-qr-expiry")
+    client.force_login(user)
+
+    started = client.post(
+        reverse("mfa:replace_authenticator"),
+        {"password": "secret-password"},
+    )
+    assert started.status_code == 302
+    assert started.url == reverse("mfa:setup")
+
+    session = client.session
+    setup_auth = session["mfa_setup_auth"]
+    setup_auth["issued_at"] = (
+        timezone.now() - timedelta(seconds=61)
+    ).timestamp()
+    session["mfa_setup_auth"] = setup_auth
+    session.save()
+
+    qr = client.get(reverse("mfa:setup_qr"))
+
+    assert qr.status_code == 404
