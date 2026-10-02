@@ -8,6 +8,7 @@ from django.contrib.auth.models import Group, Permission
 from django.test import Client, override_settings
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.http import urlencode
 from django_otp import DEVICE_ID_SESSION_KEY
 from django_otp.oath import TOTP
 from django_otp.plugins.otp_static.models import StaticDevice, StaticToken
@@ -592,7 +593,8 @@ def test_anonymous_admin_login_is_routed_through_mfa_aware_local_login():
 
     assert response.status_code == 302
     assert response.url == (
-        f"{reverse('login')}?next={reverse('admin:index')}"
+        f"{reverse('login')}?"
+        f"{urlencode({'next': reverse('admin:index')})}"
     )
     assert "_auth_user_id" not in client.session
 
