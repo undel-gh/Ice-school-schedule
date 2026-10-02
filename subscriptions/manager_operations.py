@@ -30,6 +30,7 @@ from .models import (
     AbsenceCompensationPolicyAction,
     OneTimeEntitlement,
 )
+from .selectors import manager_compensation_next_period_states
 from .services import (
     activate_paid_makeup_grant,
     authorize_paid_makeup_from_case,
@@ -70,11 +71,15 @@ def manager_compensation_cases(request: HttpRequest) -> HttpResponse:
     status = request.GET.get("status")
     if status in AbsenceCompensationCase.Status.values:
         cases = cases.filter(status=status)
+    case_rows = list(cases[:300])
+    next_period_states = manager_compensation_next_period_states(case_rows)
+    for case in case_rows:
+        case.next_period_state = next_period_states.get(case.id, "")
     return render(
         request,
         "subscriptions/manager_compensation_cases.html",
         {
-            "cases": cases[:300],
+            "cases": case_rows,
             "statuses": localized_choices(
                 "compensation_status",
                 AbsenceCompensationCase.Status.choices,
@@ -142,6 +147,10 @@ def manager_compensation_case_detail(
         pk=case_id,
     )
     grants = tuple(case.action_grants.all())
+    next_period_state = manager_compensation_next_period_states([case]).get(
+        case.id,
+        "",
+    )
     action_types = {
         item.get("action_type")
         for item in case.actions_snapshot
@@ -153,6 +162,7 @@ def manager_compensation_case_detail(
         {
             "case": case,
             "grants": grants,
+            "next_period_state": next_period_state,
             "authorize_form": ManagerPaidMakeupAuthorizeForm(
                 student_id=case.student_id
             ),
