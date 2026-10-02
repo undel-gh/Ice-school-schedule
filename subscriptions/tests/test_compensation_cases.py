@@ -4049,3 +4049,94 @@ def test_explicit_paid_target_accepts_later_item_from_same_rolling_package(
     )
 
     assert grant.target_subscription_id == target.id
+
+
+
+@pytest.mark.django_db
+def test_older_pending_rolling_item_is_not_pulled_after_current_source(
+    actor,
+    context,
+):
+    attendance = make_absence(
+        context=context,
+        actor=actor,
+        starts_at=school_dt(2026, 10, 10, 18, 0),
+    )
+    policy = make_policy(code="rolling-package-old-item-policy")
+    add_paid_action(policy)
+    scheme = SubscriptionPeriodScheme.objects.create(
+        code="rolling-package-old-item-scheme",
+        name="Rolling package old item",
+        mode=SubscriptionPeriodScheme.Mode.ROLLING_28_FROM_FIRST_LESSON,
+    )
+    plan = SubscriptionPlan.objects.create(
+        code="rolling-package-old-item-plan",
+        name="Rolling package old item",
+        period_scheme=scheme,
+    )
+    SubscriptionPlanAllowance.objects.create(
+        plan=plan,
+        category=SubscriptionCategory.ICE,
+        visit_limit=8,
+    )
+    stale = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 25),
+        actor=actor,
+    )
+    source = issue_subscription_for_period(
+        student_id=context["student"].id,
+        plan_id=plan.id,
+        reference_date=date(2026, 9, 25),
+        actor=actor,
+    )
+    Subscription.objects.filter(pk=stale.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 0, tzinfo=dt_timezone.utc)
+    )
+    Subscription.objects.filter(pk=source.id).update(
+        created_at=datetime(2026, 9, 25, 10, 0, 1, tzinfo=dt_timezone.utc)
+    )
+    stale.refresh_from_db()
+    source.refresh_from_db()
+
+    activation = Lesson.objects.create(
+        group=context["group"],
+        lesson_type=context["ice"],
+        coach=context["coach"],
+        venue=context["venue"],
+        starts_at=school_dt(2026, 10, 3, 18, 0),
+        ends_at=school_dt(2026, 10, 3, 19, 0),
+        minimum_attendees=1,
+        rsvp_deadline=school_dt(2026, 10, 3, 16, 0),
+        decision_deadline=school_dt(2026, 10, 3, 17, 0),
+        status=Lesson.Status.COMPLETED,
+    )
+    activate_rolling_subscription_period(
+        subscription_id=source.id,
+        lesson_id=activation.id,
+        actor=actor,
+        now=school_dt(2026, 10, 3, 19, 0),
+    )
+    assert stale.created_at < source.created_at
+    assert stale.billing_period.state == stale.billing_period.State.PENDING
+
+    case = create_absence_compensation_case(
+        attendance_id=attendance.id,
+        absence_reason=AbsenceCompensationPolicy.AbsenceReason.UNEXCUSED,
+        actor=actor,
+        now=attendance.marked_at,
+    )
+    with pytest.raises(
+        ValidationError,
+        match="No next student period subscription is available yet",
+    ):
+        authorize_paid_makeup_from_case(
+            case_id=case.id,
+            actor=actor,
+            now=attendance.marked_at + timedelta(hours=1),
+        )
+
+    case.refresh_from_db()
+    assert case.status == AbsenceCompensationCase.Status.OPEN
+    assert not case.action_grants.exists()
