@@ -1,0 +1,136 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - backend
+
+  migrate:
+    build:
+      context: .
+    image: ice-school-app:${APP_IMAGE_TAG:-local}
+    env_file:
+      - .env.production
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - backend
+
+  web:
+    image: ice-school-app:${APP_IMAGE_TAG:-local}
+    env_file:
+      - .env.production
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec gunicorn ice_school.wsgi:application
+        --bind 0.0.0.0:8000
+        --workers "$${GUNICORN_WORKERS:-3}"
+        --timeout "$${GUNICORN_TIMEOUT_SECONDS:-30}"
+        --access-logfile -
+        --error-logfile -
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/healthz/', timeout=3).read()
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - backend
+
+  scheduler:
+    image: ice-school-app:${APP_IMAGE_TAG:-local}
+    env_file:
+      - .env.production
+    command: ["python", "ops/scheduler.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - backend
+
+  backup:
+    image: postgres:17-alpine
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    command: ["/ops/postgres_backup.sh"]
+    volumes:
+      - ./ops/postgres_backup.sh:/ops/postgres_backup.sh:ro
+      - ${BACKUP_HOST_PATH:-./backups}:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - backend
+
+  proxy:
+    image: caddy:2.11.2-alpine
+    environment:
+      APP_HOST: ${APP_HOST:?APP_HOST is required}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      backend:
+        ipv4_address: 172.30.0.10
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
