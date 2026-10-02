@@ -59,9 +59,9 @@ def _run(job: Job) -> None:
     )
 
 
-def main() -> int:
+def build_jobs() -> list[Job]:
     horizon_days = _positive_int("SCHEDULER_GENERATION_HORIZON_DAYS", 60)
-    jobs = [
+    return [
         Job(
             name="subscription_lifecycle",
             interval_seconds=_positive_int(
@@ -90,6 +90,10 @@ def main() -> int:
             ],
         ),
     ]
+
+
+def main() -> int:
+    jobs = build_jobs()
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
