@@ -672,6 +672,17 @@ docker compose --env-file .env.production -f compose.production.yaml \
   logs -f web proxy scheduler backup
 ```
 
+All production services use Docker's `json-file` driver with bounded rotation
+to avoid an unattended host filling its disk. Defaults are:
+
+```text
+DOCKER_LOG_MAX_SIZE=10m
+DOCKER_LOG_MAX_FILES=5
+```
+
+These limits apply per container. Central/off-host log shipping can be added
+later, but disabling local rotation is not recommended.
+
 The database is not published to the host network. Gunicorn is exposed only on
 the private Compose network; public traffic enters through Caddy.
 
@@ -770,6 +781,12 @@ A local backup directory is **not** a complete backup strategy. Copy validated
 dumps to encrypted/off-host storage under the organisation's backup policy and
 regularly test restoration. Database backups contain school/personal data and
 must be protected accordingly.
+
+CI performs a basic restore smoke-test for the produced custom-format archive:
+it restores the dump into a temporary PostgreSQL database and verifies that
+Django migration metadata is readable. This catches structurally unusable
+archives, but it does not replace periodic operator restore exercises against
+real production backups.
 
 ### Restore procedure
 

@@ -1,5 +1,12 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-10m}"
+    max-file: "${DOCKER_LOG_MAX_FILES:-5}"
+
 services:
   db:
+    logging: *default-logging
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
@@ -19,6 +26,7 @@ services:
       - backend
 
   migrate:
+    logging: *default-logging
     build:
       context: .
     image: ice-school-app:${APP_IMAGE_TAG:-local}
@@ -33,6 +41,7 @@ services:
       - backend
 
   web:
+    logging: *default-logging
     image: ice-school-app:${APP_IMAGE_TAG:-local}
     env_file:
       - .env.production
@@ -75,6 +84,7 @@ services:
       - backend
 
   scheduler:
+    logging: *default-logging
     image: ice-school-app:${APP_IMAGE_TAG:-local}
     env_file:
       - .env.production
@@ -89,6 +99,7 @@ services:
       - backend
 
   backup:
+    logging: *default-logging
     image: postgres:17-alpine
     environment:
       PGHOST: db
@@ -118,6 +129,7 @@ services:
       - backend
 
   proxy:
+    logging: *default-logging
     image: caddy:2.11.2-alpine
     environment:
       APP_HOST: ${APP_HOST:?APP_HOST is required}
