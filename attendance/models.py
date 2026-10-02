@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 
 from accounts.models import Student
@@ -9,8 +10,8 @@ from scheduling.models import Lesson
 
 class Attendance(UUIDModel):
     class Status(models.TextChoices):
-        PRESENT = "present", "Present"
-        ABSENT = "absent", "Absent"
+        PRESENT = "present", _("Present")
+        ABSENT = "absent", _("Absent")
 
     lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="attendance_records")
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="attendance_records")
@@ -30,20 +31,20 @@ class Attendance(UUIDModel):
 
 class AbsenceJustification(UUIDModel):
     class Type(models.TextChoices):
-        MEDICAL = "medical", "Medical"
+        MEDICAL = "medical", _("Medical")
 
     class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        VERIFIED = "verified", "Verified"
-        REJECTED = "rejected", "Rejected"
-        REVOKED = "revoked", "Revoked"
+        PENDING = "pending", _("Pending")
+        VERIFIED = "verified", _("Verified")
+        REJECTED = "rejected", _("Rejected")
+        REVOKED = "revoked", _("Revoked")
 
     class VerificationMethod(models.TextChoices):
-        IN_PERSON = "in_person", "In person"
+        IN_PERSON = "in_person", _("In person")
 
     class RevocationReason(models.TextChoices):
-        ATTENDANCE_CORRECTION = "attendance_correction", "Attendance correction"
-        ADMINISTRATIVE = "administrative", "Administrative"
+        ATTENDANCE_CORRECTION = "attendance_correction", _("Attendance correction")
+        ADMINISTRATIVE = "administrative", _("Administrative")
 
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="absence_justifications")
     lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="absence_justifications")

@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.utils.translation import gettext_lazy as _
 
 from accounts.models import CoachProfile, Student
 from core.choices import SubscriptionCategory
@@ -177,19 +178,19 @@ class ScheduleTemplate(UUIDModel, TimeStampedModel):
 
 class Lesson(UUIDModel, TimeStampedModel):
     class Status(models.TextChoices):
-        DRAFT = "draft", "Draft"
-        RSVP_OPEN = "rsvp_open", "RSVP open"
-        CONFIRMED = "confirmed", "Confirmed"
-        COMPLETED = "completed", "Completed"
-        CLOSED = "closed", "Closed"
-        CANCELLED = "cancelled", "Cancelled"
+        DRAFT = "draft", _("Draft")
+        RSVP_OPEN = "rsvp_open", _("RSVP open")
+        CONFIRMED = "confirmed", _("Confirmed")
+        COMPLETED = "completed", _("Completed")
+        CLOSED = "closed", _("Closed")
+        CANCELLED = "cancelled", _("Cancelled")
 
     class CancellationReason(models.TextChoices):
-        LOW_ATTENDANCE = "low_attendance", "Low attendance"
-        COACH_UNAVAILABLE = "coach_unavailable", "Coach unavailable"
-        VENUE_UNAVAILABLE = "venue_unavailable", "Venue unavailable"
-        ADMINISTRATIVE = "administrative", "Administrative"
-        OTHER = "other", "Other"
+        LOW_ATTENDANCE = "low_attendance", _("Low attendance")
+        COACH_UNAVAILABLE = "coach_unavailable", _("Coach unavailable")
+        VENUE_UNAVAILABLE = "venue_unavailable", _("Venue unavailable")
+        ADMINISTRATIVE = "administrative", _("Administrative")
+        OTHER = "other", _("Other")
 
     source_template = models.ForeignKey(
         ScheduleTemplate,
@@ -263,9 +264,9 @@ class Lesson(UUIDModel, TimeStampedModel):
 
 class LessonEnrollment(UUIDModel):
     class Reason(models.TextChoices):
-        MAKEUP = "makeup", "Make-up"
-        GUEST = "guest", "Guest"
-        ADMINISTRATIVE = "administrative", "Administrative"
+        MAKEUP = "makeup", _("Make-up")
+        GUEST = "guest", _("Guest")
+        ADMINISTRATIVE = "administrative", _("Administrative")
 
     lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="enrollments")
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="lesson_enrollments")
@@ -295,9 +296,9 @@ class LessonEnrollment(UUIDModel):
 
 class LessonRosterEntry(UUIDModel):
     class Source(models.TextChoices):
-        GROUP = "group", "Group"
-        ENROLLMENT = "enrollment", "Enrollment"
-        MANUAL = "manual", "Manual"
+        GROUP = "group", _("Group")
+        ENROLLMENT = "enrollment", _("Enrollment")
+        MANUAL = "manual", _("Manual")
 
     lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="roster_entries")
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="lesson_roster_entries")
@@ -329,8 +330,8 @@ class LessonRosterEntry(UUIDModel):
 
 class LessonResponse(UUIDModel, TimeStampedModel):
     class Status(models.TextChoices):
-        YES = "yes", "Yes"
-        NO = "no", "No"
+        YES = "yes", _("Yes")
+        NO = "no", _("No")
 
     lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="responses")
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="lesson_responses")
