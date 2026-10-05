@@ -5,6 +5,7 @@ from datetime import date
 
 from .ui_messages_accounts import ACCOUNT_UI_MESSAGES
 from .ui_messages_attendance import ATTENDANCE_UI_MESSAGES
+from .ui_messages_financial import FINANCIAL_UI_MESSAGES
 from .ui_messages_scheduling import SCHEDULING_UI_MESSAGES
 from .ui_messages_subscriptions import (
     SUBSCRIPTION_DYNAMIC_PATTERNS,
@@ -14,6 +15,7 @@ from .ui_messages_subscriptions import (
 UI_MESSAGES = {
     **ACCOUNT_UI_MESSAGES,
     **ATTENDANCE_UI_MESSAGES,
+    **FINANCIAL_UI_MESSAGES,
     **SCHEDULING_UI_MESSAGES,
     **SUBSCRIPTION_UI_MESSAGES,
 }
