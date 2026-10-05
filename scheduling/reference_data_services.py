@@ -166,6 +166,7 @@ def create_venue(
     code: str,
     name: str,
     address: str,
+    floor: str,
     is_active: bool,
     actor: User | None,
 ) -> Venue:
@@ -174,6 +175,7 @@ def create_venue(
             code=code,
             name=name,
             address=address,
+            floor=floor,
             is_active=is_active,
         )
     except IntegrityError as exc:
@@ -187,6 +189,7 @@ def create_venue(
             "code": venue.code,
             "name": venue.name,
             "address": venue.address,
+            "floor": venue.floor,
             "is_active": venue.is_active,
         },
     )
@@ -200,6 +203,7 @@ def update_venue(
     code: str,
     name: str,
     address: str,
+    floor: str,
     is_active: bool,
     actor: User | None,
 ) -> Venue:
@@ -210,14 +214,16 @@ def update_venue(
         "code": venue.code,
         "name": venue.name,
         "address": venue.address,
+        "floor": venue.floor,
         "is_active": venue.is_active,
     }
     venue.code = code
     venue.name = name
     venue.address = address
+    venue.floor = floor
     venue.is_active = is_active
     try:
-        venue.save(update_fields=["code", "name", "address", "is_active"])
+        venue.save(update_fields=["code", "name", "address", "floor", "is_active"])
     except IntegrityError as exc:
         raise ValidationError({"code": "Площадка с таким кодом уже существует."}) from exc
     record_event(
@@ -231,6 +237,7 @@ def update_venue(
                 "code": venue.code,
                 "name": venue.name,
                 "address": venue.address,
+                "floor": venue.floor,
                 "is_active": venue.is_active,
             },
         },
