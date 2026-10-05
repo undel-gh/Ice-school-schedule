@@ -10,7 +10,13 @@ from django.urls import reverse
 from accounts.models import CoachProfile
 from core.time import make_school_aware
 from ice_school.workflows import reschedule_lesson_with_entitlements
-from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
+from scheduling.models import (
+    Lesson,
+    LessonType,
+    ScheduleTemplate,
+    TrainingGroup,
+    Venue,
+)
 from scheduling.services import skip_template_occurrence
 
 User = get_user_model()
@@ -78,7 +84,7 @@ def reschedule_context(db):
     }
 
 
-def _template(ctx, *, lesson_type):
+def _template(ctx, *, lesson_type, is_active=True):
     return ScheduleTemplate.objects.create(
         group=ctx["group"],
         lesson_type=lesson_type,
@@ -89,7 +95,7 @@ def _template(ctx, *, lesson_type):
         duration_minutes=60,
         valid_from=ctx["target_date"],
         valid_until=ctx["target_date"],
-        is_active=True,
+        is_active=is_active,
     )
 
 
@@ -148,6 +154,26 @@ def test_reschedule_allows_unmaterialized_same_type_template_occurrence(
     assert replacement.starts_at == new_starts_at
     ctx["source"].refresh_from_db()
     assert ctx["source"].replacement_lesson_id == replacement.id
+
+
+@pytest.mark.django_db
+def test_reschedule_ignores_inactive_cross_type_template(
+    reschedule_context,
+):
+    ctx = reschedule_context
+    _template(ctx, lesson_type=ctx["hall"], is_active=False)
+    new_starts_at, new_ends_at = _target_interval(ctx)
+
+    replacement = reschedule_lesson_with_entitlements(
+        lesson_id=ctx["source"].id,
+        new_starts_at=new_starts_at,
+        new_ends_at=new_ends_at,
+        actor=ctx["manager"],
+        reason=Lesson.CancellationReason.ADMINISTRATIVE,
+        now=ctx["now"],
+    )
+
+    assert replacement.starts_at == new_starts_at
 
 
 @pytest.mark.django_db
