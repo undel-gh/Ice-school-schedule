@@ -102,14 +102,30 @@ def _error_messages_from_ast(path: Path) -> tuple[set[str], set[str]]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or _call_name(node) not in ERROR_NAMES:
             continue
+
+        joined_nodes = [
+            child for child in ast.walk(node) if isinstance(child, ast.JoinedStr)
+        ]
+        joined_constant_ids = {
+            id(child)
+            for joined in joined_nodes
+            for child in ast.walk(joined)
+            if isinstance(child, ast.Constant)
+        }
+
+        for joined in joined_nodes:
+            template = _joined_template(joined)
+            if _looks_like_english_message(template.replace("{}", "value")):
+                dynamic_templates.add(template)
+
         for child in ast.walk(node):
-            if isinstance(child, ast.JoinedStr):
-                template = _joined_template(child)
-                if _looks_like_english_message(template.replace("{}", "value")):
-                    dynamic_templates.add(template)
-            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
-                if _looks_like_english_message(child.value):
-                    static_messages.add(child.value)
+            if (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and id(child) not in joined_constant_ids
+                and _looks_like_english_message(child.value)
+            ):
+                static_messages.add(child.value)
 
     return static_messages, dynamic_templates
 
@@ -158,6 +174,14 @@ def test_dynamic_ui_errors_hide_known_technical_values():
         "The selected coach has another non-cancelled lesson overlapping this time: "
         "11111111-1111-1111-1111-111111111111."
     )
+    compensation = localize_message(
+        "Multiple active absence compensation policies match unexcused on "
+        "2026-10-01."
+    )
+    action_window = localize_message(
+        "Multiple absence compensation windows with the same priority match action "
+        "11111111-1111-1111-1111-111111111111 on 2026-10-01."
+    )
 
     assert "present" not in attendance
     assert "absent" not in attendance
@@ -166,3 +190,8 @@ def test_dynamic_ui_errors_hide_known_technical_values():
     assert "2026-10-01" not in dated
     assert "01.10.2026" in dated
     assert "11111111-1111-1111-1111-111111111111" not in conflict
+    assert "unexcused" not in compensation
+    assert "2026-10-01" not in compensation
+    assert "01.10.2026" in compensation
+    assert "11111111-1111-1111-1111-111111111111" not in action_window
+    assert "01.10.2026" in action_window
