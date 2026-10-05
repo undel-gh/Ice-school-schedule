@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+from urllib.parse import urlencode
 from uuid import UUID
 
 from django.contrib import messages
@@ -15,6 +17,24 @@ from core.presentation import validation_message
 
 from .models import AbsenceJustification
 from .services import declare_medical_absence
+
+
+def _student_schedule_redirect_url(
+    request: HttpRequest,
+    *,
+    student_id: UUID,
+) -> str:
+    params = {"student": str(student_id)}
+    for name in ("from", "until"):
+        value = request.POST.get(name, "").strip()
+        if not value:
+            continue
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            continue
+        params[name] = value
+    return f"{reverse('scheduling:student_schedule')}?{urlencode(params)}"
 
 
 @login_required
@@ -54,5 +74,8 @@ def declare_medical_absence_view(
             )
 
     return redirect(
-        f"{reverse('scheduling:student_schedule')}?student={student_id}"
+        _student_schedule_redirect_url(
+            request,
+            student_id=student_id,
+        )
     )
