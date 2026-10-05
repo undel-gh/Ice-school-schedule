@@ -1,5 +1,7 @@
 from django.urls import path
 
+from attendance import user_views as attendance_user_views
+
 from . import views
 
 app_name = "scheduling"
@@ -11,6 +13,11 @@ urlpatterns = [
         "schedule/<uuid:student_id>/<uuid:lesson_id>/rsvp/",
         views.set_rsvp,
         name="set_rsvp",
+    ),
+    path(
+        "schedule/<uuid:student_id>/<uuid:lesson_id>/medical/declare/",
+        attendance_user_views.declare_medical_absence_view,
+        name="declare_medical_absence",
     ),
     path("coach/", views.coach_schedule, name="coach_schedule"),
     path(
