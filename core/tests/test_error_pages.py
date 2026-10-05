@@ -36,6 +36,7 @@ def test_production_403_page_is_russian(client):
     assert "403 Forbidden" not in body
 
 
+@pytest.mark.django_db
 @override_settings(DEBUG=False)
 def test_production_500_page_is_russian_and_database_independent(
     django_assert_num_queries,
