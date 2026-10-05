@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import ast
 import re
+from datetime import datetime, timezone as dt_timezone
 from pathlib import Path
 
+import pytest
 from django.conf import settings
+from django.test import override_settings
 
 from core.presentation import localize_message
+from scheduling.models import Lesson
 
 ERROR_NAMES = {"ValidationError", "PermissionDenied"}
 IGNORED_PARTS = {"migrations", "tests", "management", "__pycache__"}
@@ -155,6 +159,7 @@ def test_all_static_english_domain_errors_have_ui_translation():
     assert missing == {}
 
 
+@pytest.mark.django_db
 def test_dynamic_domain_errors_are_explicitly_covered():
     discovered: set[str] = set()
     for path in _production_python_files():
@@ -168,6 +173,7 @@ def test_dynamic_domain_errors_are_explicitly_covered():
         assert translated != example, template
 
 
+@pytest.mark.django_db
 def test_dynamic_ui_errors_hide_known_technical_values():
     attendance = localize_message(
         "Unsupported attendance transition: present -> absent."
@@ -204,3 +210,44 @@ def test_dynamic_ui_errors_hide_known_technical_values():
     assert "01.10.2026" in compensation
     assert "11111111-1111-1111-1111-111111111111" not in action_window
     assert "01.10.2026" in action_window
+
+
+@pytest.mark.django_db
+@override_settings(SCHOOL_TIME_ZONE="Europe/Riga")
+def test_lesson_conflict_messages_show_school_local_start(monkeypatch):
+    class FakeLessonStarts:
+        def values_list(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return datetime(2026, 10, 14, 15, 0, tzinfo=dt_timezone.utc)
+
+    monkeypatch.setattr(
+        Lesson.objects,
+        "filter",
+        lambda **kwargs: FakeLessonStarts(),
+    )
+
+    lesson_id = "11111111-1111-1111-1111-111111111111"
+    messages = (
+        "Template versioning would affect a published or processed lesson. "
+        "Reschedule/cancel that lesson explicitly first: " + lesson_id + ".",
+        "Template versioning would cancel a DRAFT lesson with an active enrollment "
+        "or one-time entitlement. Use the reschedule_lesson command to move that "
+        "booked lesson to an explicit exception slot outside the new recurring "
+        "template slot first: " + lesson_id + ".",
+        "Template occurrence is already materialized as lesson "
+        + lesson_id
+        + " with status rsvp_open.",
+        "The selected coach has another non-cancelled lesson overlapping this time: "
+        + lesson_id
+        + ".",
+        "Replacement interval overlaps another non-cancelled lesson of this group: "
+        + lesson_id
+        + ".",
+    )
+
+    for message in messages:
+        translated = localize_message(message)
+        assert "14.10.2026 18:00" in translated
+        assert lesson_id not in translated
