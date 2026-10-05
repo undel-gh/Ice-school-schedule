@@ -308,6 +308,7 @@ def manager_venues(request: HttpRequest) -> HttpResponse:
             Q(name__icontains=query)
             | Q(code__icontains=query)
             | Q(address__icontains=query)
+            | Q(floor__icontains=query)
         )
     page_obj = Paginator(venues, 50).get_page(request.GET.get("page"))
     return render(
@@ -335,6 +336,7 @@ def manager_venue_create(request: HttpRequest) -> HttpResponse:
                 code=form.cleaned_data["code"],
                 name=form.cleaned_data["name"],
                 address=form.cleaned_data["address"],
+                floor=form.cleaned_data["floor"],
                 is_active=form.cleaned_data["is_active"],
                 actor=request.user,
             )
@@ -375,6 +377,7 @@ def manager_venue_edit(
             "code": venue.code,
             "name": venue.name,
             "address": venue.address,
+            "floor": venue.floor,
             "is_active": venue.is_active,
         },
     )
@@ -385,6 +388,7 @@ def manager_venue_edit(
                 code=form.cleaned_data["code"],
                 name=form.cleaned_data["name"],
                 address=form.cleaned_data["address"],
+                floor=form.cleaned_data["floor"],
                 is_active=form.cleaned_data["is_active"],
                 actor=request.user,
             )
