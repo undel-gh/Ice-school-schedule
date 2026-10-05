@@ -52,6 +52,10 @@ def _label(mapping: dict[str, str], value: str) -> str:
     return mapping.get(value, value)
 
 
+def _unquote_code(value: str) -> str:
+    return value.strip("'\"")
+
+
 _DYNAMIC_PATTERNS = (
     # More user-friendly presentation overrides for the generic subscription
     # formatters. Keep the original patterns as a fallback below so this layer
@@ -64,7 +68,8 @@ _DYNAMIC_PATTERNS = (
         re.compile(r"^Multiple active absence compensation policies match (?P<reason>.+) on (?P<date>\d{4}-\d{2}-\d{2})\.$"),
         lambda m: (
             f"На {format_ui_date(m.group('date'))} найдено несколько активных "
-            f"политик компенсаций для {_label(_ABSENCE_REASON_LABELS, m.group('reason'))}."
+            "политик компенсаций для "
+            f"{_label(_ABSENCE_REASON_LABELS, _unquote_code(m.group('reason')))}."
         ),
     ),
     (
