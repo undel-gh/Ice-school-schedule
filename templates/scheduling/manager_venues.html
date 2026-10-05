@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Площадки{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Площадки</h1><p class="page-header__meta">Ледовые арены, залы и другие места проведения занятий.</p></header>
+<div class="action-row manager-actions">
+  {% if perms.scheduling.add_venue %}<a class="btn btn-primary" href="{% url 'school_scheduling:venue_create' %}">Новая площадка</a>{% endif %}
+  <a class="btn btn-secondary" href="{% url 'school_scheduling:lesson_types' %}">Типы занятий</a>
+</div>
+<form class="filter-form" method="get"><div class="field"><label for="q">Поиск</label><input id="q" name="q" value="{{ query }}" placeholder="Название, код или адрес"></div><button class="btn-secondary" type="submit">Найти</button></form>
+<div class="card-list">
+{% for venue in venues %}
+<article class="lesson-card">
+  <div class="lesson-card__top"><div><h2>{{ venue.name }}</h2><p class="lesson-card__meta">{{ venue.code }}</p></div>{% if venue.is_active %}<span class="badge badge--covered">активна</span>{% else %}<span class="badge badge--cancelled">неактивна</span>{% endif %}</div>
+  {% if venue.address %}<p>{{ venue.address }}</p>{% endif %}
+  {% if perms.scheduling.change_venue %}<p><a href="{% url 'school_scheduling:venue_edit' venue.id %}">Редактировать</a></p>{% endif %}
+</article>
+{% empty %}<div class="empty-state">Площадки ещё не созданы.</div>{% endfor %}
+</div>
+{% include "shared/manager_pagination.html" %}
+{% endblock %}
