@@ -84,6 +84,14 @@ def _make_context(*, attendance_status: str):
     return parent, student, lesson, attendance
 
 
+def _schedule_params(*, student):
+    return {
+        "student": str(student.id),
+        "from": (timezone.localdate() - timedelta(days=5)).isoformat(),
+        "until": timezone.localdate().isoformat(),
+    }
+
+
 @pytest.mark.django_db
 def test_absent_student_can_declare_medical_absence_from_schedule(client):
     parent, student, lesson, _attendance = _make_context(
@@ -93,11 +101,7 @@ def test_absent_student_can_declare_medical_absence_from_schedule(client):
 
     schedule = client.get(
         reverse("scheduling:student_schedule"),
-        {
-            "student": str(student.id),
-            "from": (timezone.localdate() - timedelta(days=5)).isoformat(),
-            "until": timezone.localdate().isoformat(),
-        },
+        _schedule_params(student=student),
     )
     assert schedule.status_code == 200
     assert "Заявить медицинское отсутствие" in schedule.content.decode()
@@ -121,7 +125,10 @@ def test_absent_student_can_declare_medical_absence_from_schedule(client):
     )
     assert justification.status == AbsenceJustification.Status.PENDING
     assert justification.declared_by_id == parent.id
-    assert "ожидает проверки менеджером" in response.content.decode()
+    body = response.content.decode()
+    assert "ожидает проверки менеджером" in body
+    assert "Медицинское основание · Ожидает проверки" in body
+    assert "Заявить медицинское отсутствие" not in body
     assert AuditEvent.objects.filter(
         event_type="AbsenceJustificationDeclared",
         aggregate_id=justification.id,
@@ -145,9 +152,11 @@ def test_declared_medical_absence_appears_in_manager_queue(client):
         )
     )
 
-    manager = User.objects.create_superuser(
+    manager = User.objects.create_user(
         username="medical-web-manager",
         password="test",
+        is_staff=True,
+        is_superuser=True,
     )
     client.force_login(manager)
     response = client.get(
@@ -167,6 +176,12 @@ def test_medical_absence_declaration_rejects_present_attendance(client):
         attendance_status=Attendance.Status.PRESENT,
     )
     client.force_login(parent)
+
+    schedule = client.get(
+        reverse("scheduling:student_schedule"),
+        _schedule_params(student=student),
+    )
+    assert "Заявить медицинское отсутствие" not in schedule.content.decode()
 
     response = client.post(
         reverse(
