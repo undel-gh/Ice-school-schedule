@@ -3,6 +3,8 @@ from __future__ import annotations
 from django import forms
 
 from accounts.models import Student
+from core.choices import SubscriptionCategory
+from core.presentation import localized_choices
 
 from .models import GroupMembership, TrainingGroup
 
@@ -30,6 +32,23 @@ class TrainingGroupForm(forms.Form):
         required=False,
         help_text="Пусто — вместимость не ограничивается системой.",
     )
+    is_active = forms.BooleanField(label="Активна", required=False, initial=True)
+
+
+class LessonTypeForm(forms.Form):
+    code = forms.SlugField(label="Код", max_length=64)
+    name = forms.CharField(label="Название", max_length=128)
+    subscription_category = forms.ChoiceField(
+        label="Категория абонемента",
+        choices=localized_choices("subscription_category", SubscriptionCategory.choices),
+    )
+    is_active = forms.BooleanField(label="Активен", required=False, initial=True)
+
+
+class VenueForm(forms.Form):
+    code = forms.SlugField(label="Код", max_length=64)
+    name = forms.CharField(label="Название", max_length=128)
+    address = forms.CharField(label="Адрес", max_length=255, required=False)
     is_active = forms.BooleanField(label="Активна", required=False, initial=True)
 
 
