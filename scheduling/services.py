@@ -174,7 +174,7 @@ def _ensure_capacity_not_below_existing_claims(
     group: TrainingGroup,
     capacity: int | None,
 ) -> None:
-    if group.capacity is None:
+    if capacity is None:
         return
 
     today = get_school_date(timezone.now())
