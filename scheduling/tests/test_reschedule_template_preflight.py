@@ -10,13 +10,7 @@ from django.urls import reverse
 from accounts.models import CoachProfile
 from core.time import make_school_aware
 from ice_school.workflows import reschedule_lesson_with_entitlements
-from scheduling.models import (
-    Lesson,
-    LessonType,
-    ScheduleTemplate,
-    TrainingGroup,
-    Venue,
-)
+from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
 from scheduling.services import skip_template_occurrence
 
 User = get_user_model()
@@ -124,9 +118,12 @@ def test_reschedule_rejects_unmaterialized_cross_type_template_occurrence(
             now=ctx["now"],
         )
 
-    assert "unmaterialized active schedule template occurrence" in str(
-        exc_info.value
-    )
+    message = str(exc_info.value)
+    assert "unmaterialized active schedule template occurrence" in message
+    assert '"Зал"' in message
+    assert make_school_aware(
+        datetime.combine(ctx["target_date"], time(18, 0))
+    ).isoformat() in message
     ctx["source"].refresh_from_db()
     assert ctx["source"].status == Lesson.Status.DRAFT
     assert ctx["source"].replacement_lesson_id is None
@@ -157,7 +154,7 @@ def test_reschedule_allows_unmaterialized_same_type_template_occurrence(
 
 
 @pytest.mark.django_db
-def test_reschedule_ignores_inactive_cross_type_template(
+def test_reschedule_ignores_inactive_cross_type_template_occurrence(
     reschedule_context,
 ):
     ctx = reschedule_context
@@ -174,6 +171,8 @@ def test_reschedule_ignores_inactive_cross_type_template(
     )
 
     assert replacement.starts_at == new_starts_at
+    ctx["source"].refresh_from_db()
+    assert ctx["source"].replacement_lesson_id == replacement.id
 
 
 @pytest.mark.django_db
@@ -228,8 +227,8 @@ def test_manager_reschedule_shows_localized_unmaterialized_template_conflict(
 
     assert response.status_code == 200
     body = response.content.decode()
-    assert "ещё не созданным регулярным занятием другого типа" in body
-    assert "явно пропустите конфликтующее занятие шаблона" in body
+    assert "регулярным занятием «Зал» 12.01.2099 18:00" in body
+    assert "Явно пропустите конфликтующее занятие шаблона" in body
     ctx["source"].refresh_from_db()
     assert ctx["source"].status == Lesson.Status.DRAFT
     assert ctx["source"].replacement_lesson_id is None
