@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from accounts.models import CoachProfile
 from audit.models import AuditEvent
+from scheduling.forms import ManagerScheduleTemplateForm
 from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
 
 User = get_user_model()
@@ -83,42 +84,67 @@ def test_manager_creates_and_updates_venue(client, manager):
     created = client.post(
         reverse("school_scheduling:venue_create"),
         {
-            "code": "arena",
-            "name": "Тестовая арена",
+            "code": "dance-hall",
+            "name": "Зал хореографии",
             "address": "Рига, Тестовая улица, 1",
+            "floor": "2",
             "is_active": "on",
         },
     )
     assert created.status_code == 302
-    venue = Venue.objects.get(code="arena")
+    venue = Venue.objects.get(code="dance-hall")
+    assert venue.name == "Зал хореографии"
     assert venue.address == "Рига, Тестовая улица, 1"
-    assert AuditEvent.objects.filter(
+    assert venue.floor == "2"
+    created_event = AuditEvent.objects.get(
         event_type="VenueCreated",
         aggregate_type="Venue",
         aggregate_id=venue.id,
-    ).exists()
+    )
+    assert created_event.payload["floor"] == "2"
 
     updated = client.post(
         reverse("school_scheduling:venue_edit", kwargs={"venue_id": venue.id}),
         {
-            "code": "arena",
-            "name": "Арена 2",
+            "code": "dance-hall",
+            "name": "Зал хореографии A",
             "address": "Рига, Новый адрес, 2",
+            "floor": "1A",
             "is_active": "on",
         },
     )
     assert updated.status_code == 302
     venue.refresh_from_db()
-    assert venue.name == "Арена 2"
+    assert venue.name == "Зал хореографии A"
     assert venue.address == "Рига, Новый адрес, 2"
-    assert AuditEvent.objects.filter(
+    assert venue.floor == "1A"
+    changed_event = AuditEvent.objects.get(
         event_type="VenueChanged",
         aggregate_id=venue.id,
-    ).exists()
+    )
+    assert changed_event.payload["current"]["floor"] == "1A"
 
     response = client.get(reverse("school_scheduling:venues"))
+    body = response.content.decode()
     assert response.status_code == 200
-    assert "Арена 2" in response.content.decode()
+    assert "Зал хореографии A" in body
+    assert "Рига, Новый адрес, 2" in body
+    assert "этаж 1A" in body
+
+
+@pytest.mark.django_db
+def test_schedule_template_venue_choice_shows_location_details():
+    Venue.objects.create(
+        code="hall-a",
+        name="Зал хореографии",
+        address="Brīvības iela 123, Rīga",
+        floor="2",
+    )
+
+    form = ManagerScheduleTemplateForm()
+    labels = [label for _value, label in form.fields["venue"].choices]
+
+    assert "Зал хореографии — Brīvības iela 123, Rīga · этаж 2" in labels
 
 
 @pytest.mark.django_db
@@ -176,7 +202,11 @@ def test_venue_cannot_be_deactivated_while_future_lesson_uses_it(client, manager
         name="Лёд",
         subscription_category="ice",
     )
-    venue = Venue.objects.create(code="future-arena", name="Будущая арена")
+    venue = Venue.objects.create(
+        code="future-arena",
+        name="Будущая арена",
+        floor="1",
+    )
     starts_at = timezone.now() + timedelta(days=2)
     Lesson.objects.create(
         group=group,
@@ -197,6 +227,7 @@ def test_venue_cannot_be_deactivated_while_future_lesson_uses_it(client, manager
             "code": venue.code,
             "name": venue.name,
             "address": venue.address,
+            "floor": venue.floor,
             "is_active": "",
         },
     )
@@ -204,6 +235,7 @@ def test_venue_cannot_be_deactivated_while_future_lesson_uses_it(client, manager
     venue.refresh_from_db()
     assert response.status_code == 200
     assert venue.is_active is True
+    assert venue.floor == "1"
     assert "будущими неотменёнными занятиями" in response.content.decode()
 
 
