@@ -56,6 +56,15 @@ DYNAMIC_ERROR_EXAMPLES = {
     "Unsupported allowance categories: {}.": (
         "Unsupported allowance categories: ['unknown']."
     ),
+    "Multiple active absence compensation policies match {} on {}.": (
+        "Multiple active absence compensation policies match 'unexcused' on 2026-10-01."
+    ),
+    "Multiple absence compensation windows with the same priority match action {} on {}.": (
+        "Multiple absence compensation windows with the same priority match action 11111111-1111-1111-1111-111111111111 on 2026-10-01."
+    ),
+    "Multiple subscriptions match the next student period starting/issued on {}. Resolve the duplicate/overlap before issuing compensation.": (
+        "Multiple subscriptions match the next student period starting/issued on 2026-10-01. Resolve the duplicate/overlap before issuing compensation."
+    ),
 }
 
 
@@ -175,7 +184,7 @@ def test_dynamic_ui_errors_hide_known_technical_values():
         "11111111-1111-1111-1111-111111111111."
     )
     compensation = localize_message(
-        "Multiple active absence compensation policies match unexcused on "
+        "Multiple active absence compensation policies match 'unexcused' on "
         "2026-10-01."
     )
     action_window = localize_message(
