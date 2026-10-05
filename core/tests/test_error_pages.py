@@ -8,6 +8,17 @@ User = get_user_model()
 
 
 @pytest.mark.django_db
+@override_settings(DEBUG=False, ALLOWED_HOSTS=["example.com"])
+def test_production_400_page_is_russian(client):
+    response = client.get("/", HTTP_HOST="invalid.example")
+    body = response.content.decode()
+
+    assert response.status_code == 400
+    assert "Некорректный запрос" in body
+    assert "Bad Request" not in body
+
+
+@pytest.mark.django_db
 @override_settings(DEBUG=False)
 def test_production_404_page_is_russian(client):
     response = client.get("/__definitely_missing__/not-found/")
