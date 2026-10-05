@@ -26,7 +26,11 @@ _TEMPLATE_OCCURRENCE_CONFLICT_MESSAGE = (
 )
 
 
-def _occurrence_starts_at(*, occurrence_date: date, template: ScheduleTemplate) -> datetime:
+def _occurrence_starts_at(
+    *,
+    occurrence_date: date,
+    template: ScheduleTemplate,
+) -> datetime:
     value = datetime.combine(occurrence_date, template.start_time)
     if settings.USE_TZ:
         return make_school_aware(value)
