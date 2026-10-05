@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<header class="page-header"><h1>{{ title }}</h1></header>
+<div class="action-row manager-actions">
+  <a class="btn btn-secondary" href="{% url back_url_name %}">К списку</a>
+  {% if audit_aggregate_type and perms.audit.view_auditevent %}<a class="btn btn-secondary" href="{% url 'audit_manager:events' %}?aggregate_type={{ audit_aggregate_type }}&aggregate_id={{ audit_aggregate_id }}">Журнал действий</a>{% endif %}
+</div>
+<form class="report-card manager-form" method="post">
+  {% csrf_token %}
+  {{ form.non_field_errors }}
+  {% for field in form %}
+  <div class="field">
+    {{ field.label_tag }}{{ field }}
+    {% if field.help_text %}<div class="field-help">{{ field.help_text }}</div>{% endif %}
+    {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
+  </div>
+  {% endfor %}
+  <button class="btn-primary" type="submit">Сохранить</button>
+</form>
+{% endblock %}
