@@ -34,6 +34,12 @@ _LESSON_STATUS_LABELS = {
     "cancelled": "Отменено",
 }
 
+_ABSENCE_REASON_LABELS = {
+    "medical": "медицинской причины",
+    "unexcused": "отсутствия без уважительной причины",
+    "other": "другой причины отсутствия",
+}
+
 
 def format_ui_date(value: str) -> str:
     try:
@@ -47,6 +53,35 @@ def _label(mapping: dict[str, str], value: str) -> str:
 
 
 _DYNAMIC_PATTERNS = (
+    # More user-friendly presentation overrides for the generic subscription
+    # formatters. Keep the original patterns as a fallback below so this layer
+    # remains backward-compatible with technical service messages.
+    (
+        re.compile(r"^Unsupported allowance categories: (?P<categories>.+)\.$"),
+        lambda m: "Переданы неподдерживаемые категории лимитов.",
+    ),
+    (
+        re.compile(r"^Multiple active absence compensation policies match (?P<reason>.+) on (?P<date>\d{4}-\d{2}-\d{2})\.$"),
+        lambda m: (
+            f"На {format_ui_date(m.group('date'))} найдено несколько активных "
+            f"политик компенсаций для {_label(_ABSENCE_REASON_LABELS, m.group('reason'))}."
+        ),
+    ),
+    (
+        re.compile(r"^Multiple absence compensation windows with the same priority match action (?P<action>[0-9a-f-]+) on (?P<date>\d{4}-\d{2}-\d{2})\.$"),
+        lambda m: (
+            f"На {format_ui_date(m.group('date'))} для одного действия подходят "
+            "несколько окон компенсации с одинаковым приоритетом."
+        ),
+    ),
+    (
+        re.compile(r"^Multiple subscriptions match the next student period starting/issued on (?P<date>\d{4}-\d{2}-\d{2})\. Resolve the duplicate/overlap before issuing compensation\.$"),
+        lambda m: (
+            f"На {format_ui_date(m.group('date'))} найдено несколько абонементов, "
+            "подходящих как следующий период ученика. Устраните дубликат или "
+            "пересечение до оформления компенсации."
+        ),
+    ),
     *SUBSCRIPTION_DYNAMIC_PATTERNS,
     (
         re.compile(r'^External identity provider rejected the request \((?P<code>.+)\)\.$'),
