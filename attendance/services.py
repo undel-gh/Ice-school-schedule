@@ -290,7 +290,10 @@ def set_attendance(
             },
             correlation_id=correlation_id,
         )
-        if status == Attendance.Status.PRESENT and coverage is None:
+        if (
+            status == Attendance.Status.PRESENT
+            and coverage is None
+        ):
             _audit(
                 event_type="AttendanceUncovered",
                 attendance=attendance,
