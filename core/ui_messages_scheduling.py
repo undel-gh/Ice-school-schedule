@@ -66,6 +66,7 @@ SCHEDULING_UI_MESSAGES = {
     "Replacement lesson must end after it starts.": "Перенесённое занятие должно заканчиваться позже начала.",
     "Replacement lesson must start in the future.": "Перенесённое занятие должно начинаться в будущем.",
     "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can be rescheduled.": "Перенести можно только черновик, занятие со сбором ответов или подтверждённое занятие.",
+    "Replacement interval overlaps an unmaterialized active schedule template occurrence of another lesson type. Skip the conflicting template occurrence first or choose another time.": "Новое время пересекается с ещё не созданным регулярным занятием другого типа. Сначала явно пропустите конфликтующее занятие шаблона или выберите другое время.",
     "Only a CONFIRMED lesson can be completed.": "Проведённым можно отметить только подтверждённое занятие.",
     "Lesson cannot be completed before it ends.": "Нельзя завершить занятие до времени его окончания.",
     "This field is required.": "Это поле обязательно.",
