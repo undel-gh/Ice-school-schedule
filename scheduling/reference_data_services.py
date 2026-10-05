@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from audit.services import record_event
 from core.permissions import require_permission
@@ -143,23 +144,24 @@ def update_lesson_type(
     subscription_category: str,
     is_active: bool,
     actor: User,
-    now: datetime,
+    now: datetime | None = None,
 ) -> LessonType:
     require_permission(
         actor,
         "scheduling.change_lessontype",
         "Для изменения типа занятия требуется соответствующее право.",
     )
+    effective_now = now or timezone.now()
     lesson_type = LessonType.objects.select_for_update().get(pk=lesson_type_id)
     if lesson_type.is_active and not is_active:
         _ensure_reference_can_be_deactivated(
             lesson_type_id=lesson_type.id,
-            now=now,
+            now=effective_now,
         )
     if lesson_type.subscription_category != subscription_category:
         _ensure_lesson_type_category_can_change(
             lesson_type_id=lesson_type.id,
-            now=now,
+            now=effective_now,
         )
     previous = {
         "code": lesson_type.code,
@@ -255,18 +257,19 @@ def update_venue(
     floor: str,
     is_active: bool,
     actor: User,
-    now: datetime,
+    now: datetime | None = None,
 ) -> Venue:
     require_permission(
         actor,
         "scheduling.change_venue",
         "Для изменения площадки требуется соответствующее право.",
     )
+    effective_now = now or timezone.now()
     venue = Venue.objects.select_for_update().get(pk=venue_id)
     if venue.is_active and not is_active:
         _ensure_reference_can_be_deactivated(
             venue_id=venue.id,
-            now=now,
+            now=effective_now,
         )
     previous = {
         "code": venue.code,
