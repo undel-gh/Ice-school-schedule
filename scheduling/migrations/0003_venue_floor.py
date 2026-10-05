@@ -11,6 +11,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="venue",
             name="floor",
-            field=models.CharField(blank=True, max_length=32),
+            field=models.CharField(blank=True, default="", max_length=32),
+            preserve_default=False,
         ),
     ]
