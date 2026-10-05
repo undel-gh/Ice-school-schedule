@@ -113,6 +113,8 @@
           action="{% url 'scheduling:declare_medical_absence' selected_student.id item.lesson.id %}"
         >
           {% csrf_token %}
+          <input type="hidden" name="from" value="{{ from_date|date:'Y-m-d' }}">
+          <input type="hidden" name="until" value="{{ until_date|date:'Y-m-d' }}">
           <button class="btn-secondary" type="submit">Заявить медицинское отсутствие</button>
         </form>
         <p class="lesson-card__meta">
