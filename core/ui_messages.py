@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
 from .time import format_school_datetime
@@ -48,6 +48,13 @@ _ABSENCE_REASON_LABELS = {
 def format_ui_date(value: str) -> str:
     try:
         return date.fromisoformat(value).strftime("%d.%m.%Y")
+    except ValueError:
+        return value
+
+
+def format_ui_datetime(value: str) -> str:
+    try:
+        return format_school_datetime(datetime.fromisoformat(value))
     except ValueError:
         return value
 
@@ -176,6 +183,18 @@ _DYNAMIC_PATTERNS = (
         re.compile(r'^Replacement interval overlaps another non-cancelled lesson of this group: (?P<id>[0-9a-f-]+)\.$'),
         lambda m: (
             f"Новое время пересекается с {_lesson_instrumental(m.group('id'))} этой группы."
+        ),
+    ),
+    (
+        re.compile(
+            r'^Replacement interval overlaps unmaterialized active schedule template '
+            r'occurrence "(?P<lesson_type>.+)" at (?P<starts_at>.+)\. '
+            r'Skip the conflicting template occurrence first or choose another time\.$'
+        ),
+        lambda m: (
+            "Новое время пересекается с регулярным занятием "
+            f"«{m.group('lesson_type')}» {format_ui_datetime(m.group('starts_at'))}. "
+            "Явно пропустите конфликтующее занятие шаблона или выберите другое время."
         ),
     ),
     (
