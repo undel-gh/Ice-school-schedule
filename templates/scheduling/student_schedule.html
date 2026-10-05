@@ -100,6 +100,19 @@
           <span class="badge badge--absent">Отсутствовал</span>
         {% endif %}
       </div>
+      {% if item.attendance_status == "absent" %}
+        <form
+          class="action-row"
+          method="post"
+          action="{% url 'scheduling:declare_medical_absence' selected_student.id item.lesson.id %}"
+        >
+          {% csrf_token %}
+          <button class="btn-secondary" type="submit">Заявить медицинское отсутствие</button>
+        </form>
+        <p class="lesson-card__meta">
+          Используйте после передачи подтверждающих документов школе по согласованному каналу.
+        </p>
+      {% endif %}
     {% endif %}
   </article>
 {% empty %}
