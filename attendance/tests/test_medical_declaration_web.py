@@ -139,11 +139,12 @@ def test_absent_student_can_declare_medical_absence_from_schedule(client):
     assert "Заявить медицинское отсутствие" not in body
     assert response.context["from_date"].isoformat() == schedule_params["from"]
     assert response.context["until_date"].isoformat() == schedule_params["until"]
-    assert AuditEvent.objects.filter(
+    event = AuditEvent.objects.get(
         event_type="AbsenceJustificationDeclared",
         aggregate_id=justification.id,
         actor=parent,
-    ).exists()
+    )
+    assert event.payload["source"] == "student_web"
 
 
 @pytest.mark.django_db

@@ -31,6 +31,7 @@ from subscriptions.services import (
     reverse_attendance_coverage,
 )
 
+from .medical_policy import medical_declaration_is_available
 from .models import AbsenceJustification, Attendance
 
 User = get_user_model()
@@ -629,7 +630,6 @@ def reopen_attendance(
     return lesson
 
 
-
 def _assert_medical_reviewer(actor: User) -> None:
     require_permission(
         actor,
@@ -654,6 +654,90 @@ def _find_medical_source_allowance(
     return allowance, subscription
 
 
+def _declare_medical_absence_for_attendance(
+    *,
+    attendance: Attendance,
+    actor: User,
+    source: str | None = None,
+) -> AbsenceJustification:
+    if attendance.status != Attendance.Status.ABSENT:
+        raise ValidationError(
+            {
+                "attendance": (
+                    "Medical absence can only be declared for an "
+                    "Attendance=ABSENT record."
+                )
+            }
+        )
+
+    active = (
+        AbsenceJustification.objects.select_for_update()
+        .filter(
+            student_id=attendance.student_id,
+            lesson_id=attendance.lesson_id,
+            type=AbsenceJustification.Type.MEDICAL,
+            status__in=[
+                AbsenceJustification.Status.PENDING,
+                AbsenceJustification.Status.VERIFIED,
+            ],
+        )
+        .order_by("-declared_at", "-id")
+        .first()
+    )
+    if active is not None:
+        return active
+
+    latest = (
+        AbsenceJustification.objects.select_for_update()
+        .filter(
+            student_id=attendance.student_id,
+            lesson_id=attendance.lesson_id,
+            type=AbsenceJustification.Type.MEDICAL,
+        )
+        .order_by("-declared_at", "-id")
+        .first()
+    )
+    if not medical_declaration_is_available(latest):
+        raise ValidationError(
+            {
+                "justification": (
+                    "A terminal medical justification already exists for "
+                    "this absence and cannot be redeclared automatically."
+                )
+            }
+        )
+
+    justification = AbsenceJustification.objects.create(
+        student_id=attendance.student_id,
+        lesson_id=attendance.lesson_id,
+        type=AbsenceJustification.Type.MEDICAL,
+        status=AbsenceJustification.Status.PENDING,
+        verification_method=(
+            AbsenceJustification.VerificationMethod.IN_PERSON
+        ),
+        declared_by=actor,
+    )
+    payload = {
+        "student_id": str(attendance.student_id),
+        "lesson_id": str(attendance.lesson_id),
+        "type": justification.type,
+    }
+    if source is not None:
+        payload["source"] = source
+    record_event(
+        event_type=(
+            "AbsenceJustificationRedeclared"
+            if latest is not None
+            else "AbsenceJustificationDeclared"
+        ),
+        actor=actor,
+        aggregate_type="AbsenceJustification",
+        aggregate_id=justification.id,
+        payload=payload,
+    )
+    return justification
+
+
 @transaction.atomic
 def declare_medical_absence(
     *,
@@ -668,14 +752,13 @@ def declare_medical_absence(
 
     attendance = (
         Attendance.objects.select_for_update()
-        .select_related("lesson")
         .filter(
             lesson_id=lesson_id,
             student_id=student_id,
         )
         .first()
     )
-    if attendance is None or attendance.status != Attendance.Status.ABSENT:
+    if attendance is None:
         raise ValidationError(
             {
                 "attendance": (
@@ -684,77 +767,30 @@ def declare_medical_absence(
                 )
             }
         )
-
-    active = (
-        AbsenceJustification.objects.select_for_update()
-        .filter(
-            student_id=student_id,
-            lesson_id=lesson_id,
-            type=AbsenceJustification.Type.MEDICAL,
-            status__in=[
-                AbsenceJustification.Status.PENDING,
-                AbsenceJustification.Status.VERIFIED,
-            ],
-        )
-        .order_by("-declared_at")
-        .first()
-    )
-    if active is not None:
-        return active
-
-    latest = (
-        AbsenceJustification.objects.select_for_update()
-        .filter(
-            student_id=student_id,
-            lesson_id=lesson_id,
-            type=AbsenceJustification.Type.MEDICAL,
-        )
-        .order_by("-declared_at", "-id")
-        .first()
-    )
-    if latest is not None:
-        if (
-            latest.status == AbsenceJustification.Status.REVOKED
-            and latest.revocation_reason
-            == AbsenceJustification.RevocationReason.ATTENDANCE_CORRECTION
-        ):
-            pass
-        else:
-            raise ValidationError(
-                {
-                    "justification": (
-                        "A terminal medical justification already exists for "
-                        "this absence and cannot be redeclared automatically."
-                    )
-                }
-            )
-
-    justification = AbsenceJustification.objects.create(
-        student_id=student_id,
-        lesson_id=lesson_id,
-        type=AbsenceJustification.Type.MEDICAL,
-        status=AbsenceJustification.Status.PENDING,
-        verification_method=(
-            AbsenceJustification.VerificationMethod.IN_PERSON
-        ),
-        declared_by=actor,
-    )
-    record_event(
-        event_type=(
-            "AbsenceJustificationRedeclared"
-            if latest is not None
-            else "AbsenceJustificationDeclared"
-        ),
+    return _declare_medical_absence_for_attendance(
+        attendance=attendance,
         actor=actor,
-        aggregate_type="AbsenceJustification",
-        aggregate_id=justification.id,
-        payload={
-            "student_id": str(student_id),
-            "lesson_id": str(lesson_id),
-            "type": justification.type,
-        },
+        source="student_web",
     )
-    return justification
+
+
+@transaction.atomic
+def declare_medical_absence_by_manager(
+    *,
+    attendance_id: UUID,
+    actor: User,
+) -> AbsenceJustification:
+    require_permission(
+        actor,
+        "attendance.add_absencejustification",
+        "Medical absence registration permission is required.",
+    )
+    attendance = Attendance.objects.select_for_update().get(pk=attendance_id)
+    return _declare_medical_absence_for_attendance(
+        attendance=attendance,
+        actor=actor,
+        source="manager_web",
+    )
 
 
 @transaction.atomic
@@ -1060,8 +1096,6 @@ def revoke_medical_absence(
             source_justification_id=justification.id,
         )
     return justification
-
-
 
 
 @dataclass(frozen=True)

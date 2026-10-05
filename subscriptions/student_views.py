@@ -8,7 +8,10 @@ from django.shortcuts import render
 from django.utils import timezone
 
 from accounts.selectors import student_accesses_for_user
-from attendance.models import AbsenceJustification
+from attendance.medical_policy import (
+    latest_medical_justifications_by_lesson,
+    medical_declaration_is_available,
+)
 from core.time import school_date
 
 from .student_account import (
@@ -26,17 +29,10 @@ def _decorate_medical_history(history_page, *, student_id) -> None:
     if not lesson_ids:
         return
 
-    latest_by_lesson = {}
-    justifications = (
-        AbsenceJustification.objects.filter(
-            student_id=student_id,
-            lesson_id__in=lesson_ids,
-            type=AbsenceJustification.Type.MEDICAL,
-        )
-        .order_by("lesson_id", "-declared_at", "-id")
+    latest_by_lesson = latest_medical_justifications_by_lesson(
+        student_id=student_id,
+        lesson_ids=lesson_ids,
     )
-    for justification in justifications:
-        latest_by_lesson.setdefault(justification.lesson_id, justification)
 
     for attendance in history_page.object_list:
         if attendance.status != attendance.Status.ABSENT:
@@ -44,12 +40,7 @@ def _decorate_medical_history(history_page, *, student_id) -> None:
         justification = latest_by_lesson.get(attendance.lesson_id)
         attendance.account_medical_justification = justification
         attendance.account_can_declare_medical_absence = (
-            justification is None
-            or (
-                justification.status == AbsenceJustification.Status.REVOKED
-                and justification.revocation_reason
-                == AbsenceJustification.RevocationReason.ATTENDANCE_CORRECTION
-            )
+            medical_declaration_is_available(justification)
         )
 
 
