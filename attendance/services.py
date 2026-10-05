@@ -290,10 +290,7 @@ def set_attendance(
             },
             correlation_id=correlation_id,
         )
-        if (
-            status == Attendance.Status.PRESENT
-            and coverage is None
-        ):
+        if status == Attendance.Status.PRESENT and coverage is None:
             _audit(
                 event_type="AttendanceUncovered",
                 attendance=attendance,
@@ -770,6 +767,7 @@ def declare_medical_absence(
     return _declare_medical_absence_for_attendance(
         attendance=attendance,
         actor=actor,
+        source="student_web",
     )
 
 
