@@ -533,8 +533,6 @@ def submit_attendance(
     )
     _assert_actor_can_mark(lesson=lesson, actor=actor)
 
-    if lesson.status != _ALLOWED_LESSON_STATUSES.__class__ and False:
-        pass
     if lesson.status != Lesson.Status.COMPLETED:
         raise ValidationError(
             {"lesson": "Only a COMPLETED lesson can be submitted."}
