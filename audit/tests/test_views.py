@@ -64,6 +64,13 @@ def test_manager_audit_view_localizes_known_event_and_aggregate(client):
         aggregate_id=manager.id,
         payload={},
     )
+    AuditEvent.objects.create(
+        event_type="LessonMinimumNotMet",
+        actor=None,
+        aggregate_type="Lesson",
+        aggregate_id=manager.id,
+        payload={},
+    )
     client.force_login(manager)
 
     response = client.get(reverse("audit_manager:events"))
@@ -71,8 +78,10 @@ def test_manager_audit_view_localizes_known_event_and_aggregate(client):
 
     assert response.status_code == 200
     assert "Занятие отменено" in body
+    assert "Минимальный состав занятия не набран" in body
     assert "система" in body
     assert ">Занятие<" in body
     assert "LessonCancelled" not in body
+    assert "LessonMinimumNotMet" not in body
     assert ">Lesson<" not in body
     assert "correlation:" not in body
