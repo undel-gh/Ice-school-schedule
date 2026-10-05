@@ -1,0 +1,43 @@
+name: Temporary capacity guard fix
+
+on:
+  push:
+    branches:
+      - feat/scheduling-reference-data-ui
+    paths:
+      - .github/workflows/tmp-capacity-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/scheduling-reference-data-ui
+      - name: Restore capacity parameter guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scheduling/services.py")
+          text = path.read_text(encoding="utf-8")
+          old = """def _ensure_capacity_not_below_existing_claims(\n    *,\n    group: TrainingGroup,\n    capacity: int | None,\n) -> None:\n    if group.capacity is None:\n        return\n"""
+          new = """def _ensure_capacity_not_below_existing_claims(\n    *,\n    group: TrainingGroup,\n    capacity: int | None,\n) -> None:\n    if capacity is None:\n        return\n"""
+          if text.count(old) != 1:
+              raise SystemExit("expected capacity guard not found exactly once")
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+      - name: Commit fix
+        run: |
+          if git diff --quiet; then
+            echo "No change required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scheduling/services.py
+          git commit -m "Restore capacity validation guard"
+          git push origin HEAD:feat/scheduling-reference-data-ui
