@@ -73,7 +73,7 @@ class LocalizedOTPTokenForm(OTPTokenForm):
         super().__init__(user, request=request, *args, **kwargs)
         self.fields["otp_device"].label = "Способ проверки"
         self.fields["otp_token"].label = "Одноразовый код"
-        self.fields["otp_challenge"].label = "Запрос к устройству"
+        self.fields["otp_challenge"].widget = forms.HiddenInput()
         self.fields["otp_token"].widget.attrs.update(
             {
                 "autocomplete": "one-time-code",
