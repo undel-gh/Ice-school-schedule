@@ -57,6 +57,9 @@ DYNAMIC_ERROR_EXAMPLES = {
     "Replacement interval overlaps another non-cancelled lesson of this group: {}.": (
         "Replacement interval overlaps another non-cancelled lesson of this group: 11111111-1111-1111-1111-111111111111."
     ),
+    'Replacement interval overlaps unmaterialized active schedule template occurrence "{}" at {}. Skip the conflicting template occurrence first or choose another time.': (
+        'Replacement interval overlaps unmaterialized active schedule template occurrence "Зал" at 2026-10-14T18:00:00+03:00. Skip the conflicting template occurrence first or choose another time.'
+    ),
     "Unsupported allowance categories: {}.": (
         "Unsupported allowance categories: ['unknown']."
     ),
@@ -189,6 +192,11 @@ def test_dynamic_ui_errors_hide_known_technical_values():
         "The selected coach has another non-cancelled lesson overlapping this time: "
         "11111111-1111-1111-1111-111111111111."
     )
+    template_conflict = localize_message(
+        'Replacement interval overlaps unmaterialized active schedule template '
+        'occurrence "Зал" at 2026-10-14T18:00:00+03:00. Skip the conflicting '
+        'template occurrence first or choose another time.'
+    )
     compensation = localize_message(
         "Multiple active absence compensation policies match 'unexcused' on "
         "2026-10-01."
@@ -205,6 +213,9 @@ def test_dynamic_ui_errors_hide_known_technical_values():
     assert "2026-10-01" not in dated
     assert "01.10.2026" in dated
     assert "11111111-1111-1111-1111-111111111111" not in conflict
+    assert "Зал" in template_conflict
+    assert "14.10.2026 18:00" in template_conflict
+    assert "2026-10-14T18:00:00+03:00" not in template_conflict
     assert "unexcused" not in compensation
     assert "2026-10-01" not in compensation
     assert "01.10.2026" in compensation
