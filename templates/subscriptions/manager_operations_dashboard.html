@@ -18,6 +18,12 @@
   {% if perms.scheduling.view_traininggroup %}
   <a class="report-card manager-nav-card" href="{% url 'school_scheduling:groups' %}"><h2>Группы</h2><p>Группы школы и параметры минимального состава.</p></a>
   {% endif %}
+  {% if perms.scheduling.view_lessontype %}
+  <a class="report-card manager-nav-card" href="{% url 'school_scheduling:lesson_types' %}"><h2>Типы занятий</h2><p>Лёд, ОФП, хореография и категория списания абонемента.</p></a>
+  {% endif %}
+  {% if perms.scheduling.view_venue %}
+  <a class="report-card manager-nav-card" href="{% url 'school_scheduling:venues' %}"><h2>Площадки</h2><p>Ледовые арены, залы и адреса проведения занятий.</p></a>
+  {% endif %}
   {% if perms.scheduling.view_groupmembership %}
   <a class="report-card manager-nav-card" href="{% url 'school_scheduling:memberships' %}"><h2>Состав групп</h2><p>Текущие, будущие и исторические периоды участия в группах.</p></a>
   {% endif %}

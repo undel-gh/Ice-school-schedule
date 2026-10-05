@@ -54,11 +54,23 @@ WEEKDAY_CHOICES = (
 )
 
 
+class VenueChoiceField(forms.ModelChoiceField):
+    def label_from_instance(self, obj):
+        details = []
+        if obj.address:
+            details.append(obj.address)
+        if obj.floor:
+            details.append(f"этаж {obj.floor}")
+        if not details:
+            return obj.name
+        return f"{obj.name} — {' · '.join(details)}"
+
+
 class ManagerScheduleTemplateForm(forms.Form):
     group = forms.ModelChoiceField(queryset=TrainingGroup.objects.none(), label="Группа")
     lesson_type = forms.ModelChoiceField(queryset=LessonType.objects.none(), label="Тип занятия")
     coach = forms.ModelChoiceField(queryset=CoachProfile.objects.none(), label="Тренер")
-    venue = forms.ModelChoiceField(queryset=Venue.objects.none(), label="Площадка")
+    venue = VenueChoiceField(queryset=Venue.objects.none(), label="Площадка")
     weekday = forms.TypedChoiceField(choices=WEEKDAY_CHOICES, coerce=int, label="День недели")
     start_time = forms.TimeField(label="Время начала", widget=forms.TimeInput(attrs={"type": "time"}))
     duration_minutes = forms.IntegerField(label="Длительность, минут", min_value=1)
@@ -71,7 +83,7 @@ class ManagerScheduleTemplateForm(forms.Form):
         self.fields["group"].queryset = TrainingGroup.objects.filter(is_active=True).order_by("name", "id")
         self.fields["lesson_type"].queryset = LessonType.objects.filter(is_active=True).order_by("name", "id")
         self.fields["coach"].queryset = CoachProfile.objects.filter(is_active=True).order_by("display_name", "id")
-        self.fields["venue"].queryset = Venue.objects.filter(is_active=True).order_by("name", "id")
+        self.fields["venue"].queryset = Venue.objects.filter(is_active=True).order_by("name", "address", "floor", "id")
 
 
 class ManagerScheduleTemplateVersionForm(ManagerScheduleTemplateForm):

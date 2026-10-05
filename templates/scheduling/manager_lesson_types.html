@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% load manager_labels %}
+{% block title %}Типы занятий{% endblock %}
+{% block content %}
+<header class="page-header"><h1>Типы занятий</h1><p class="page-header__meta">Справочник занятий и категория списания абонемента.</p></header>
+<div class="action-row manager-actions">
+  {% if perms.scheduling.add_lessontype %}<a class="btn btn-primary" href="{% url 'school_scheduling:lesson_type_create' %}">Новый тип занятия</a>{% endif %}
+  <a class="btn btn-secondary" href="{% url 'school_scheduling:venues' %}">Площадки</a>
+</div>
+<form class="filter-form" method="get"><div class="field"><label for="q">Поиск</label><input id="q" name="q" value="{{ query }}" placeholder="Название или код"></div><button class="btn-secondary" type="submit">Найти</button></form>
+<div class="card-list">
+{% for item in lesson_types %}
+<article class="lesson-card">
+  <div class="lesson-card__top"><div><h2>{{ item.name }}</h2><p class="lesson-card__meta">{{ item.code }}</p></div>{% if item.is_active %}<span class="badge badge--covered">активен</span>{% else %}<span class="badge badge--cancelled">неактивен</span>{% endif %}</div>
+  <p>Категория: {{ item.subscription_category|manager_label:"subscription_category" }}</p>
+  {% if perms.scheduling.change_lessontype %}<p><a href="{% url 'school_scheduling:lesson_type_edit' item.id %}">Редактировать</a></p>{% endif %}
+</article>
+{% empty %}<div class="empty-state">Типы занятий ещё не созданы.</div>{% endfor %}
+</div>
+{% include "shared/manager_pagination.html" %}
+{% endblock %}

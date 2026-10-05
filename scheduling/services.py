@@ -30,6 +30,8 @@ from .models import (
     LessonEnrollment,
     LessonResponse,
     LessonRosterEntry,
+    LessonType,
+    Venue,
 )
 
 User = get_user_model()
@@ -974,6 +976,8 @@ def create_schedule_template(
 
     group = TrainingGroup.objects.select_for_update().get(pk=group_id)
     coach = CoachProfile.objects.select_for_update().get(pk=coach_id)
+    lesson_type = LessonType.objects.select_for_update().get(pk=lesson_type_id)
+    venue = Venue.objects.select_for_update().get(pk=venue_id)
     if not group.is_active:
         raise ValidationError(
             {"group": "Inactive groups cannot be used by an active schedule template."}
@@ -981,6 +985,14 @@ def create_schedule_template(
     if not coach.is_active:
         raise ValidationError(
             {"coach": "Inactive coaches cannot be used by an active schedule template."}
+        )
+    if not lesson_type.is_active:
+        raise ValidationError(
+            {"lesson_type": "Inactive lesson types cannot be used by an active schedule template."}
+        )
+    if not venue.is_active:
+        raise ValidationError(
+            {"venue": "Inactive venues cannot be used by an active schedule template."}
         )
 
     template = ScheduleTemplate.objects.create(
@@ -1116,6 +1128,12 @@ def version_schedule_template(
     target_coach = CoachProfile.objects.select_for_update().get(
         pk=new_values["coach_id"]
     )
+    target_lesson_type = LessonType.objects.select_for_update().get(
+        pk=new_values["lesson_type_id"]
+    )
+    target_venue = Venue.objects.select_for_update().get(
+        pk=new_values["venue_id"]
+    )
     if not target_group.is_active:
         raise ValidationError(
             {"group": "Inactive groups cannot be used by an active schedule template."}
@@ -1123,6 +1141,14 @@ def version_schedule_template(
     if not target_coach.is_active:
         raise ValidationError(
             {"coach": "Inactive coaches cannot be used by an active schedule template."}
+        )
+    if not target_lesson_type.is_active:
+        raise ValidationError(
+            {"lesson_type": "Inactive lesson types cannot be used by an active schedule template."}
+        )
+    if not target_venue.is_active:
+        raise ValidationError(
+            {"venue": "Inactive venues cannot be used by an active schedule template."}
         )
 
     cutoff = make_school_aware(
@@ -1538,6 +1564,10 @@ def generate_lessons(
     coach = CoachProfile.objects.select_for_update().get(
         pk=template.coach_id
     )
+    lesson_type = LessonType.objects.select_for_update().get(
+        pk=template.lesson_type_id
+    )
+    venue = Venue.objects.select_for_update().get(pk=template.venue_id)
     if not template.is_active:
         raise ValidationError(
             {"template": "Inactive schedule templates cannot generate lessons."}
@@ -1545,6 +1575,14 @@ def generate_lessons(
     if not template.group.is_active:
         raise ValidationError(
             {"group": "Inactive groups cannot generate lessons."}
+        )
+    if not lesson_type.is_active:
+        raise ValidationError(
+            {"lesson_type": "Inactive lesson types cannot generate lessons."}
+        )
+    if not venue.is_active:
+        raise ValidationError(
+            {"venue": "Inactive venues cannot generate lessons."}
         )
     effective_from = max(from_date, template.valid_from)
     effective_until = until_date
@@ -1845,6 +1883,10 @@ def publish_lesson(
         .select_related("group", "coach")
         .get(pk=lesson_id)
     )
+    lesson_type = LessonType.objects.select_for_update().get(
+        pk=lesson.lesson_type_id
+    )
+    venue = Venue.objects.select_for_update().get(pk=lesson.venue_id)
     if lesson.status != Lesson.Status.DRAFT:
         raise ValidationError(
             {"lesson": "Only a DRAFT lesson can be published."}
@@ -1857,6 +1899,14 @@ def publish_lesson(
     if not lesson.coach.is_active:
         raise ValidationError(
             {"coach": "Lessons assigned to an inactive coach cannot be published."}
+        )
+    if not lesson_type.is_active:
+        raise ValidationError(
+            {"lesson_type": "Lessons with an inactive lesson type cannot be published."}
+        )
+    if not venue.is_active:
+        raise ValidationError(
+            {"venue": "Lessons at an inactive venue cannot be published."}
         )
 
     lesson_date = get_school_date(lesson.starts_at)

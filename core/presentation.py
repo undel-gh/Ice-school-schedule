@@ -143,6 +143,7 @@ MANAGER_LABELS = {
         "Lesson": "Занятие",
         "LessonEnrollment": "Запись на занятие",
         "LessonResponse": "Ответ на занятие",
+        "LessonType": "Тип занятия",
         "MakeupEntitlement": "Право на отработку",
         "OneTimeEntitlement": "Разовое право",
         "ScheduleTemplate": "Шаблон расписания",
@@ -155,6 +156,7 @@ MANAGER_LABELS = {
         "SubscriptionPlan": "Тариф",
         "TrainingGroup": "Группа",
         "User": "Пользователь",
+        "Venue": "Площадка",
     },
     "audit_event": {
         "AbsenceCompensationActionReversed": "Действие компенсации отменено",
@@ -219,6 +221,8 @@ MANAGER_LABELS = {
         "LessonRescheduled": "Занятие перенесено",
         "LessonResponseChanged": "Ответ на занятие изменён",
         "LessonsGenerated": "Занятия сгенерированы",
+        "LessonTypeChanged": "Тип занятия изменён",
+        "LessonTypeCreated": "Тип занятия создан",
         "MFAAuthenticated": "Дополнительная проверка пройдена",
         "MFAAuthenticatorReplacementStarted": "Начата замена приложения-аутентификатора",
         "MFAAuthenticatorReplaced": "Приложение-аутентификатор заменено",
@@ -266,6 +270,8 @@ MANAGER_LABELS = {
         "SubscriptionPlanCreated": "Тариф создан",
         "TrainingGroupChanged": "Группа изменена",
         "TrainingGroupCreated": "Группа создана",
+        "VenueChanged": "Площадка изменена",
+        "VenueCreated": "Площадка создана",
     }
 }
 

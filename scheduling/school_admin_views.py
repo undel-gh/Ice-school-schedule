@@ -9,16 +9,27 @@ from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
 from accounts.models import Student
 from core.permissions import require_permission
 from core.presentation import validation_message
 from core.time import school_date
-from django.utils import timezone
 
 from .capacity import group_capacity_snapshot
-from .models import GroupMembership, TrainingGroup
-from .school_admin_forms import GroupMembershipForm, TrainingGroupForm
+from .models import GroupMembership, LessonType, TrainingGroup, Venue
+from .reference_data_services import (
+    create_lesson_type,
+    create_venue,
+    update_lesson_type,
+    update_venue,
+)
+from .school_admin_forms import (
+    GroupMembershipForm,
+    LessonTypeForm,
+    TrainingGroupForm,
+    VenueForm,
+)
 from .services import (
     create_group_membership,
     create_training_group,
@@ -167,6 +178,238 @@ def manager_group_edit(
         request,
         "scheduling/manager_group_form.html",
         {"form": form, "title": "Редактирование группы", "group": group},
+    )
+
+
+@login_required
+def manager_lesson_types(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "scheduling.view_lessontype",
+        "Для просмотра типов занятий требуется соответствующее право.",
+    )
+    query = request.GET.get("q", "").strip()
+    lesson_types = LessonType.objects.order_by("-is_active", "name", "id")
+    if query:
+        lesson_types = lesson_types.filter(
+            Q(name__icontains=query) | Q(code__icontains=query)
+        )
+    page_obj = Paginator(lesson_types, 50).get_page(request.GET.get("page"))
+    return render(
+        request,
+        "scheduling/manager_lesson_types.html",
+        {
+            "lesson_types": page_obj.object_list,
+            "page_obj": page_obj,
+            "query": query,
+        },
+    )
+
+
+@login_required
+def manager_lesson_type_create(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "scheduling.add_lessontype",
+        "Для создания типа занятия требуется соответствующее право.",
+    )
+    form = LessonTypeForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            lesson_type = create_lesson_type(
+                code=form.cleaned_data["code"],
+                name=form.cleaned_data["name"],
+                subscription_category=form.cleaned_data["subscription_category"],
+                is_active=form.cleaned_data["is_active"],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            form.add_error(None, validation_message(exc))
+        else:
+            messages.success(request, "Тип занятия создан.")
+            return redirect(
+                "school_scheduling:lesson_type_edit",
+                lesson_type_id=lesson_type.id,
+            )
+    return render(
+        request,
+        "scheduling/manager_reference_form.html",
+        {
+            "form": form,
+            "title": "Новый тип занятия",
+            "back_url_name": "school_scheduling:lesson_types",
+        },
+    )
+
+
+@login_required
+def manager_lesson_type_edit(
+    request: HttpRequest,
+    *,
+    lesson_type_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "scheduling.change_lessontype",
+        "Для изменения типа занятия требуется соответствующее право.",
+    )
+    lesson_type = get_object_or_404(LessonType, pk=lesson_type_id)
+    form = LessonTypeForm(
+        request.POST or None,
+        initial={
+            "code": lesson_type.code,
+            "name": lesson_type.name,
+            "subscription_category": lesson_type.subscription_category,
+            "is_active": lesson_type.is_active,
+        },
+    )
+    if request.method == "POST" and form.is_valid():
+        try:
+            update_lesson_type(
+                lesson_type_id=lesson_type.id,
+                code=form.cleaned_data["code"],
+                name=form.cleaned_data["name"],
+                subscription_category=form.cleaned_data["subscription_category"],
+                is_active=form.cleaned_data["is_active"],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            form.add_error(None, validation_message(exc))
+        else:
+            messages.success(request, "Тип занятия обновлён.")
+            return redirect(
+                "school_scheduling:lesson_type_edit",
+                lesson_type_id=lesson_type.id,
+            )
+    return render(
+        request,
+        "scheduling/manager_reference_form.html",
+        {
+            "form": form,
+            "title": "Редактирование типа занятия",
+            "back_url_name": "school_scheduling:lesson_types",
+            "audit_aggregate_type": "LessonType",
+            "audit_aggregate_id": lesson_type.id,
+        },
+    )
+
+
+@login_required
+def manager_venues(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "scheduling.view_venue",
+        "Для просмотра площадок требуется соответствующее право.",
+    )
+    query = request.GET.get("q", "").strip()
+    venues = Venue.objects.order_by("-is_active", "name", "id")
+    if query:
+        venues = venues.filter(
+            Q(name__icontains=query)
+            | Q(code__icontains=query)
+            | Q(address__icontains=query)
+            | Q(floor__icontains=query)
+        )
+    page_obj = Paginator(venues, 50).get_page(request.GET.get("page"))
+    return render(
+        request,
+        "scheduling/manager_venues.html",
+        {
+            "venues": page_obj.object_list,
+            "page_obj": page_obj,
+            "query": query,
+        },
+    )
+
+
+@login_required
+def manager_venue_create(request: HttpRequest) -> HttpResponse:
+    require_permission(
+        request.user,
+        "scheduling.add_venue",
+        "Для создания площадки требуется соответствующее право.",
+    )
+    form = VenueForm(request.POST or None)
+    if request.method == "POST" and form.is_valid():
+        try:
+            venue = create_venue(
+                code=form.cleaned_data["code"],
+                name=form.cleaned_data["name"],
+                address=form.cleaned_data["address"],
+                floor=form.cleaned_data["floor"],
+                is_active=form.cleaned_data["is_active"],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            form.add_error(None, validation_message(exc))
+        else:
+            messages.success(request, "Площадка создана.")
+            return redirect(
+                "school_scheduling:venue_edit",
+                venue_id=venue.id,
+            )
+    return render(
+        request,
+        "scheduling/manager_reference_form.html",
+        {
+            "form": form,
+            "title": "Новая площадка",
+            "back_url_name": "school_scheduling:venues",
+        },
+    )
+
+
+@login_required
+def manager_venue_edit(
+    request: HttpRequest,
+    *,
+    venue_id: UUID,
+) -> HttpResponse:
+    require_permission(
+        request.user,
+        "scheduling.change_venue",
+        "Для изменения площадки требуется соответствующее право.",
+    )
+    venue = get_object_or_404(Venue, pk=venue_id)
+    form = VenueForm(
+        request.POST or None,
+        initial={
+            "code": venue.code,
+            "name": venue.name,
+            "address": venue.address,
+            "floor": venue.floor,
+            "is_active": venue.is_active,
+        },
+    )
+    if request.method == "POST" and form.is_valid():
+        try:
+            update_venue(
+                venue_id=venue.id,
+                code=form.cleaned_data["code"],
+                name=form.cleaned_data["name"],
+                address=form.cleaned_data["address"],
+                floor=form.cleaned_data["floor"],
+                is_active=form.cleaned_data["is_active"],
+                actor=request.user,
+            )
+        except ValidationError as exc:
+            form.add_error(None, validation_message(exc))
+        else:
+            messages.success(request, "Площадка обновлена.")
+            return redirect(
+                "school_scheduling:venue_edit",
+                venue_id=venue.id,
+            )
+    return render(
+        request,
+        "scheduling/manager_reference_form.html",
+        {
+            "form": form,
+            "title": "Редактирование площадки",
+            "back_url_name": "school_scheduling:venues",
+            "audit_aggregate_type": "Venue",
+            "audit_aggregate_id": venue.id,
+        },
     )
 
 
