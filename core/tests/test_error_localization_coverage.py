@@ -10,6 +10,7 @@ from django.conf import settings
 from django.test import override_settings
 
 from core.presentation import localize_message
+from core.time import format_school_datetime
 from scheduling.models import Lesson
 
 ERROR_NAMES = {"ValidationError", "PermissionDenied"}
@@ -56,6 +57,9 @@ DYNAMIC_ERROR_EXAMPLES = {
     ),
     "Replacement interval overlaps another non-cancelled lesson of this group: {}.": (
         "Replacement interval overlaps another non-cancelled lesson of this group: 11111111-1111-1111-1111-111111111111."
+    ),
+    'Replacement interval overlaps unmaterialized active schedule template occurrence "{}" at {}. Skip the conflicting template occurrence first or choose another time.': (
+        'Replacement interval overlaps unmaterialized active schedule template occurrence "Зал" at 2026-10-14T18:00:00+03:00. Skip the conflicting template occurrence first or choose another time.'
     ),
     "Unsupported allowance categories: {}.": (
         "Unsupported allowance categories: ['unknown']."
@@ -189,6 +193,15 @@ def test_dynamic_ui_errors_hide_known_technical_values():
         "The selected coach has another non-cancelled lesson overlapping this time: "
         "11111111-1111-1111-1111-111111111111."
     )
+    template_conflict_iso = "2026-10-14T18:00:00+03:00"
+    template_conflict = localize_message(
+        'Replacement interval overlaps unmaterialized active schedule template '
+        f'occurrence "Зал" at {template_conflict_iso}. Skip the conflicting '
+        'template occurrence first or choose another time.'
+    )
+    expected_template_start = format_school_datetime(
+        datetime.fromisoformat(template_conflict_iso)
+    )
     compensation = localize_message(
         "Multiple active absence compensation policies match 'unexcused' on "
         "2026-10-01."
@@ -205,6 +218,9 @@ def test_dynamic_ui_errors_hide_known_technical_values():
     assert "2026-10-01" not in dated
     assert "01.10.2026" in dated
     assert "11111111-1111-1111-1111-111111111111" not in conflict
+    assert "Зал" in template_conflict
+    assert expected_template_start in template_conflict
+    assert template_conflict_iso not in template_conflict
     assert "unexcused" not in compensation
     assert "2026-10-01" not in compensation
     assert "01.10.2026" in compensation

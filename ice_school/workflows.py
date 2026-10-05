@@ -7,6 +7,9 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 
 from scheduling.models import Lesson
+from scheduling.reschedule_preflight import (
+    validate_reschedule_template_occurrences,
+)
 from scheduling.services import reschedule_lesson
 from subscriptions.services import apply_school_reschedule_entitlements
 
@@ -23,6 +26,13 @@ def reschedule_lesson_with_entitlements(
     reason: str,
     now: datetime,
 ) -> Lesson:
+    validate_reschedule_template_occurrences(
+        lesson_id=lesson_id,
+        new_starts_at=new_starts_at,
+        new_ends_at=new_ends_at,
+        actor=actor,
+        now=now,
+    )
     replacement = reschedule_lesson(
         lesson_id=lesson_id,
         new_starts_at=new_starts_at,
