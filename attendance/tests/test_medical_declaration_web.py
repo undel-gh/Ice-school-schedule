@@ -98,13 +98,17 @@ def test_absent_student_can_declare_medical_absence_from_schedule(client):
         attendance_status=Attendance.Status.ABSENT,
     )
     client.force_login(parent)
+    schedule_params = _schedule_params(student=student)
 
     schedule = client.get(
         reverse("scheduling:student_schedule"),
-        _schedule_params(student=student),
+        schedule_params,
     )
+    schedule_body = schedule.content.decode()
     assert schedule.status_code == 200
-    assert "Заявить медицинское отсутствие" in schedule.content.decode()
+    assert "Заявить медицинское отсутствие" in schedule_body
+    assert f'name="from" value="{schedule_params["from"]}"' in schedule_body
+    assert f'name="until" value="{schedule_params["until"]}"' in schedule_body
 
     response = client.post(
         reverse(
@@ -114,6 +118,10 @@ def test_absent_student_can_declare_medical_absence_from_schedule(client):
                 "lesson_id": lesson.id,
             },
         ),
+        {
+            "from": schedule_params["from"],
+            "until": schedule_params["until"],
+        },
         follow=True,
     )
 
@@ -129,6 +137,8 @@ def test_absent_student_can_declare_medical_absence_from_schedule(client):
     assert "ожидает проверки менеджером" in body
     assert "Медицинское основание · Ожидает проверки" in body
     assert "Заявить медицинское отсутствие" not in body
+    assert response.context["from_date"].isoformat() == schedule_params["from"]
+    assert response.context["until_date"].isoformat() == schedule_params["until"]
     assert AuditEvent.objects.filter(
         event_type="AbsenceJustificationDeclared",
         aggregate_id=justification.id,
@@ -176,10 +186,11 @@ def test_medical_absence_declaration_rejects_present_attendance(client):
         attendance_status=Attendance.Status.PRESENT,
     )
     client.force_login(parent)
+    schedule_params = _schedule_params(student=student)
 
     schedule = client.get(
         reverse("scheduling:student_schedule"),
-        _schedule_params(student=student),
+        schedule_params,
     )
     assert "Заявить медицинское отсутствие" not in schedule.content.decode()
 
@@ -191,6 +202,10 @@ def test_medical_absence_declaration_rejects_present_attendance(client):
                 "lesson_id": lesson.id,
             },
         ),
+        {
+            "from": schedule_params["from"],
+            "until": schedule_params["until"],
+        },
         follow=True,
     )
 
