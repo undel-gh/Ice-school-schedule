@@ -214,6 +214,7 @@ MANAGER_LABELS = {
         "LessonEnrollmentAdded": "Ученик записан на занятие",
         "LessonGenerationConflict": "Обнаружен конфликт генерации занятия",
         "LessonMinimumReached": "Достигнут минимальный состав занятия",
+        "LessonMinimumNotMet": "Минимальный состав занятия не набран",
         "LessonPublished": "Занятие опубликовано",
         "LessonRescheduled": "Занятие перенесено",
         "LessonResponseChanged": "Ответ на занятие изменён",
