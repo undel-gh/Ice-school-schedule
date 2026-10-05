@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from uuid import UUID
 
+from .time import format_school_datetime
 from .ui_messages_accounts import ACCOUNT_UI_MESSAGES
 from .ui_messages_attendance import ATTENDANCE_UI_MESSAGES
 from .ui_messages_financial import FINANCIAL_UI_MESSAGES
@@ -58,6 +60,41 @@ def _unquote_code(value: str) -> str:
     return value.strip("'\"")
 
 
+def _lesson_start_label(value: str) -> str | None:
+    """Resolve a technical lesson UUID to a user-facing school-local start."""
+    try:
+        lesson_id = UUID(value)
+    except (TypeError, ValueError):
+        return None
+
+    # Keep the lookup at the presentation boundary: service messages retain
+    # stable technical identifiers while the web UI shows useful context.
+    from scheduling.models import Lesson
+
+    starts_at = (
+        Lesson.objects.filter(pk=lesson_id)
+        .values_list("starts_at", flat=True)
+        .first()
+    )
+    if starts_at is None:
+        return None
+    return format_school_datetime(starts_at)
+
+
+def _lesson_nominative(value: str) -> str:
+    starts_at = _lesson_start_label(value)
+    if starts_at is None:
+        return "занятие"
+    return f"занятие {starts_at}"
+
+
+def _lesson_instrumental(value: str) -> str:
+    starts_at = _lesson_start_label(value)
+    if starts_at is None:
+        return "другим занятием"
+    return f"занятием {starts_at}"
+
+
 _DYNAMIC_PATTERNS = (
     # More user-friendly presentation overrides for the generic subscription
     # formatters. Keep the original patterns as a fallback below so this layer
@@ -108,23 +145,38 @@ _DYNAMIC_PATTERNS = (
     ),
     (
         re.compile(r'^Template versioning would affect a published or processed lesson\. Reschedule/cancel that lesson explicitly first: (?P<id>[0-9a-f-]+)\.$'),
-        lambda m: "Новая версия шаблона затронет уже опубликованное или обработанное занятие. Сначала явно перенесите или отмените конфликтующее занятие.",
+        lambda m: (
+            "Новая версия шаблона затронет уже опубликованное или обработанное "
+            f"занятие. Сначала явно перенесите или отмените {_lesson_nominative(m.group('id'))}."
+        ),
     ),
     (
         re.compile(r'^Template versioning would cancel a DRAFT lesson with an active enrollment or one-time entitlement\. Use the reschedule_lesson command to move that booked lesson to an explicit exception slot outside the new recurring template slot first: (?P<id>[0-9a-f-]+)\.$'),
-        lambda m: "Новая версия шаблона отменит занятие-черновик с активной записью или разовым правом. Сначала перенесите забронированное занятие в отдельный слот-исключение.",
+        lambda m: (
+            "Новая версия шаблона отменит занятие-черновик с активной записью или "
+            f"разовым правом. Сначала перенесите {_lesson_nominative(m.group('id'))} "
+            "в отдельный слот-исключение."
+        ),
     ),
     (
         re.compile(r'^Template occurrence is already materialized as lesson (?P<id>[0-9a-f-]+) with status (?P<status>[a-z_]+)\.$'),
-        lambda m: f"Регулярное занятие уже создано со статусом «{_label(_LESSON_STATUS_LABELS, m.group('status'))}».",
+        lambda m: (
+            f"Регулярное {_lesson_nominative(m.group('id'))} уже создано со статусом "
+            f"«{_label(_LESSON_STATUS_LABELS, m.group('status'))}»."
+        ),
     ),
     (
         re.compile(r'^The selected coach has another non-cancelled lesson overlapping this time: (?P<id>[0-9a-f-]+)\.$'),
-        lambda m: "У выбранного тренера уже есть другое неотменённое занятие, пересекающееся по времени.",
+        lambda m: (
+            f"У выбранного тренера уже есть {_lesson_nominative(m.group('id'))}, "
+            "пересекающееся по времени."
+        ),
     ),
     (
         re.compile(r'^Replacement interval overlaps another non-cancelled lesson of this group: (?P<id>[0-9a-f-]+)\.$'),
-        lambda m: "Новое время пересекается с другим неотменённым занятием этой группы.",
+        lambda m: (
+            f"Новое время пересекается с {_lesson_instrumental(m.group('id'))} этой группы."
+        ),
     ),
     (
         re.compile(r'^Unsupported attendance transition: (?P<old>[a-z_]+) -> (?P<new>[a-z_]+)\.$'),
