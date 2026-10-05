@@ -65,6 +65,7 @@ MANAGER_OPERATION_PERMISSIONS = (
     "scheduling.view_lesson",
     "scheduling.change_lesson",
     "attendance.view_absencejustification",
+    "attendance.add_absencejustification",
     "attendance.change_absencejustification",
     "audit.view_auditevent",
 )

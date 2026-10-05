@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Регистрация медицинского основания{% endblock %}
+{% block content %}
+<header class="page-header">
+  <div>
+    <h1>Регистрация медицинского основания</h1>
+    <div class="page-header__meta">Выберите фактическое отсутствие, по которому школа получила подтверждающие документы или информацию.</div>
+  </div>
+  <div class="action-row">
+    <a class="btn btn-secondary" href="{% url 'attendance_manager:medical' %}">К медицинским основаниям</a>
+  </div>
+</header>
+
+<p class="muted">
+  Система не ограничивает давность регистрации технически. Применяйте правила школы о сроках подачи документов и регистрируйте основание только после получения подтверждения по согласованному каналу.
+</p>
+
+<form class="filter-form" method="get">
+  <div class="field">
+    <label for="q">Поиск</label>
+    <input id="q" type="search" name="q" value="{{ search }}" placeholder="Ученик, группа, тип занятия или площадка">
+  </div>
+  <button class="btn-secondary" type="submit">Найти</button>
+</form>
+
+<div class="card-list">
+{% for attendance in page_obj.object_list %}
+  <article class="lesson-card">
+    <div class="lesson-card__top">
+      <div>
+        <h2>{{ attendance.student.display_name }}</h2>
+        <p class="lesson-card__meta">
+          {{ attendance.lesson.starts_at|date:"d.m.Y H:i" }} · {{ attendance.lesson.lesson_type.name }}
+        </p>
+      </div>
+      <span class="badge badge--absent">Отсутствовал</span>
+    </div>
+    <p class="lesson-card__meta">
+      {{ attendance.lesson.group.name }} · {{ attendance.lesson.coach.display_name }} · {{ attendance.lesson.venue.name }}
+    </p>
+    <form class="action-row" method="post" action="{% url 'attendance_manager:medical_register_absence' attendance.id %}">
+      {% csrf_token %}
+      <button class="btn-primary" type="submit">Зарегистрировать основание</button>
+    </form>
+  </article>
+{% empty %}
+  <div class="empty-state">Подходящих отсутствий без регистрируемого медицинского основания не найдено.</div>
+{% endfor %}
+</div>
+
+{% if page_obj.paginator.num_pages > 1 %}
+<nav class="action-row account-pagination" aria-label="Страницы отсутствий">
+  {% if page_obj.has_previous %}
+    <a class="btn btn-secondary" href="?q={{ search|urlencode }}&page={{ page_obj.previous_page_number }}">Назад</a>
+  {% endif %}
+  <span class="account-pagination__state">Страница {{ page_obj.number }} из {{ page_obj.paginator.num_pages }}</span>
+  {% if page_obj.has_next %}
+    <a class="btn btn-secondary" href="?q={{ search|urlencode }}&page={{ page_obj.next_page_number }}">Далее</a>
+  {% endif %}
+</nav>
+{% endif %}
+{% endblock %}

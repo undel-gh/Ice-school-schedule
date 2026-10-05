@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load manager_labels %}
 {% block title %}Моё расписание{% endblock %}
 {% block content %}
 <header class="page-header">
@@ -98,8 +99,28 @@
           {% endif %}
         {% else %}
           <span class="badge badge--absent">Отсутствовал</span>
+          {% if item.medical_justification_status %}
+            <span class="badge">
+              Медицинское основание · {{ item.medical_justification_status|manager_label:"medical_status" }}
+            </span>
+          {% endif %}
         {% endif %}
       </div>
+      {% if item.attendance_status == "absent" and item.can_declare_medical_absence %}
+        <form
+          class="action-row"
+          method="post"
+          action="{% url 'scheduling:declare_medical_absence' selected_student.id item.lesson.id %}"
+        >
+          {% csrf_token %}
+          <input type="hidden" name="from" value="{{ from_date|date:'Y-m-d' }}">
+          <input type="hidden" name="until" value="{{ until_date|date:'Y-m-d' }}">
+          <button class="btn-secondary" type="submit">Заявить медицинское отсутствие</button>
+        </form>
+        <p class="lesson-card__meta">
+          Используйте после передачи подтверждающих документов школе по согласованному каналу.
+        </p>
+      {% endif %}
     {% endif %}
   </article>
 {% empty %}

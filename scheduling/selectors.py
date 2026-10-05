@@ -8,7 +8,7 @@ from django.conf import settings
 
 from core.time import make_school_aware
 
-from attendance.models import Attendance
+from attendance.models import AbsenceJustification, Attendance
 from subscriptions.models import AttendanceCoverage
 
 from .models import Lesson, LessonResponse, LessonRosterEntry
@@ -20,6 +20,8 @@ class StudentLessonView:
     response_status: str | None
     attendance_status: str | None
     coverage: AttendanceCoverage | None
+    medical_justification_status: str | None
+    can_declare_medical_absence: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,18 @@ def _date_range_bounds(
         end = make_school_aware(end)
 
     return start, end
+
+
+def _medical_can_be_declared(
+    justification: AbsenceJustification | None,
+) -> bool:
+    if justification is None:
+        return True
+    return (
+        justification.status == AbsenceJustification.Status.REVOKED
+        and justification.revocation_reason
+        == AbsenceJustification.RevocationReason.ATTENDANCE_CORRECTION
+    )
 
 
 def get_student_schedule(
@@ -121,6 +135,18 @@ def get_student_schedule(
         )
     }
 
+    latest_medical_by_lesson: dict[UUID, AbsenceJustification] = {}
+    medical_justifications = AbsenceJustification.objects.filter(
+        student_id=student_id,
+        lesson_id__in=lesson_ids,
+        type=AbsenceJustification.Type.MEDICAL,
+    ).order_by("lesson_id", "-declared_at", "-id")
+    for justification in medical_justifications:
+        latest_medical_by_lesson.setdefault(
+            justification.lesson_id,
+            justification,
+        )
+
     return tuple(
         StudentLessonView(
             lesson=lesson,
@@ -136,6 +162,14 @@ def get_student_schedule(
                 )
                 if lesson.id in attendance_by_lesson
                 else None
+            ),
+            medical_justification_status=(
+                latest_medical_by_lesson[lesson.id].status
+                if lesson.id in latest_medical_by_lesson
+                else None
+            ),
+            can_declare_medical_absence=_medical_can_be_declared(
+                latest_medical_by_lesson.get(lesson.id)
             ),
         )
         for lesson in lessons
