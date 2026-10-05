@@ -19,12 +19,6 @@ _RESCHEDULABLE_STATUSES = {
     Lesson.Status.CONFIRMED,
 }
 
-_TEMPLATE_OCCURRENCE_CONFLICT_MESSAGE = (
-    "Replacement interval overlaps an unmaterialized active schedule template "
-    "occurrence of another lesson type. Skip the conflicting template "
-    "occurrence first or choose another time."
-)
-
 
 def _occurrence_starts_at(
     *,
@@ -102,6 +96,7 @@ def validate_reschedule_template_occurrences(
             is_active=True,
         )
         .exclude(lesson_type_id=source.lesson_type_id)
+        .select_related("lesson_type")
         .order_by("valid_from", "id")
     )
 
@@ -145,5 +140,13 @@ def validate_reschedule_template_occurrences(
                 continue
 
             raise ValidationError(
-                {"new_starts_at": _TEMPLATE_OCCURRENCE_CONFLICT_MESSAGE}
+                {
+                    "new_starts_at": (
+                        "Replacement interval overlaps unmaterialized active "
+                        "schedule template occurrence "
+                        f'"{template.lesson_type.name}" at '
+                        f"{starts_at.isoformat()}. Skip the conflicting "
+                        "template occurrence first or choose another time."
+                    )
+                }
             )
