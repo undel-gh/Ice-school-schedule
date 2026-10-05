@@ -122,11 +122,11 @@ class GroupSeatReservation(UUIDModel):
         ]
 
 
-
 class Venue(UUIDModel):
     code = models.SlugField(max_length=64, unique=True)
     name = models.CharField(max_length=128)
     address = models.CharField(max_length=255, blank=True)
+    floor = models.CharField(max_length=32, blank=True)
     is_active = models.BooleanField(default=True)
 
     def __str__(self) -> str:
