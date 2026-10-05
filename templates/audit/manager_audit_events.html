@@ -17,7 +17,7 @@
 {% for event in events %}
   <article class="lesson-card audit-event">
     <div class="lesson-card__top">
-      <div><h2>{{ event.event_type|manager_label:"audit_event" }}</h2><p class="lesson-card__meta">{{ event.occurred_at|date:"d.m.Y H:i:s" }} · {% if event.actor %}{{ event.actor.username }}{% else %}система{% endif %}</p></div>
+      <div><h2>{{ event.event_type|manager_label:"audit_event" }}</h2><p class="lesson-card__meta">{{ event.occurred_at|date:"d.m.Y H:i:s" }} · {% if event.actor %}{{ event.actor.display_label }}{% else %}система{% endif %}</p></div>
       <span class="badge">{{ event.aggregate_type|manager_label:"audit_aggregate" }}</span>
     </div>
     <p><code>{{ event.aggregate_id }}</code></p>
