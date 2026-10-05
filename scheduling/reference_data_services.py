@@ -5,42 +5,78 @@ from uuid import UUID
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from audit.services import record_event
+from core.time import school_date
 
 from .models import Lesson, LessonType, ScheduleTemplate, Venue
 
 User = get_user_model()
 
 
-def _ensure_reference_can_be_deactivated(*, lesson_type_id: UUID | None = None, venue_id: UUID | None = None) -> None:
+def _reference_usage(
+    *,
+    lesson_type_id: UUID | None = None,
+    venue_id: UUID | None = None,
+) -> tuple[bool, bool]:
     template_filter = {"is_active": True}
     lesson_filter = {"starts_at__gte": timezone.now()}
     if lesson_type_id is not None:
         template_filter["lesson_type_id"] = lesson_type_id
         lesson_filter["lesson_type_id"] = lesson_type_id
-        label = "Тип занятия"
     elif venue_id is not None:
         template_filter["venue_id"] = venue_id
         lesson_filter["venue_id"] = venue_id
-        label = "Площадку"
     else:  # pragma: no cover - programming error guard
         raise ValueError("A reference id is required")
 
-    if ScheduleTemplate.objects.filter(**template_filter).exists():
+    today = school_date(timezone.now())
+    active_template_exists = (
+        ScheduleTemplate.objects.filter(**template_filter)
+        .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
+        .exists()
+    )
+    future_lesson_exists = (
+        Lesson.objects.filter(**lesson_filter)
+        .exclude(status=Lesson.Status.CANCELLED)
+        .exists()
+    )
+    return active_template_exists, future_lesson_exists
+
+
+def _ensure_reference_can_be_deactivated(
+    *,
+    lesson_type_id: UUID | None = None,
+    venue_id: UUID | None = None,
+) -> None:
+    active_template_exists, future_lesson_exists = _reference_usage(
+        lesson_type_id=lesson_type_id,
+        venue_id=venue_id,
+    )
+    label = "Тип занятия" if lesson_type_id is not None else "Площадку"
+    if active_template_exists:
         raise ValidationError(
             f"{label} нельзя деактивировать, пока он используется активным шаблоном расписания. "
             "Сначала завершите или замените шаблон."
         )
-    if (
-        Lesson.objects.filter(**lesson_filter)
-        .exclude(status=Lesson.Status.CANCELLED)
-        .exists()
-    ):
+    if future_lesson_exists:
         raise ValidationError(
             f"{label} нельзя деактивировать, пока он используется будущими неотменёнными занятиями. "
             "Сначала перенесите или отмените эти занятия."
+        )
+
+
+def _ensure_lesson_type_category_can_change(*, lesson_type_id: UUID) -> None:
+    active_template_exists, future_lesson_exists = _reference_usage(
+        lesson_type_id=lesson_type_id
+    )
+    if active_template_exists or future_lesson_exists:
+        raise ValidationError(
+            "Категорию абонемента нельзя изменить у типа занятия, который используется "
+            "активным шаблоном расписания или будущими неотменёнными занятиями. "
+            "Сначала завершите шаблон и обработайте будущие занятия."
         )
 
 
@@ -90,6 +126,8 @@ def update_lesson_type(
     lesson_type = LessonType.objects.select_for_update().get(pk=lesson_type_id)
     if lesson_type.is_active and not is_active:
         _ensure_reference_can_be_deactivated(lesson_type_id=lesson_type.id)
+    if lesson_type.subscription_category != subscription_category:
+        _ensure_lesson_type_category_can_change(lesson_type_id=lesson_type.id)
     previous = {
         "code": lesson_type.code,
         "name": lesson_type.name,
