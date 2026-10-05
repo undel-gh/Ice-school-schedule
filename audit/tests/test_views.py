@@ -12,6 +12,7 @@ def test_manager_audit_view_filters_by_aggregate(client):
     manager = User.objects.create_user(
         username="audit-manager",
         password="test",
+        display_name="Менеджер журнала",
         is_staff=True,
         is_superuser=True,
     )
@@ -44,6 +45,8 @@ def test_manager_audit_view_filters_by_aggregate(client):
     assert first.event_type in body
     assert "OtherEvent" not in body
     assert "visible" in body
+    assert manager.display_label in body
+    assert manager.username not in body
 
 
 @pytest.mark.django_db
