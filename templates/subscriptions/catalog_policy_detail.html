@@ -1,5 +1,5 @@
-{% load manager_labels %}
 {% extends "base.html" %}
+{% load manager_labels %}
 {% block title %}{{ policy.name }} · версия {{ policy.version }}{% endblock %}
 {% block content %}
 <header class="page-header"><h1>{{ policy.name }} · · версия {{ policy.version }}</h1><p class="page-header__meta">{{ policy.code }} · {{ policy.absence_reason|manager_label:"absence_reason" }}</p></header>
