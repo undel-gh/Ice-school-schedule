@@ -47,8 +47,18 @@ class LessonTypeForm(forms.Form):
 
 class VenueForm(forms.Form):
     code = forms.SlugField(label="Код", max_length=64)
-    name = forms.CharField(label="Название", max_length=128)
+    name = forms.CharField(
+        label="Название зала / площадки",
+        max_length=128,
+        help_text="Например: «Зал хореографии» или «Лёд A».",
+    )
     address = forms.CharField(label="Адрес", max_length=255, required=False)
+    floor = forms.CharField(
+        label="Этаж",
+        max_length=32,
+        required=False,
+        help_text="Например: 2, 1A, -1 или цоколь.",
+    )
     is_active = forms.BooleanField(label="Активна", required=False, initial=True)
 
 
