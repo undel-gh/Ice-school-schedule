@@ -19,11 +19,18 @@ from .models import AbsenceJustification
 from .services import declare_medical_absence
 
 
-def _student_schedule_redirect_url(
+def _declaration_redirect_url(
     request: HttpRequest,
     *,
     student_id: UUID,
 ) -> str:
+    if request.POST.get("return_to") == "account":
+        params = {"student": str(student_id)}
+        page = request.POST.get("page", "").strip()
+        if page.isdigit() and int(page) > 0:
+            params["page"] = page
+        return f"{reverse('student_account:account')}?{urlencode(params)}"
+
     params = {"student": str(student_id)}
     for name in ("from", "until"):
         value = request.POST.get(name, "").strip()
@@ -74,7 +81,7 @@ def declare_medical_absence_view(
             )
 
     return redirect(
-        _student_schedule_redirect_url(
+        _declaration_redirect_url(
             request,
             student_id=student_id,
         )

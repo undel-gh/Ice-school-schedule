@@ -2,7 +2,16 @@
 {% load manager_labels %}
 {% block title %}Медицинские основания{% endblock %}
 {% block content %}
-<header class="page-header"><h1>Медицинские основания</h1></header>
+<header class="page-header">
+  <div>
+    <h1>Медицинские основания</h1>
+  </div>
+  {% if perms.attendance.add_absencejustification %}
+    <div class="action-row">
+      <a class="btn btn-primary" href="{% url 'attendance_manager:medical_register' %}">Зарегистрировать основание</a>
+    </div>
+  {% endif %}
+</header>
 <form class="filter-form" method="get">
   <div class="field"><label for="status">Статус</label><select id="status" name="status"><option value="">Все</option>{% for value,label in statuses %}<option value="{{ value }}" {% if value == selected_status %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
   <button class="btn-secondary" type="submit">Показать</button>

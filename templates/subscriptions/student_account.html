@@ -182,6 +182,29 @@
         {% endif %}
         </div>
       {% endwith %}
+    {% else %}
+      {% if attendance.account_medical_justification %}
+        <div class="student-card__state">
+          <span class="badge">
+            Медицинское основание · {{ attendance.account_medical_justification.status|manager_label:"medical_status" }}
+          </span>
+        </div>
+      {% endif %}
+      {% if attendance.account_can_declare_medical_absence %}
+        <form
+          class="action-row"
+          method="post"
+          action="{% url 'scheduling:declare_medical_absence' selected_student.id attendance.lesson_id %}"
+        >
+          {% csrf_token %}
+          <input type="hidden" name="return_to" value="account">
+          <input type="hidden" name="page" value="{{ history_page.number }}">
+          <button class="btn-secondary" type="submit">Заявить медицинское отсутствие</button>
+        </form>
+        <p class="lesson-card__meta">
+          Используйте после передачи подтверждающих документов школе по согласованному каналу.
+        </p>
+      {% endif %}
     {% endif %}
   </article>
 {% empty %}
