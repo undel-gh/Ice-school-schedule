@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Доступ запрещён · Ice School{% endblock %}
+{% block content %}
+<section class="empty-state">
+  <h1>Доступ запрещён</h1>
+  <p>У вас нет прав для просмотра этой страницы или выполнения этой операции.</p>
+  <p><a class="btn btn-primary" href="{% url 'scheduling:home' %}">На главную</a></p>
+</section>
+{% endblock %}

@@ -460,7 +460,7 @@ def test_privileged_signed_in_invitation_page_warns_and_blocks_provider_start(
     assert landing.status_code == 200
     body = landing.content.decode()
     assert manager.display_label in body
-    assert "staff/manager" in body
+    assert "служебных аккаунтов персонала" in body
 
     begin = client.get(
         reverse(

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Некорректный запрос · Ice School{% endblock %}
+{% block content %}
+<section class="empty-state">
+  <h1>Некорректный запрос</h1>
+  <p>Сервер не смог обработать запрос. Проверьте адрес страницы и попробуйте ещё раз.</p>
+  <p><a class="btn btn-primary" href="{% url 'scheduling:home' %}">На главную</a></p>
+</section>
+{% endblock %}

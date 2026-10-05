@@ -10,7 +10,7 @@
   <a class="report-card manager-nav-card" href="{% url 'accounts_manager:invitations' %}"><h2>Приглашения</h2><p>Одноразовые ссылки для учеников, родителей и тренеров.</p></a>
   {% endif %}
   {% if perms.accounts.view_student %}
-  <a class="report-card manager-nav-card" href="{% url 'accounts_manager:students' %}"><h2>Ученики и доступы</h2><p>Участники школы, родители и self-доступ.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'accounts_manager:students' %}"><h2>Ученики и доступы</h2><p>Участники школы, родители и самостоятельный доступ ученика.</p></a>
   {% endif %}
   {% if perms.accounts.view_coachprofile %}
   <a class="report-card manager-nav-card" href="{% url 'accounts_manager:coaches' %}"><h2>Тренеры</h2><p>Профили тренеров и их активность.</p></a>
@@ -19,7 +19,7 @@
   <a class="report-card manager-nav-card" href="{% url 'school_scheduling:groups' %}"><h2>Группы</h2><p>Группы школы и параметры минимального состава.</p></a>
   {% endif %}
   {% if perms.scheduling.view_groupmembership %}
-  <a class="report-card manager-nav-card" href="{% url 'school_scheduling:memberships' %}"><h2>Состав групп</h2><p>Текущие, будущие и исторические memberships.</p></a>
+  <a class="report-card manager-nav-card" href="{% url 'school_scheduling:memberships' %}"><h2>Состав групп</h2><p>Текущие, будущие и исторические периоды участия в группах.</p></a>
   {% endif %}
   {% if perms.scheduling.view_scheduletemplate %}
   <a class="report-card manager-nav-card" href="{% url 'scheduling_manager:templates' %}"><h2>Шаблоны расписания</h2><p>Создание и версии регулярного расписания.</p></a>

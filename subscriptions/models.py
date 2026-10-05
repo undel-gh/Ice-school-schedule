@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils.translation import gettext_lazy as _
 
 from accounts.models import Student
 from attendance.models import AbsenceJustification, Attendance
@@ -16,12 +17,12 @@ from scheduling.models import (
 
 class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
     class Mode(models.TextChoices):
-        CALENDAR_MONTH = "calendar_month", "Calendar month"
+        CALENDAR_MONTH = "calendar_month", _("Calendar month")
         ROLLING_28_FROM_FIRST_LESSON = (
             "rolling_28_first_lesson",
-            "28 days from first lesson",
+            _("28 days from first lesson"),
         )
-        FIXED_28_DAYS = "fixed_28_days", "Fixed school-wide 28-day periods"
+        FIXED_28_DAYS = "fixed_28_days", _("Fixed school-wide 28-day periods")
 
     code = models.SlugField(max_length=64, unique=True)
     name = models.CharField(max_length=128)
@@ -61,7 +62,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
             raise ValidationError(
                 {
                     "fixed_anchor_date": (
-                        "Fixed 28-day period scheme requires an anchor date."
+                        "Для модели фиксированных 28-дневных периодов требуется опорная дата."
                     )
                 }
             )
@@ -72,7 +73,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
             raise ValidationError(
                 {
                     "fixed_anchor_date": (
-                        "Anchor date is only valid for FIXED_28_DAYS."
+                        "Опорная дата допустима только для модели фиксированных 28-дневных периодов."
                     )
                 }
             )
@@ -92,8 +93,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
                     raise ValidationError(
                         {
                             "mode": (
-                                "Referenced period schemes cannot change mode "
-                                "or fixed anchor."
+                                "Уже используемую модель расчётного периода нельзя менять по типу или фиксированной опорной дате."
                             )
                         }
                     )
@@ -105,8 +105,7 @@ class SubscriptionPeriodScheme(UUIDModel, TimeStampedModel):
                     raise ValidationError(
                         {
                             "is_active": (
-                                "Active subscription plans still use this "
-                                "period scheme."
+                                "Эту модель расчётного периода всё ещё используют активные тарифы."
                             )
                         }
                     )
@@ -153,20 +152,20 @@ class SubscriptionPlanAllowance(UUIDModel):
 
 class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
     class AbsenceReason(models.TextChoices):
-        MEDICAL = "medical", "Medical"
-        UNEXCUSED = "unexcused", "Unexcused"
-        OTHER = "other", "Other"
+        MEDICAL = "medical", _("Medical")
+        UNEXCUSED = "unexcused", _("Unexcused")
+        OTHER = "other", _("Other")
 
     class JustificationRequirement(models.TextChoices):
-        NONE = "none", "No justification required"
-        VERIFIED_MEDICAL = "verified_medical", "Verified medical justification"
+        NONE = "none", _("No justification required")
+        VERIFIED_MEDICAL = "verified_medical", _("Verified medical justification")
 
     class LimitScope(models.TextChoices):
-        STUDENT_PERIOD = "student_period", "Student + period"
-        CATEGORY_PERIOD = "category_period", "Student + category + period"
+        STUDENT_PERIOD = "student_period", _("Student + period")
+        CATEGORY_PERIOD = "category_period", _("Student + category + period")
         LESSON_TYPE_PERIOD = (
             "lesson_type_period",
-            "Student + lesson type + period",
+            _("Student + lesson type + period"),
         )
 
     code = models.SlugField(max_length=64)
@@ -250,8 +249,7 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
             raise ValidationError(
                 {
                     "effective_from": (
-                        "Another active compensation policy for this "
-                        "absence reason overlaps this effective interval."
+                        "Другая активная политика компенсаций для этой причины отсутствия пересекается с выбранным периодом действия."
                     )
                 }
             )
@@ -278,7 +276,7 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
                 for field in immutable_fields
             ):
                 raise ValidationError(
-                    "Referenced compensation policy versions are immutable."
+                    "Использованные версии политики компенсаций нельзя изменять."
                 )
         return super().save(*args, **kwargs)
 
@@ -287,7 +285,7 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
             policy_id=self.pk
         ).exists():
             raise ValidationError(
-                "Referenced compensation policy versions cannot be deleted."
+                "Использованные версии политики компенсаций нельзя удалять."
             )
         return super().delete(*args, **kwargs)
 
@@ -297,31 +295,31 @@ class AbsenceCompensationPolicy(UUIDModel, TimeStampedModel):
 
 class AbsenceCompensationPolicyAction(UUIDModel):
     class ActionType(models.TextChoices):
-        FREE_MAKEUP = "free_makeup", "Free makeup"
-        PAID_MAKEUP = "paid_makeup", "Paid/deferred makeup"
+        FREE_MAKEUP = "free_makeup", _("Free makeup")
+        PAID_MAKEUP = "paid_makeup", _("Paid/deferred makeup")
         BILLING_RECALCULATION = (
             "billing_recalculation",
-            "Billing recalculation",
+            _("Billing recalculation"),
         )
 
     class TargetPeriodRule(models.TextChoices):
-        CURRENT_PERIOD = "current_period", "Current period"
-        NEXT_STUDENT_PERIOD = "next_student_period", "Next student period"
+        CURRENT_PERIOD = "current_period", _("Current period")
+        NEXT_STUDENT_PERIOD = "next_student_period", _("Next student period")
         EXPLICIT_TARGET_WINDOW = (
             "explicit_target_window",
-            "Explicit target window",
+            _("Explicit target window"),
         )
 
     class Requirement(models.TextChoices):
-        NONE = "none", "No additional requirement"
-        FEE_REQUIRED = "fee_required", "Fee required"
+        NONE = "none", _("No additional requirement")
+        FEE_REQUIRED = "fee_required", _("Fee required")
         TARGET_SUBSCRIPTION_REQUIRED = (
             "target_subscription_required",
-            "Target subscription required",
+            _("Target subscription required"),
         )
         FEE_AND_TARGET_SUBSCRIPTION_REQUIRED = (
             "fee_and_target_subscription_required",
-            "Fee and target subscription required",
+            _("Fee and target subscription required"),
         )
 
     policy = models.ForeignKey(
@@ -390,8 +388,7 @@ class AbsenceCompensationPolicyAction(UUIDModel):
         raise ValidationError(
             {
                 "action_type": (
-                    "Billing recalculation is outside the scheduling system "
-                    "and must be handled by accounting."
+                    "Перерасчёт оплаты выполняется вне системы расписания и должен оформляться бухгалтерией."
                 )
             }
         )
@@ -411,8 +408,7 @@ class AbsenceCompensationPolicyAction(UUIDModel):
                 policy_id=self.policy_id
             ).exists():
                 raise ValidationError(
-                    "Actions cannot be added to referenced compensation "
-                    "policy versions."
+                    "Нельзя добавлять действия в уже использованную версию политики компенсаций."
                 )
         if previous is not None:
             if previous.policy.compensation_cases.exists():
@@ -430,16 +426,14 @@ class AbsenceCompensationPolicyAction(UUIDModel):
                     for field in immutable_fields
                 ):
                     raise ValidationError(
-                        "Actions of referenced compensation policies are "
-                        "immutable."
+                        "Действия уже использованных политик компенсаций нельзя изменять."
                     )
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         if self.pk and self.policy.compensation_cases.exists():
             raise ValidationError(
-                "Actions of referenced compensation policies cannot be "
-                "deleted."
+                "Действия уже использованных политик компенсаций нельзя удалять."
             )
         return super().delete(*args, **kwargs)
 
@@ -514,8 +508,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
             raise ValidationError(
                 {
                     "source_from": (
-                        "Another active window with the same priority "
-                        "overlaps this source interval."
+                        "Другое активное окно с тем же приоритетом пересекается с выбранным исходным периодом."
                     )
                 }
             )
@@ -535,8 +528,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
                 policy_id=self.policy_action.policy_id
             ).exists():
                 raise ValidationError(
-                    "Windows cannot be added to referenced compensation "
-                    "policy versions."
+                    "Нельзя добавлять сезонные окна в уже использованную версию политики компенсаций."
                 )
         if previous is not None:
             if previous.policy_action.policy.compensation_cases.exists():
@@ -556,8 +548,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
                     for field in immutable_fields
                 ):
                     raise ValidationError(
-                        "Windows of referenced compensation policies are "
-                        "immutable."
+                        "Сезонные окна уже использованных политик компенсаций нельзя изменять."
                     )
         return super().save(*args, **kwargs)
 
@@ -567,8 +558,7 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
             and self.policy_action.policy.compensation_cases.exists()
         ):
             raise ValidationError(
-                "Windows of referenced compensation policies cannot be "
-                "deleted."
+                "Сезонные окна уже использованных политик компенсаций нельзя удалять."
             )
         return super().delete(*args, **kwargs)
 
@@ -578,15 +568,15 @@ class AbsenceCompensationPolicyWindow(UUIDModel):
 
 class AbsenceCompensationCase(UUIDModel):
     class Status(models.TextChoices):
-        OPEN = "open", "Open"
-        MATERIALIZED = "materialized", "Materialized"
-        REVERSED = "reversed", "Reversed"
-        CANCELLED = "cancelled", "Cancelled"
+        OPEN = "open", _("Open")
+        MATERIALIZED = "materialized", _("Materialized")
+        REVERSED = "reversed", _("Reversed")
+        CANCELLED = "cancelled", _("Cancelled")
 
     class EligibilityStatus(models.TextChoices):
-        ELIGIBLE = "eligible", "Eligible"
-        LIMIT_EXCEEDED = "limit_exceeded", "Limit exceeded"
-        UNDETERMINED = "undetermined", "Undetermined"
+        ELIGIBLE = "eligible", _("Eligible")
+        LIMIT_EXCEEDED = "limit_exceeded", _("Limit exceeded")
+        UNDETERMINED = "undetermined", _("Undetermined")
 
     attendance = models.ForeignKey(
         Attendance,
@@ -836,8 +826,8 @@ class Subscription(UUIDModel):
 
 class SubscriptionPeriod(UUIDModel):
     class State(models.TextChoices):
-        PENDING = "pending", "Pending activation"
-        ACTIVE = "active", "Active"
+        PENDING = "pending", _("Pending activation")
+        ACTIVE = "active", _("Active")
 
     subscription = models.OneToOneField(
         Subscription,
@@ -929,11 +919,11 @@ class SubscriptionPeriod(UUIDModel):
 
 class GroupPlaceHold(UUIDModel):
     class Status(models.TextChoices):
-        PENDING_PAYMENT = "pending_payment", "Pending payment"
-        ACTIVE = "active", "Active"
-        RESTORED = "restored", "Restored"
-        CANCELLED = "cancelled", "Cancelled"
-        EXPIRED = "expired", "Expired"
+        PENDING_PAYMENT = "pending_payment", _("Pending payment")
+        ACTIVE = "active", _("Active")
+        RESTORED = "restored", _("Restored")
+        CANCELLED = "cancelled", _("Cancelled")
+        EXPIRED = "expired", _("Expired")
 
     student = models.ForeignKey(
         Student,
@@ -1137,11 +1127,11 @@ class SubscriptionAllowance(UUIDModel):
 
 class OneTimeEntitlement(UUIDModel):
     class Type(models.TextChoices):
-        SINGLE_ICE = "single_ice", "Single ICE"
-        SINGLE_HALL = "single_hall", "Single HALL"
-        INDIVIDUAL_ICE = "individual_ice", "Individual ICE"
-        MINI_GROUP_ICE = "mini_group_ice", "Mini-group ICE"
-        TRIAL_ICE = "trial_ice", "Trial ICE"
+        SINGLE_ICE = "single_ice", _("Single ICE")
+        SINGLE_HALL = "single_hall", _("Single HALL")
+        INDIVIDUAL_ICE = "individual_ice", _("Individual ICE")
+        MINI_GROUP_ICE = "mini_group_ice", _("Mini-group ICE")
+        TRIAL_ICE = "trial_ice", _("Trial ICE")
 
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="one_time_entitlements")
     lesson = models.ForeignKey(Lesson, on_delete=models.PROTECT, related_name="one_time_entitlements")
@@ -1177,12 +1167,12 @@ class OneTimeEntitlement(UUIDModel):
 
 class MakeupEntitlement(UUIDModel):
     class Reason(models.TextChoices):
-        MEDICAL_VERIFIED = "medical", "Verified medical absence"
-        SCHOOL_RESCHEDULE = "school_reschedule", "School reschedule"
+        MEDICAL_VERIFIED = "medical", _("Verified medical absence")
+        SCHOOL_RESCHEDULE = "school_reschedule", _("School reschedule")
         ADMINISTRATIVE = "administrative", "Administrative"
         ABSENCE_COMPENSATION = (
             "absence_compensation",
-            "Absence compensation",
+            _("Absence compensation"),
         )
 
     student = models.ForeignKey(Student, on_delete=models.PROTECT, related_name="makeup_entitlements")
@@ -1476,10 +1466,10 @@ class AttendanceCoverage(UUIDModel):
 
 class SubscriptionLedgerEntry(UUIDModel):
     class EntryType(models.TextChoices):
-        GRANT = "grant", "Grant"
-        CONSUME = "consume", "Consume"
-        RESTORE = "restore", "Restore"
-        ADJUSTMENT = "adjustment", "Adjustment"
+        GRANT = "grant", _("Grant")
+        CONSUME = "consume", _("Consume")
+        RESTORE = "restore", _("Restore")
+        ADJUSTMENT = "adjustment", _("Adjustment")
 
     allowance = models.ForeignKey(
         SubscriptionAllowance,

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load manager_labels %}
 {% block title %}Посещаемость{% endblock %}
 {% block content %}
 <header class="page-header">
@@ -10,7 +11,7 @@
 </header>
 
 <div class="student-card__state">
-  <span class="badge">{{ lesson.status }}</span>
+  <span class="badge">{{ lesson.status|manager_label:"lesson_status" }}</span>
 </div>
 
 {% if lesson.status == "confirmed" and now >= lesson.ends_at %}
@@ -30,11 +31,11 @@
         <div class="student-card__name">{{ row.entry.student.display_name }}</div>
 
         {% if row.response_status == "yes" %}
-          <span class="badge badge--yes">RSVP +</span>
+          <span class="badge badge--yes">Будет</span>
         {% elif row.response_status == "no" %}
-          <span class="badge badge--no">RSVP −</span>
+          <span class="badge badge--no">Не будет</span>
         {% else %}
-          <span class="badge badge--unknown">RSVP ?</span>
+          <span class="badge badge--unknown">Нет ответа</span>
         {% endif %}
       </div>
 

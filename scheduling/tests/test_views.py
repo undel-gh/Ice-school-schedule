@@ -176,6 +176,47 @@ def test_guardian_rsvp_post_uses_service(client, web_context):
 
 
 @pytest.mark.django_db
+def test_guardian_sees_localized_rsvp_deadline_error(
+    client,
+    web_context,
+    monkeypatch,
+):
+    starts_at = school_dt(2026, 9, 25, 18, 0)
+    lesson = make_lesson(
+        context=web_context,
+        starts_at=starts_at,
+    )
+    LessonRosterEntry.objects.create(
+        lesson=lesson,
+        student=web_context["student"],
+        source=LessonRosterEntry.Source.MANUAL,
+        added_by=web_context["coach_user"],
+    )
+    monkeypatch.setattr(
+        "scheduling.views.timezone.now",
+        lambda: school_dt(2026, 9, 25, 17, 0),
+    )
+    client.force_login(web_context["guardian"])
+
+    response = client.post(
+        reverse(
+            "scheduling:set_rsvp",
+            kwargs={
+                "student_id": web_context["student"].id,
+                "lesson_id": lesson.id,
+            },
+        ),
+        {"status": LessonResponse.Status.YES},
+        follow=True,
+    )
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "Срок ответа на занятие уже истёк." in body
+    assert "RSVP deadline has passed." not in body
+
+
+@pytest.mark.django_db
 def test_coach_sees_own_schedule(client, web_context):
     own = make_lesson(context=web_context)
     other = make_lesson(
@@ -201,6 +242,8 @@ def test_coach_sees_own_schedule(client, web_context):
         "scheduling:coach_lesson",
         kwargs={"lesson_id": other.id},
     ) not in body
+    assert "Сбор ответов" in body
+    assert ">rsvp_open<" not in body
 
 
 @pytest.mark.django_db

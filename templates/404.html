@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Страница не найдена · Ice School{% endblock %}
+{% block content %}
+<section class="empty-state">
+  <h1>Страница не найдена</h1>
+  <p>Возможно, ссылка устарела или адрес введён неверно.</p>
+  <p><a class="btn btn-primary" href="{% url 'scheduling:home' %}">На главную</a></p>
+</section>
+{% endblock %}

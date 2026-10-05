@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load manager_labels %}
 
 {% block title %}Абонемент {{ detail.row.subscription.student.display_name }}{% endblock %}
 
@@ -7,7 +8,7 @@
   <h1>{{ detail.row.subscription.student.display_name }}</h1>
   <p class="page-header__meta">
     {{ detail.row.subscription.plan_name_snapshot }}
-    · состояние: {{ detail.row.subscription_state }}
+    · состояние: {{ detail.row.subscription_state|manager_label:"subscription_state" }}
   </p>
 </header>
 
@@ -35,7 +36,7 @@
     </p>
     {% endif %}
   {% else %}
-    <p class="muted">Исторический абонемент без SubscriptionPeriod.</p>
+    <p class="muted">Исторический абонемент без записи расчётного периода.</p>
   {% endif %}
 
   {% if rolling_recovery_event %}
@@ -43,7 +44,7 @@
       <strong>Требуется восстановление расчётного периода.</strong>
       <p>
         Автоматический откат после исправления посещения был пропущен:
-        {{ rolling_recovery_event.payload.reason }}.
+        {{ rolling_recovery_event.payload.reason|manager_label:"rolling_recovery_reason" }}.
       </p>
       {% with deps=rolling_recovery_event.payload.dependencies %}
         {% if deps.active_coverages %}
@@ -55,7 +56,7 @@
           </p>
         {% endif %}
         {% if deps.active_makeups or deps.active_compensation_cases or deps.active_compensation_grants %}
-          <p>Есть зависимые права на отработку/компенсацию. Сначала разрешите или отмените их штатным workflow.</p>
+          <p>Есть зависимые права на отработку/компенсацию. Сначала разрешите или отмените их штатным процессом.</p>
           <p>
             <a href="{% url 'subscriptions:manager_compensation_cases' %}">Открыть компенсационные случаи</a>
           </p>
@@ -92,7 +93,7 @@
 
 {% for allowance in detail.row.allowances %}
   <article class="report-card">
-    <h2>{{ allowance.category|upper }}</h2>
+    <h2>{{ allowance.category|manager_label:"subscription_category" }}</h2>
     <div class="report-stats">
       <div class="stat"><strong>{{ allowance.granted_visits }}</strong><span>выдано</span></div>
       <div class="stat"><strong>{{ allowance.consumed_visits }}</strong><span>отходил</span></div>
@@ -139,7 +140,7 @@
           {% endif %}
         </div>
         <p class="lesson-card__meta">
-          {{ makeup.category|upper }} ·
+          {{ makeup.category|manager_label:"subscription_category" }} ·
           {{ makeup.valid_from|date:"d.m.Y" }}—{{ makeup.valid_until|date:"d.m.Y" }}
         </p>
         {% if not makeup.cancelled_at %}
@@ -183,12 +184,12 @@
     {% for entry in detail.ledger_entries %}
       <article class="lesson-card">
         <div class="lesson-card__top">
-          <strong>{{ entry.allowance.category|upper }} · {{ entry.get_entry_type_display }}</strong>
+          <strong>{{ entry.allowance.category|manager_label:"subscription_category" }} · {{ entry.get_entry_type_display }}</strong>
           <span>{{ entry.delta|stringformat:"+d" }}</span>
         </div>
         <p class="lesson-card__meta">
           {{ entry.created_at|date:"d.m.Y H:i" }}
-          {% if entry.reason %}· {{ entry.reason }}{% endif %}
+          {% if entry.reason %}· {{ entry.reason|manager_label:"ledger_reason" }}{% endif %}
         </p>
       </article>
     {% endfor %}

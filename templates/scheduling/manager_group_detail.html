@@ -11,7 +11,7 @@
 {% if seat_reservations %}
 <h2 class="section-title">Удержанные места</h2>
 <div class="card-list">{% for reservation in seat_reservations %}
-<article class="lesson-card"><div class="lesson-card__top"><strong><a href="{% url 'accounts_manager:student_detail' reservation.student.id %}">{{ reservation.student.display_name }}</a></strong><span class="badge">{{ reservation.starts_on|date:"d.m.Y" }}—{{ reservation.ends_on|date:"d.m.Y" }}</span></div><p>Место удерживается; в roster занятий этого периода ученик не добавляется.</p></article>
+<article class="lesson-card"><div class="lesson-card__top"><strong><a href="{% url 'accounts_manager:student_detail' reservation.student.id %}">{{ reservation.student.display_name }}</a></strong><span class="badge">{{ reservation.starts_on|date:"d.m.Y" }}—{{ reservation.ends_on|date:"d.m.Y" }}</span></div><p>Место удерживается; в состав занятий этого периода ученик не добавляется.</p></article>
 {% endfor %}</div>
 {% endif %}
 <h2 class="section-title">Состав и история</h2>

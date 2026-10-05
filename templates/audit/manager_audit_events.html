@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load manager_labels %}
 {% block title %}Журнал действий{% endblock %}
 {% block content %}
 <header class="page-header">
@@ -16,11 +17,11 @@
 {% for event in events %}
   <article class="lesson-card audit-event">
     <div class="lesson-card__top">
-      <div><h2>{{ event.event_type }}</h2><p class="lesson-card__meta">{{ event.occurred_at|date:"d.m.Y H:i:s" }} · {% if event.actor %}{{ event.actor.username }}{% else %}system{% endif %}</p></div>
-      <span class="badge">{{ event.aggregate_type }}</span>
+      <div><h2>{{ event.event_type|manager_label:"audit_event" }}</h2><p class="lesson-card__meta">{{ event.occurred_at|date:"d.m.Y H:i:s" }} · {% if event.actor %}{{ event.actor.display_label }}{% else %}система{% endif %}</p></div>
+      <span class="badge">{{ event.aggregate_type|manager_label:"audit_aggregate" }}</span>
     </div>
     <p><code>{{ event.aggregate_id }}</code></p>
-    <p class="lesson-card__meta">correlation: <a href="?correlation_id={{ event.correlation_id }}">{{ event.correlation_id }}</a></p>
+    <p class="lesson-card__meta">связанная операция: <a href="?correlation_id={{ event.correlation_id }}">{{ event.correlation_id }}</a></p>
     {% if event.payload %}<details><summary>Данные события</summary><pre class="audit-payload">{{ event.payload }}</pre></details>{% endif %}
   </article>
 {% empty %}<div class="empty-state">Событий по фильтру нет.</div>{% endfor %}

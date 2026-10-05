@@ -5,7 +5,7 @@
 <header class="page-header">
   <h1>Покрытие посещений</h1>
   <p class="page-header__meta">
-    PRESENT Attendance без активного AttendanceCoverage требуют проверки.
+    Посещения со статусом «Присутствовал» без активного источника покрытия требуют проверки.
   </p>
 </header>
 
@@ -15,7 +15,7 @@
     <select id="coverage" name="coverage">
       <option value="uncovered" {% if selected_coverage_state == "uncovered" %}selected{% endif %}>Без покрытия</option>
       <option value="covered" {% if selected_coverage_state == "covered" %}selected{% endif %}>С покрытием</option>
-      <option value="all" {% if selected_coverage_state == "all" %}selected{% endif %}>Все PRESENT</option>
+      <option value="all" {% if selected_coverage_state == "all" %}selected{% endif %}>Все присутствия</option>
     </select>
   </div>
   <div class="field">
