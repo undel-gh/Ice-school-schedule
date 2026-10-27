@@ -44,7 +44,10 @@ class LessonAdmin(ReadOnlyAdmin):
     list_filter = ("status", "lesson_type")
     actions = ("reopen_selected_attendance",)
 
-    @admin.action(permissions=["service"], description="Reopen attendance for selected closed lessons")
+    @admin.action(
+        permissions=["service"],
+        description="Повторно открыть посещаемость выбранных закрытых занятий",
+    )
     def reopen_selected_attendance(self, request, queryset):
         reopened = 0
         for lesson in queryset:
@@ -52,7 +55,7 @@ class LessonAdmin(ReadOnlyAdmin):
                 reopen_attendance(
                     lesson_id=lesson.id,
                     actor=request.user,
-                    reason="Reopened from Django Admin",
+                    reason="Повторное открытие через Django Admin",
                 )
             except (PermissionDenied, ValidationError) as exc:
                 self.message_user(
@@ -66,7 +69,7 @@ class LessonAdmin(ReadOnlyAdmin):
         if reopened:
             self.message_user(
                 request,
-                f"Reopened {reopened} lesson(s).",
+                f"Повторно открыта посещаемость занятий: {reopened}.",
                 level=messages.SUCCESS,
             )
 

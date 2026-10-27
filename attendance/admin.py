@@ -14,7 +14,10 @@ class AttendanceAdmin(ReadOnlyAdmin):
     list_filter = ("status",)
     actions = ("mark_present", "mark_absent")
 
-    @admin.action(permissions=["service"], description="Mark selected attendance as present")
+    @admin.action(
+        permissions=["service"],
+        description="Отметить выбранных как присутствовавших",
+    )
     def mark_present(self, request, queryset):
         self._set_status(
             request=request,
@@ -22,7 +25,10 @@ class AttendanceAdmin(ReadOnlyAdmin):
             status=Attendance.Status.PRESENT,
         )
 
-    @admin.action(permissions=["service"], description="Mark selected attendance as absent")
+    @admin.action(
+        permissions=["service"],
+        description="Отметить выбранных как отсутствовавших",
+    )
     def mark_absent(self, request, queryset):
         self._set_status(
             request=request,
@@ -53,7 +59,7 @@ class AttendanceAdmin(ReadOnlyAdmin):
         if changed:
             self.message_user(
                 request,
-                f"Updated {changed} attendance record(s).",
+                f"Обновлено отметок посещаемости: {changed}.",
                 level=messages.SUCCESS,
             )
 
