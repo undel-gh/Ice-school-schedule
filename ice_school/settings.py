@@ -50,12 +50,12 @@ INSTALLED_APPS = [
     "django_otp",
     "django_otp.plugins.otp_totp",
     "django_otp.plugins.otp_static",
-    "core",
-    "accounts",
-    "scheduling",
-    "attendance",
-    "subscriptions",
-    "audit",
+    "core.apps.CoreConfig",
+    "accounts.apps.AccountsConfig",
+    "scheduling.apps.SchedulingConfig",
+    "attendance.apps.AttendanceConfig",
+    "subscriptions.apps.SubscriptionsConfig",
+    "audit.apps.AuditConfig",
 ]
 
 MIDDLEWARE = [
@@ -67,6 +67,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django_otp.middleware.OTPMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
+    "core.admin_localization.AdminLocalizationMiddleware",
     "accounts.mfa_middleware.PrivilegedMFAMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "axes.middleware.AxesMiddleware",
