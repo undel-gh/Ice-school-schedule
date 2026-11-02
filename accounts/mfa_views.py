@@ -160,16 +160,12 @@ def _finish_verified_login(request, *, identity, device) -> None:
 
 @never_cache
 def mfa_challenge(request):
-    if (
-        request.user.is_authenticated
-        and not mfa_required_for_user(request.user)
-    ):
-        return redirect("scheduling:home")
-
     identity, failure = _mfa_identity_or_login(request)
     if failure is not None:
         return failure
     user = identity.user
+    if not mfa_required_for_user(user):
+        return redirect("scheduling:home")
     if request.user.is_authenticated:
         is_verified = getattr(
             request.user,
@@ -187,9 +183,6 @@ def mfa_challenge(request):
             django_logout(request)
             query = urlencode({"next": target})
             return redirect(f"{reverse('login')}?{query}")
-    if not mfa_required_for_user(user):
-        clear_mfa_transient_session(request)
-        return redirect("scheduling:home")
     if not has_confirmed_mfa_device(user):
         return redirect("mfa:setup")
 
@@ -545,10 +538,7 @@ def mfa_replace_authenticator(request):
                 "accounts/mfa_security.html",
                 {
                     "recovery_code_count": recovery_code_count,
-                    "regenerate_form": MFAPasswordReauthForm(
-                        user,
-                        request=request,
-                    ),
+                    "regenerate_form": form,
                     "replace_form": form,
                 },
                 status=400,
