@@ -3,85 +3,113 @@ from __future__ import annotations
 from django import template
 from django.forms import ModelChoiceField
 
+from accounts.forms import AccountInvitationForm, CoachProfileForm, StudentAccessForm
+from scheduling.forms import ManagerLessonCoachReassignForm, ManagerScheduleTemplateForm
+from scheduling.school_admin_forms import GroupMembershipForm
+from subscriptions.catalog_forms import ManagerSubscriptionPlanForm
+from subscriptions.forms import ManagerPlaceHoldCreateForm, ManagerSubscriptionIssueForm
+from subscriptions.manager_forms import (
+    ManagerAdministrativeMakeupForm,
+    ManagerCompensationCaseCreateForm,
+    ManagerOneTimeEntitlementForm,
+    ManagerPaidMakeupActivateForm,
+    ManagerPaidMakeupAuthorizeForm,
+)
+
 register = template.Library()
 
 
-_EMPTY_STATE_MESSAGES = {
-    ("StudentAccessForm", "user"): (
-        "Нет активных пользователей, которым можно выдать доступ. "
-        "Сначала создайте или активируйте пользователя либо используйте приглашение."
+MANAGER_CHOICE_EMPTY_STATES = {
+    (StudentAccessForm, "user"): (
+        "Нет активных пользователей, которым можно выдать новый доступ. "
+        "Если нужный пользователь уже указан в доступах ученика, измените или "
+        "включите существующий доступ в карточке ученика. Иначе создайте или "
+        "активируйте пользователя либо используйте приглашение."
     ),
-    ("CoachProfileForm", "user"): (
+    (CoachProfileForm, "user"): (
         "Нет активных пользователей без профиля тренера. "
         "Сначала создайте или активируйте пользователя либо используйте приглашение тренеру."
     ),
-    ("ManagerScheduleTemplateForm", "group"): (
+    (AccountInvitationForm, "student"): (
+        "Нет активных учеников для приглашения ученика или родителя. "
+        "Сначала создайте или активируйте ученика."
+    ),
+    (AccountInvitationForm, "recovery_user"): (
+        "Нет неактивных непривилегированных аккаунтов для восстановления. "
+        "Сначала деактивируйте нужный обычный аккаунт; staff и superuser через "
+        "этот сценарий не восстанавливаются."
+    ),
+    (ManagerScheduleTemplateForm, "group"): (
         "Нет активных групп. Сначала создайте или активируйте группу."
     ),
-    ("ManagerScheduleTemplateForm", "lesson_type"): (
+    (ManagerScheduleTemplateForm, "lesson_type"): (
         "Нет активных типов занятий. Сначала создайте или активируйте тип занятия."
     ),
-    ("ManagerScheduleTemplateForm", "coach"): (
+    (ManagerScheduleTemplateForm, "coach"): (
         "Нет активных тренеров. Сначала создайте или активируйте тренера."
     ),
-    ("ManagerScheduleTemplateForm", "venue"): (
+    (ManagerScheduleTemplateForm, "venue"): (
         "Нет активных площадок. Сначала создайте или активируйте площадку."
     ),
-    ("ManagerLessonCoachReassignForm", "coach"): (
+    (ManagerLessonCoachReassignForm, "coach"): (
         "Нет другого активного тренера для замены. "
         "Сначала добавьте или активируйте другого тренера."
     ),
-    ("GroupMembershipForm", "student"): (
+    (GroupMembershipForm, "student"): (
         "Нет активных учеников. Сначала создайте или активируйте ученика."
     ),
-    ("GroupMembershipForm", "group"): (
+    (GroupMembershipForm, "group"): (
         "Нет активных групп. Сначала создайте или активируйте группу."
     ),
-    ("ManagerSubscriptionIssueForm", "student"): (
+    (ManagerSubscriptionIssueForm, "student"): (
         "Нет активных учеников. Сначала создайте или активируйте ученика."
     ),
-    ("ManagerSubscriptionIssueForm", "plan"): (
+    (ManagerSubscriptionIssueForm, "plan"): (
         "Нет тарифов, доступных для выдачи. "
         "Сначала создайте активный тариф и назначьте ему активную модель расчётного периода."
     ),
-    ("ManagerPlaceHoldCreateForm", "student"): (
+    (ManagerPlaceHoldCreateForm, "student"): (
         "Нет активных учеников. Сначала создайте или активируйте ученика."
     ),
-    ("ManagerPlaceHoldCreateForm", "group"): (
+    (ManagerPlaceHoldCreateForm, "group"): (
         "Нет активных групп. Сначала создайте или активируйте группу."
     ),
-    ("ManagerPlaceHoldCreateForm", "period_scheme"): (
+    (ManagerPlaceHoldCreateForm, "period_scheme"): (
         "Нет активных моделей расчётного периода. "
         "Сначала создайте или активируйте модель расчётного периода."
     ),
-    ("ManagerOneTimeEntitlementForm", "student"): (
+    (ManagerOneTimeEntitlementForm, "student"): (
         "Нет активных учеников. Сначала создайте или активируйте ученика."
     ),
-    ("ManagerOneTimeEntitlementForm", "lesson"): (
+    (ManagerOneTimeEntitlementForm, "lesson"): (
         "Нет доступных занятий в окне ±60 дней. "
         "Сначала создайте или сгенерируйте расписание."
     ),
-    ("ManagerCompensationCaseCreateForm", "attendance"): (
+    (ManagerCompensationCaseCreateForm, "attendance"): (
         "Нет подходящих пропусков. Нужны отметки «Отсутствовал» в окне ±60 дней "
         "без уже открытого или материализованного компенсационного случая."
     ),
-    ("ManagerPaidMakeupAuthorizeForm", "target_subscription"): (
-        "У ученика нет неотменённых абонементов, доступных как целевые. "
+    (ManagerPaidMakeupAuthorizeForm, "target_subscription"): (
+        "У ученика нет неотменённых абонементов для выбора. "
         "Если правило требует целевой абонемент, сначала выдайте подходящий абонемент."
     ),
-    ("ManagerPaidMakeupActivateForm", "target_subscription"): (
-        "У ученика нет неотменённых абонементов, доступных как целевые. "
+    (ManagerPaidMakeupActivateForm, "target_subscription"): (
+        "У ученика нет неотменённых абонементов для выбора. "
         "Если правило требует целевой абонемент, сначала выдайте подходящий абонемент."
     ),
-    ("ManagerAdministrativeMakeupForm", "source_subscription_allowance"): (
+    (ManagerAdministrativeMakeupForm, "source_subscription_allowance"): (
         "Нет подходящих лимитов абонементов. Нужен неотменённый текущий, ожидающий "
         "активации или недавно завершившийся абонемент."
     ),
-    ("ManagerAdministrativeMakeupForm", "source_lesson"): (
+    (ManagerAdministrativeMakeupForm, "source_lesson"): (
         "Нет доступных исходных занятий в окне ±60 дней. "
         "Сначала создайте или сгенерируйте расписание."
     ),
-    ("ManagerSubscriptionPlanForm", "period_scheme"): (
+    (ManagerAdministrativeMakeupForm, "target_lesson"): (
+        "Нет доступных целевых занятий в окне ±60 дней. Поле необязательное: "
+        "право можно выдать без привязки к конкретному занятию."
+    ),
+    (ManagerSubscriptionPlanForm, "period_scheme"): (
         "Нет активных моделей расчётного периода. "
         "Сначала создайте или активируйте модель расчётного периода."
     ),
@@ -93,9 +121,7 @@ def _message_for(bound_field) -> str:
     if form is None:
         return ""
     for form_class in type(form).__mro__:
-        message = _EMPTY_STATE_MESSAGES.get(
-            (form_class.__name__, bound_field.name)
-        )
+        message = MANAGER_CHOICE_EMPTY_STATES.get((form_class, bound_field.name))
         if message:
             return message
     return ""
