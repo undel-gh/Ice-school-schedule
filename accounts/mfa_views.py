@@ -538,7 +538,10 @@ def mfa_replace_authenticator(request):
                 "accounts/mfa_security.html",
                 {
                     "recovery_code_count": recovery_code_count,
-                    "regenerate_form": form,
+                    "regenerate_form": MFAPasswordReauthForm(
+                        user,
+                        request=request,
+                    ),
                     "replace_form": form,
                 },
                 status=400,
