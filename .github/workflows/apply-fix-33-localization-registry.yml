@@ -1,0 +1,40 @@
+name: Apply fix 33 localization registry
+
+on:
+  push:
+    branches:
+      - fix/reschedule-resource-conflicts
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/reschedule-resource-conflicts
+          fetch-depth: 0
+      - name: Align AST-discovered dynamic registry
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("core/tests/test_error_localization_coverage.py")
+          text = path.read_text()
+          old = '''    'Replacement interval overlaps unmaterialized active schedule template occurrence "{}" at {}. Skip the conflicting template occurrence first or choose another time.': (\n        'Replacement interval overlaps unmaterialized active schedule template occurrence "Зал" at 2026-10-14T18:00:00+03:00. Skip the conflicting template occurrence first or choose another time.'\n    ),\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f"Expected one helper-generated registry entry, got {text.count(old)}")
+          text = text.replace(old, "", 1)
+          path.write_text(text)
+          Path(".github/workflows/apply-fix-33-localization-registry.yml").unlink()
+      - name: Commit registry alignment
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core/tests/test_error_localization_coverage.py .github/workflows/apply-fix-33-localization-registry.yml
+          git diff --cached --check
+          git commit -m "Align helper-generated localization coverage"
+          git push origin HEAD:fix/reschedule-resource-conflicts
