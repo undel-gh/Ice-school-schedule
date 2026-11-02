@@ -113,6 +113,11 @@ def _mfa_identity_or_login(request):
             "Сеанс проверки входа отсутствует или истёк. Войдите снова.",
         )
         return None, redirect("login")
+    if (
+        request.user.is_authenticated
+        and not mfa_required_for_user(identity.user)
+    ):
+        return identity, None
     if not identity.user.has_usable_password():
         clear_mfa_transient_session(request)
         if request.user.is_authenticated:
@@ -159,6 +164,8 @@ def mfa_challenge(request):
     if failure is not None:
         return failure
     user = identity.user
+    if not mfa_required_for_user(user):
+        return redirect("scheduling:home")
     if request.user.is_authenticated:
         is_verified = getattr(
             request.user,
@@ -176,9 +183,6 @@ def mfa_challenge(request):
             django_logout(request)
             query = urlencode({"next": target})
             return redirect(f"{reverse('login')}?{query}")
-    if not mfa_required_for_user(user):
-        clear_mfa_transient_session(request)
-        return redirect("scheduling:home")
     if not has_confirmed_mfa_device(user):
         return redirect("mfa:setup")
 
