@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load manager_labels %}
+{% load manager_labels manager_forms %}
 {% block title %}Компенсационный случай{% endblock %}
 {% block content %}
 <header class="page-header">
@@ -33,7 +33,7 @@
   {% endif %}
   {% if can_authorize_paid %}
   <form class="report-card manager-form" method="post" action="{% url 'subscriptions:manager_compensation_authorize_paid' case.id %}">
-    {% csrf_token %}<h2>Платная отработка</h2>{{ authorize_form.as_p }}<button class="btn-primary" type="submit">Авторизовать</button>
+    {% csrf_token %}<h2>Платная отработка</h2>{{ authorize_form.as_p }}{% manager_choice_empty_state authorize_form.target_subscription as authorize_empty_state %}{% if authorize_empty_state %}<div class="empty-state">{{ authorize_empty_state }}</div>{% endif %}<button class="btn-primary" type="submit">Авторизовать</button>
   </form>
   {% endif %}
   <form class="report-card" method="post" action="{% url 'subscriptions:manager_compensation_cancel' case.id %}" onsubmit="return confirm('Отменить открытый компенсационный случай?');">
@@ -54,7 +54,7 @@
       <form method="post" action="{% url 'subscriptions:manager_compensation_confirm_fee' grant.id %}">{% csrf_token %}<button class="btn-secondary" type="submit">Подтвердить оплату</button></form>
       {% endif %}
       {% if not grant.activated_at %}
-      <form class="manager-form" method="post" action="{% url 'subscriptions:manager_compensation_activate_paid' grant.id %}">{% csrf_token %}{{ activate_form.as_p }}<button class="btn-primary" type="submit">Активировать</button></form>
+      <form class="manager-form" method="post" action="{% url 'subscriptions:manager_compensation_activate_paid' grant.id %}">{% csrf_token %}{{ activate_form.as_p }}{% manager_choice_empty_state activate_form.target_subscription as activate_empty_state %}{% if activate_empty_state %}<div class="empty-state">{{ activate_empty_state }}</div>{% endif %}<button class="btn-primary" type="submit">Активировать</button></form>
       {% endif %}
     {% endif %}
     {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Журнал действий</a></p>{% endif %}
