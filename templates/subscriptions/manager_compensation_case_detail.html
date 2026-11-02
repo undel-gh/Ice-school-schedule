@@ -38,7 +38,7 @@
     {% for field in authorize_form %}
       <div class="field">
         {{ field.label_tag }}{{ field }}
-        {% if field.help_text %}<div class="field-help">{{ field.help_text }}</div>{% endif %}
+        {% if field.help_text %}<div class="field-help" id="{{ field.auto_id }}_helptext">{{ field.help_text }}</div>{% endif %}
         {% manager_choice_empty_state field as empty_state %}
         {% if empty_state %}<div class="field-empty-state">{{ empty_state }}</div>{% endif %}
         {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
@@ -70,7 +70,7 @@
         {% for field in activate_form %}
           <div class="field">
             {{ field.label_tag }}{{ field }}
-            {% if field.help_text %}<div class="field-help">{{ field.help_text }}</div>{% endif %}
+            {% if field.help_text %}<div class="field-help" id="{{ field.auto_id }}_helptext">{{ field.help_text }}</div>{% endif %}
             {% manager_choice_empty_state field as empty_state %}
             {% if empty_state %}<div class="field-empty-state">{{ empty_state }}</div>{% endif %}
             {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
@@ -80,7 +80,7 @@
       </form>
       {% endif %}
     {% endif %}
-    {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Журнал действий</a></p>{% endif %}
+    {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Журнал покрытия</a></p>{% endif %}
   </article>
 {% empty %}<div class="empty-state">Право ещё не выдано.</div>{% endfor %}
 </div>
