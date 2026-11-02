@@ -101,9 +101,10 @@ def validate_reschedule_template_occurrences(
     group, coach, or venue.
 
     The canonical interactive reschedule workflow calls this before the
-    low-level scheduling transition. Resource rows are locked in the same
-    Group -> Coach -> Venue -> Lesson order used by the low-level transition;
-    generation takes the same shared resource locks before touching lessons.
+    low-level scheduling transition. Locks follow Group -> Coach -> source
+    Lesson -> Venue. This matches coach reassignment on Coach -> Lesson and
+    publication on Lesson -> Venue, while generation serializes the shared
+    coach/venue resources before creating a lesson.
     """
     require_permission(
         actor,
@@ -123,7 +124,6 @@ def validate_reschedule_template_occurrences(
     ).get(pk=lesson_id)
     TrainingGroup.objects.select_for_update().get(pk=source_ref.group_id)
     CoachProfile.objects.select_for_update().get(pk=source_ref.coach_id)
-    Venue.objects.select_for_update().get(pk=source_ref.venue_id)
     source = (
         Lesson.objects.select_for_update()
         .only(
@@ -144,6 +144,7 @@ def validate_reschedule_template_occurrences(
         raise ValidationError(
             {"lesson": "Lesson scheduling resources changed concurrently. Retry."}
         )
+    Venue.objects.select_for_update().get(pk=source.venue_id)
     if source.status not in _RESCHEDULABLE_STATUSES:
         return
 
