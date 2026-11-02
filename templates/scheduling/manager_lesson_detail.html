@@ -26,7 +26,18 @@
   {% endif %}
   {% if lesson.status == "draft" or lesson.status == "rsvp_open" or lesson.status == "confirmed" %}
     <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_reassign_coach' lesson.id %}">
-      {% csrf_token %}<h2>Замена тренера</h2>{{ coach_reassign_form.as_p }}{% manager_choice_empty_state coach_reassign_form.coach as coach_empty_state %}{% if coach_empty_state %}<div class="empty-state">{{ coach_empty_state }}</div>{% endif %}<button class="btn-secondary" type="submit">Заменить тренера</button>
+      {% csrf_token %}
+      <h2>Замена тренера</h2>
+      {% for field in coach_reassign_form %}
+        <div class="field">
+          {{ field.label_tag }}{{ field }}
+          {% if field.help_text %}<div class="field-help">{{ field.help_text }}</div>{% endif %}
+          {% manager_choice_empty_state field as empty_state %}
+          {% if empty_state %}<div class="field-empty-state">{{ empty_state }}</div>{% endif %}
+          {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
+        </div>
+      {% endfor %}
+      <button class="btn-secondary" type="submit">Заменить тренера</button>
     </form>
     <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_cancel' lesson.id %}">
       {% csrf_token %}<h2>Отмена</h2>{{ cancel_form.as_p }}<button class="btn-absent" type="submit">Отменить</button>
