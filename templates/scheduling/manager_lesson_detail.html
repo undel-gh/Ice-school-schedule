@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load manager_labels %}
+{% load manager_labels manager_forms %}
 {% block title %}Занятие{% endblock %}
 {% block content %}
 <header class="page-header">
@@ -26,7 +26,7 @@
   {% endif %}
   {% if lesson.status == "draft" or lesson.status == "rsvp_open" or lesson.status == "confirmed" %}
     <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_reassign_coach' lesson.id %}">
-      {% csrf_token %}<h2>Замена тренера</h2>{{ coach_reassign_form.as_p }}<button class="btn-secondary" type="submit">Заменить тренера</button>
+      {% csrf_token %}<h2>Замена тренера</h2>{{ coach_reassign_form.as_p }}{% manager_choice_empty_state coach_reassign_form.coach as coach_empty_state %}{% if coach_empty_state %}<div class="empty-state">{{ coach_empty_state }}</div>{% endif %}<button class="btn-secondary" type="submit">Заменить тренера</button>
     </form>
     <form class="report-card manager-form" method="post" action="{% url 'scheduling_manager:lesson_cancel' lesson.id %}">
       {% csrf_token %}<h2>Отмена</h2>{{ cancel_form.as_p }}<button class="btn-absent" type="submit">Отменить</button>
