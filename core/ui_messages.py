@@ -180,6 +180,13 @@ _DYNAMIC_PATTERNS = (
         ),
     ),
     (
+        re.compile(r'^The selected venue has another non-cancelled lesson overlapping this time: (?P<id>[0-9a-f-]+)\.$'),
+        lambda m: (
+            f"На выбранной площадке уже есть {_lesson_nominative(m.group('id'))}, "
+            "пересекающееся по времени."
+        ),
+    ),
+    (
         re.compile(r'^Replacement interval overlaps another non-cancelled lesson of this group: (?P<id>[0-9a-f-]+)\.$'),
         lambda m: (
             f"Новое время пересекается с {_lesson_instrumental(m.group('id'))} этой группы."

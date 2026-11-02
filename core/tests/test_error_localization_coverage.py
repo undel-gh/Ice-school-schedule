@@ -55,6 +55,9 @@ DYNAMIC_ERROR_EXAMPLES = {
     "The selected coach has another non-cancelled lesson overlapping this time: {}.": (
         "The selected coach has another non-cancelled lesson overlapping this time: 11111111-1111-1111-1111-111111111111."
     ),
+    "The selected venue has another non-cancelled lesson overlapping this time: {}.": (
+        "The selected venue has another non-cancelled lesson overlapping this time: 11111111-1111-1111-1111-111111111111."
+    ),
     "Replacement interval overlaps another non-cancelled lesson of this group: {}.": (
         "Replacement interval overlaps another non-cancelled lesson of this group: 11111111-1111-1111-1111-111111111111."
     ),
