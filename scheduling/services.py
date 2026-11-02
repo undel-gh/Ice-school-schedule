@@ -1696,8 +1696,7 @@ def generate_lessons(
             continue
 
         resource_conflicts = list(
-            Lesson.objects.select_for_update()
-            .filter(
+            Lesson.objects.filter(
                 Q(coach_id=template.coach_id)
                 | Q(venue_id=template.venue_id),
                 starts_at__lt=ends_at,
@@ -2499,7 +2498,6 @@ def reschedule_lesson(
     ).get(pk=lesson_id)
     TrainingGroup.objects.select_for_update().get(pk=source_ref.group_id)
     CoachProfile.objects.select_for_update().get(pk=source_ref.coach_id)
-    Venue.objects.select_for_update().get(pk=source_ref.venue_id)
     source = (
         Lesson.objects.select_for_update()
         .select_related("lesson_type")
@@ -2513,6 +2511,7 @@ def reschedule_lesson(
         raise ValidationError(
             {"lesson": "Lesson scheduling resources changed concurrently. Retry."}
         )
+    Venue.objects.select_for_update().get(pk=source.venue_id)
     if source.status not in {
         Lesson.Status.DRAFT,
         Lesson.Status.RSVP_OPEN,
@@ -2528,8 +2527,7 @@ def reschedule_lesson(
         )
 
     conflicting_lessons = list(
-        Lesson.objects.select_for_update()
-        .filter(
+        Lesson.objects.filter(
             Q(group_id=source.group_id)
             | Q(coach_id=source.coach_id)
             | Q(venue_id=source.venue_id),
