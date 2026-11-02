@@ -1128,12 +1128,6 @@ def version_schedule_template(
     target_coach = CoachProfile.objects.select_for_update().get(
         pk=new_values["coach_id"]
     )
-    target_lesson_type = LessonType.objects.select_for_update().get(
-        pk=new_values["lesson_type_id"]
-    )
-    target_venue = Venue.objects.select_for_update().get(
-        pk=new_values["venue_id"]
-    )
     if not target_group.is_active:
         raise ValidationError(
             {"group": "Inactive groups cannot be used by an active schedule template."}
@@ -1141,14 +1135,6 @@ def version_schedule_template(
     if not target_coach.is_active:
         raise ValidationError(
             {"coach": "Inactive coaches cannot be used by an active schedule template."}
-        )
-    if not target_lesson_type.is_active:
-        raise ValidationError(
-            {"lesson_type": "Inactive lesson types cannot be used by an active schedule template."}
-        )
-    if not target_venue.is_active:
-        raise ValidationError(
-            {"venue": "Inactive venues cannot be used by an active schedule template."}
         )
 
     cutoff = make_school_aware(
@@ -1162,6 +1148,29 @@ def version_schedule_template(
         )
         .order_by("starts_at", "id")
     )
+
+    # Existing lessons must be locked before LessonType/Venue. Publication
+    # uses Lesson -> LessonType -> Venue and rescheduling uses Lesson -> Venue;
+    # taking either resource first here would create the opposite edge.
+    target_lesson_type = LessonType.objects.select_for_update().get(
+        pk=new_values["lesson_type_id"]
+    )
+    target_venue = Venue.objects.select_for_update().get(
+        pk=new_values["venue_id"]
+    )
+    if not target_lesson_type.is_active:
+        raise ValidationError(
+            {
+                "lesson_type": (
+                    "Inactive lesson types cannot be used by an active schedule template."
+                )
+            }
+        )
+    if not target_venue.is_active:
+        raise ValidationError(
+            {"venue": "Inactive venues cannot be used by an active schedule template."}
+        )
+
     blocking_statuses = {
         Lesson.Status.RSVP_OPEN,
         Lesson.Status.CONFIRMED,
