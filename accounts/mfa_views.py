@@ -155,6 +155,12 @@ def _finish_verified_login(request, *, identity, device) -> None:
 
 @never_cache
 def mfa_challenge(request):
+    if (
+        request.user.is_authenticated
+        and not mfa_required_for_user(request.user)
+    ):
+        return redirect("scheduling:home")
+
     identity, failure = _mfa_identity_or_login(request)
     if failure is not None:
         return failure
