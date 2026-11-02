@@ -13,7 +13,24 @@
 {{ form.non_field_errors }}
 {% for field in form %}
 <div class="field">
-  {{ field.label_tag }}{{ field }}
+  {{ field.label_tag }}
+  {% if object and title == "Редактирование модели расчётного периода" and field.name == "mode" %}
+    {% if object.plans.exists or object.subscription_periods.exists %}
+      {{ field.as_hidden }}
+      <div class="field-help">{{ object.get_mode_display }} · поле зафиксировано после первого использования модели.</div>
+    {% else %}
+      {{ field }}
+    {% endif %}
+  {% elif object and title == "Редактирование модели расчётного периода" and field.name == "fixed_anchor_date" %}
+    {% if object.plans.exists or object.subscription_periods.exists %}
+      {{ field.as_hidden }}
+      <div class="field-help">{% if object.fixed_anchor_date %}{{ object.fixed_anchor_date|date:"d.m.Y" }}{% else %}Не задана{% endif %} · поле зафиксировано после первого использования модели.</div>
+    {% else %}
+      {{ field }}
+    {% endif %}
+  {% else %}
+    {{ field }}
+  {% endif %}
   {% if field.help_text %}<div class="field-help">{{ field.help_text }}</div>{% endif %}
   {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
 </div>
