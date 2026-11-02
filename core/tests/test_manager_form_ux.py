@@ -238,3 +238,17 @@ def test_invitation_empty_states_disappear_when_candidates_exist():
 
     assert "Нет активных учеников для приглашения" not in body
     assert "Нет неактивных непривилегированных аккаунтов для восстановления" not in body
+    assert "staff и superuser через этот сценарий не восстанавливаются" in body
+
+
+@pytest.mark.django_db
+def test_invitation_help_text_keeps_django_aria_description_target():
+    body = render_to_string(
+        "accounts/manager_invitation_form.html",
+        {"form": AccountInvitationForm()},
+    )
+
+    assert 'aria-describedby="id_recovery_user_helptext"' in body
+    assert 'id="id_recovery_user_helptext"' in body
+    assert 'aria-describedby="id_account_display_name_helptext"' in body
+    assert 'id="id_account_display_name_helptext"' in body
