@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone as dt_timezone
+from datetime import date, time, timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 
 from accounts.models import CoachProfile
+from core.testing import school_dt
 from ice_school.workflows import reschedule_lesson_with_entitlements
 from scheduling.models import Lesson, LessonType, ScheduleTemplate, TrainingGroup, Venue
 from scheduling.services import generate_lessons, reschedule_lesson
@@ -86,11 +87,14 @@ def _reschedule(source, *, actor, starts_at):
     )
 
 
+def _source_and_target_times():
+    return school_dt(2099, 1, 4, 10, 0), school_dt(2099, 1, 5, 10, 0)
+
+
 @pytest.mark.django_db
 def test_reschedule_rejects_overlapping_coach_across_groups(resource_context):
     ctx = resource_context
-    source_start = datetime(2099, 1, 4, 10, 0, tzinfo=dt_timezone.utc)
-    target_start = datetime(2099, 1, 5, 10, 0, tzinfo=dt_timezone.utc)
+    source_start, target_start = _source_and_target_times()
     source = _lesson(
         group=ctx["group_a"],
         coach=ctx["coach_a"],
@@ -119,8 +123,7 @@ def test_reschedule_rejects_overlapping_coach_across_groups(resource_context):
 @pytest.mark.django_db
 def test_reschedule_rejects_overlapping_venue_across_groups(resource_context):
     ctx = resource_context
-    source_start = datetime(2099, 1, 4, 10, 0, tzinfo=dt_timezone.utc)
-    target_start = datetime(2099, 1, 5, 10, 0, tzinfo=dt_timezone.utc)
+    source_start, target_start = _source_and_target_times()
     source = _lesson(
         group=ctx["group_a"],
         coach=ctx["coach_a"],
@@ -149,8 +152,7 @@ def test_reschedule_rejects_overlapping_venue_across_groups(resource_context):
 @pytest.mark.django_db
 def test_reschedule_keeps_existing_group_conflict_precedence(resource_context):
     ctx = resource_context
-    source_start = datetime(2099, 1, 4, 10, 0, tzinfo=dt_timezone.utc)
-    target_start = datetime(2099, 1, 5, 10, 0, tzinfo=dt_timezone.utc)
+    source_start, target_start = _source_and_target_times()
     source = _lesson(
         group=ctx["group_a"],
         coach=ctx["coach_a"],
@@ -176,8 +178,7 @@ def test_reschedule_keeps_existing_group_conflict_precedence(resource_context):
 @pytest.mark.django_db
 def test_reschedule_ignores_cancelled_resource_conflict(resource_context):
     ctx = resource_context
-    source_start = datetime(2099, 1, 4, 10, 0, tzinfo=dt_timezone.utc)
-    target_start = datetime(2099, 1, 5, 10, 0, tzinfo=dt_timezone.utc)
+    source_start, target_start = _source_and_target_times()
     source = _lesson(
         group=ctx["group_a"],
         coach=ctx["coach_a"],
@@ -212,8 +213,7 @@ def test_canonical_reschedule_workflow_rejects_cross_group_coach_conflict(
     resource_context,
 ):
     ctx = resource_context
-    source_start = datetime(2099, 1, 4, 10, 0, tzinfo=dt_timezone.utc)
-    target_start = datetime(2099, 1, 5, 10, 0, tzinfo=dt_timezone.utc)
+    source_start, target_start = _source_and_target_times()
     source = _lesson(
         group=ctx["group_a"],
         coach=ctx["coach_a"],
@@ -253,7 +253,7 @@ def test_generate_lessons_reports_cross_group_resource_conflict(
 ):
     ctx = resource_context
     occurrence_date = date(2099, 1, 5)
-    starts_at = datetime(2099, 1, 5, 10, 0, tzinfo=dt_timezone.utc)
+    starts_at = school_dt(2099, 1, 5, 10, 0)
     template = ScheduleTemplate.objects.create(
         group=ctx["group_a"],
         coach=ctx["coach_a"],
@@ -284,7 +284,7 @@ def test_generate_lessons_reports_cross_group_resource_conflict(
     assert result.lessons == ()
     assert len(result.conflicts) == 1
     assert result.conflicts[0].conflicting_lesson_id == conflict.id
-    assert getattr(result.conflicts[0], "conflict_resource", None) == resource
+    assert result.conflicts[0].conflict_resource == resource
     assert not Lesson.objects.filter(source_template=template).exists()
 
 
@@ -295,9 +295,8 @@ def test_reschedule_preflight_rejects_unmaterialized_cross_group_resource_slot(
     resource,
 ):
     ctx = resource_context
-    source_start = datetime(2099, 1, 4, 10, 0, tzinfo=dt_timezone.utc)
-    target_start = datetime(2099, 1, 5, 10, 0, tzinfo=dt_timezone.utc)
-    target_date = target_start.date()
+    source_start, target_start = _source_and_target_times()
+    target_date = date(2099, 1, 5)
     source = _lesson(
         group=ctx["group_a"],
         coach=ctx["coach_a"],
