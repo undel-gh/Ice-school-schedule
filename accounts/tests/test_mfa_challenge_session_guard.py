@@ -79,6 +79,24 @@ def test_nonprivileged_user_without_password_is_not_logged_out_by_mfa_get(
 
 
 @pytest.mark.django_db
+def test_privileged_user_without_local_password_still_requires_fresh_login():
+    client = Client()
+    user = User.objects.create_superuser(
+        username="passwordless-manager-challenge",
+        password="secret-password",
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    client.force_login(user)
+
+    response = client.get(reverse("mfa:challenge"))
+
+    assert response.status_code == 302
+    assert response.url == reverse("login")
+    assert "_auth_user_id" not in client.session
+
+
+@pytest.mark.django_db
 def test_unverified_privileged_session_still_requires_fresh_login_on_mfa_challenge():
     client = Client()
     user = User.objects.create_superuser(
