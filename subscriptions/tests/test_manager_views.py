@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from datetime import date
+from calendar import monthrange
+from datetime import date, timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.models import Student
 from core.choices import SubscriptionCategory
+from core.time import school_date
 from subscriptions.models import (
     GroupPlaceHold,
     Subscription,
@@ -22,6 +25,17 @@ from subscriptions.services import (
 )
 
 User = get_user_model()
+
+
+def _future_calendar_month_window(*, months_ahead: int = 2):
+    today = school_date(timezone.now())
+    absolute_month = today.year * 12 + (today.month - 1) + months_ahead
+    year, zero_based_month = divmod(absolute_month, 12)
+    month = zero_based_month + 1
+    period_from = date(year, month, 1)
+    period_until = date(year, month, monthrange(year, month)[1])
+    reference_date = period_from + timedelta(days=9)
+    return reference_date, period_from, period_until
 
 
 @pytest.mark.django_db
@@ -171,6 +185,7 @@ def test_manager_can_manage_group_place_hold_from_web(client):
     student = Student.objects.create(display_name="Hold student")
     from scheduling.models import GroupMembership, TrainingGroup
 
+    reference_date, period_from, period_until = _future_calendar_month_window()
     group = TrainingGroup.objects.create(
         code="hold-web-group",
         name="Hold Web Group",
@@ -183,7 +198,7 @@ def test_manager_can_manage_group_place_hold_from_web(client):
     GroupMembership.objects.create(
         student=student,
         group=group,
-        starts_on=date(2026, 9, 1),
+        starts_on=period_from - timedelta(days=60),
         ends_on=None,
         created_by=manager,
     )
@@ -195,14 +210,14 @@ def test_manager_can_manage_group_place_hold_from_web(client):
             "student": str(student.id),
             "group": str(group.id),
             "period_scheme": str(scheme.id),
-            "reference_date": "2026-11-10",
+            "reference_date": reference_date.isoformat(),
         },
     )
     assert created.status_code == 302
 
     hold = GroupPlaceHold.objects.get(student=student, group=group)
-    assert hold.period_from == date(2026, 11, 1)
-    assert hold.period_until == date(2026, 11, 30)
+    assert hold.period_from == period_from
+    assert hold.period_until == period_until
     assert hold.status == GroupPlaceHold.Status.PENDING_PAYMENT
 
     confirmed = client.post(
@@ -242,6 +257,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
     student = Student.objects.create(display_name="Hold restore student")
     from scheduling.models import GroupMembership, TrainingGroup
 
+    reference_date, period_from, period_until = _future_calendar_month_window()
     group = TrainingGroup.objects.create(
         code="hold-restore-web-group",
         name="Hold Restore Web Group",
@@ -255,7 +271,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
     original_membership = GroupMembership.objects.create(
         student=student,
         group=group,
-        starts_on=date(2026, 9, 1),
+        starts_on=period_from - timedelta(days=60),
         ends_on=None,
         created_by=manager,
     )
@@ -267,7 +283,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
             "student": str(student.id),
             "group": str(group.id),
             "period_scheme": str(scheme.id),
-            "reference_date": "2026-11-10",
+            "reference_date": reference_date.isoformat(),
         },
     )
     assert created.status_code == 302
@@ -283,7 +299,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
 
     original_membership.refresh_from_db()
     hold.refresh_from_db()
-    assert original_membership.ends_on == date(2026, 10, 31)
+    assert original_membership.ends_on == period_from - timedelta(days=1)
     assert hold.status == GroupPlaceHold.Status.ACTIVE
 
     restored = client.post(
@@ -298,7 +314,7 @@ def test_manager_can_restore_group_place_hold_from_web(client):
     assert hold.status == GroupPlaceHold.Status.RESTORED
     assert hold.restored_at is not None
     assert hold.restored_membership_id is not None
-    assert hold.restored_membership.starts_on == date(2026, 12, 1)
+    assert hold.restored_membership.starts_on == period_until + timedelta(days=1)
     assert hold.restored_membership.ends_on is None
 
 
