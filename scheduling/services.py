@@ -1695,6 +1695,69 @@ def generate_lessons(
             current += timedelta(days=1)
             continue
 
+        resource_conflicts = list(
+            Lesson.objects.select_for_update()
+            .filter(
+                Q(coach_id=template.coach_id)
+                | Q(venue_id=template.venue_id),
+                starts_at__lt=ends_at,
+                ends_at__gt=starts_at,
+            )
+            .exclude(group_id=template.group_id)
+            .exclude(status=Lesson.Status.CANCELLED)
+            .order_by("starts_at", "id")
+        )
+        if resource_conflicts:
+            resource_conflict = resource_conflicts[0]
+            conflict_resources = []
+            if resource_conflict.coach_id == template.coach_id:
+                conflict_resources.append("coach")
+            if resource_conflict.venue_id == template.venue_id:
+                conflict_resources.append("venue")
+            conflict = LessonGenerationConflict(
+                template_id=template.id,
+                conflicting_lesson_id=resource_conflict.id,
+                expected_lesson_type_id=template.lesson_type_id,
+                conflicting_lesson_type_id=resource_conflict.lesson_type_id,
+                starts_at=starts_at,
+                ends_at=ends_at,
+            )
+            conflicts.append(conflict)
+            expected_starts_at = starts_at.isoformat()
+            if not event_exists_with_payload(
+                event_type="LessonGenerationConflict",
+                aggregate_type="ScheduleTemplate",
+                aggregate_id=template.id,
+                payload_filters={
+                    "expected_starts_at": expected_starts_at,
+                    "conflicting_lesson_id": str(resource_conflict.id),
+                },
+            ):
+                record_event(
+                    event_type="LessonGenerationConflict",
+                    actor=actor,
+                    aggregate_type="ScheduleTemplate",
+                    aggregate_id=template.id,
+                    payload={
+                        "conflicting_lesson_id": str(resource_conflict.id),
+                        "expected_lesson_type_id": str(template.lesson_type_id),
+                        "conflicting_lesson_type_id": str(
+                            resource_conflict.lesson_type_id
+                        ),
+                        "conflict_resources": conflict_resources,
+                        "expected_starts_at": expected_starts_at,
+                        "expected_ends_at": ends_at.isoformat(),
+                        "conflicting_starts_at": (
+                            resource_conflict.starts_at.isoformat()
+                        ),
+                        "conflicting_ends_at": (
+                            resource_conflict.ends_at.isoformat()
+                        ),
+                    },
+                )
+            current += timedelta(days=1)
+            continue
+
         if not coach.is_active:
             raise ValidationError(
                 {
@@ -2429,13 +2492,27 @@ def reschedule_lesson(
             {"new_starts_at": "Replacement lesson must start in the future."}
         )
 
-    source_ref = Lesson.objects.only("group_id").get(pk=lesson_id)
+    source_ref = Lesson.objects.only(
+        "group_id",
+        "coach_id",
+        "venue_id",
+    ).get(pk=lesson_id)
     TrainingGroup.objects.select_for_update().get(pk=source_ref.group_id)
+    CoachProfile.objects.select_for_update().get(pk=source_ref.coach_id)
+    Venue.objects.select_for_update().get(pk=source_ref.venue_id)
     source = (
         Lesson.objects.select_for_update()
         .select_related("lesson_type")
         .get(pk=lesson_id)
     )
+    if (
+        source.group_id != source_ref.group_id
+        or source.coach_id != source_ref.coach_id
+        or source.venue_id != source_ref.venue_id
+    ):
+        raise ValidationError(
+            {"lesson": "Lesson scheduling resources changed concurrently. Retry."}
+        )
     if source.status not in {
         Lesson.Status.DRAFT,
         Lesson.Status.RSVP_OPEN,
@@ -2450,24 +2527,70 @@ def reschedule_lesson(
             }
         )
 
-    conflicting_lesson = (
-        Lesson.objects.filter(
-            group_id=source.group_id,
+    conflicting_lessons = list(
+        Lesson.objects.select_for_update()
+        .filter(
+            Q(group_id=source.group_id)
+            | Q(coach_id=source.coach_id)
+            | Q(venue_id=source.venue_id),
             starts_at__lt=new_ends_at,
             ends_at__gt=new_starts_at,
         )
         .exclude(pk=source.id)
         .exclude(status=Lesson.Status.CANCELLED)
         .order_by("starts_at", "id")
-        .first()
     )
-    if conflicting_lesson is not None:
+    group_conflict = next(
+        (
+            lesson
+            for lesson in conflicting_lessons
+            if lesson.group_id == source.group_id
+        ),
+        None,
+    )
+    if group_conflict is not None:
         raise ValidationError(
             {
                 "new_starts_at": (
                     "Replacement interval overlaps another non-cancelled "
                     "lesson of this group: "
-                    f"{conflicting_lesson.id}."
+                    f"{group_conflict.id}."
+                )
+            }
+        )
+    coach_conflict = next(
+        (
+            lesson
+            for lesson in conflicting_lessons
+            if lesson.coach_id == source.coach_id
+        ),
+        None,
+    )
+    if coach_conflict is not None:
+        raise ValidationError(
+            {
+                "new_starts_at": (
+                    "Replacement interval overlaps another non-cancelled "
+                    "lesson with the same coach: "
+                    f"{coach_conflict.id}."
+                )
+            }
+        )
+    venue_conflict = next(
+        (
+            lesson
+            for lesson in conflicting_lessons
+            if lesson.venue_id == source.venue_id
+        ),
+        None,
+    )
+    if venue_conflict is not None:
+        raise ValidationError(
+            {
+                "new_starts_at": (
+                    "Replacement interval overlaps another non-cancelled "
+                    "lesson at the same venue: "
+                    f"{venue_conflict.id}."
                 )
             }
         )
