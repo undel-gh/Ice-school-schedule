@@ -8,10 +8,10 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
 
-from accounts.models import CoachProfile
 from core.permissions import require_permission
 from core.time import make_school_aware, school_date
 
+from accounts.models import CoachProfile
 from .models import Lesson, ScheduleTemplate, TrainingGroup, Venue
 
 
@@ -37,6 +37,53 @@ def _first_matching_date(*, from_date: date, weekday: int) -> date:
     return from_date + timedelta(days=(weekday - from_date.weekday()) % 7)
 
 
+def _template_conflict_resources(
+    *,
+    template: ScheduleTemplate,
+    group_id: UUID,
+    lesson_type_id: UUID,
+    coach_id: UUID,
+    venue_id: UUID,
+) -> tuple[str, ...]:
+    if template.group_id == group_id:
+        if template.lesson_type_id != lesson_type_id:
+            return ("group",)
+        # Generation treats an overlapping same-group/same-type lesson as the
+        # materialized occurrence, even if its coach or venue differs.
+        return ()
+
+    resources = []
+    if template.coach_id == coach_id:
+        resources.append("coach")
+    if template.venue_id == venue_id:
+        resources.append("venue")
+    return tuple(resources)
+
+
+def _resource_template_message(
+    *,
+    template: ScheduleTemplate,
+    starts_at: datetime,
+    resources: tuple[str, ...],
+) -> str:
+    if resources == ("group",):
+        return (
+            "Replacement interval overlaps unmaterialized active "
+            "schedule template occurrence "
+            f'"{template.lesson_type.name}" at '
+            f"{starts_at.isoformat()}. Skip the conflicting "
+            "template occurrence first or choose another time."
+        )
+
+    resource_text = " and ".join(resources)
+    return (
+        "Replacement interval overlaps unmaterialized active schedule "
+        f"template occurrence using the same {resource_text} "
+        f'"{template.lesson_type.name}" at {starts_at.isoformat()}. '
+        "Skip the conflicting template occurrence first or choose another time."
+    )
+
+
 @transaction.atomic
 def validate_reschedule_template_occurrences(
     *,
@@ -48,15 +95,16 @@ def validate_reschedule_template_occurrences(
 ) -> None:
     """Reject a replacement that would create a later generation conflict.
 
-    ``reschedule_lesson`` rejects materialized overlaps for the source group,
-    coach, and venue. This preflight covers the complementary case: an active
-    recurring template has a conflicting occurrence in the target interval,
-    but that occurrence has not been materialized yet.
+    ``reschedule_lesson`` already rejects materialized lesson overlaps. This
+    preflight covers the complementary case: an active recurring template has
+    an unmaterialized occurrence in the target interval that would conflict by
+    group, coach, or venue.
 
     The canonical interactive reschedule workflow calls this before the
-    low-level scheduling transition. Locking the source group, coach, and
-    venue serializes the check with lesson generation, which takes the same
-    resource locks before materializing lessons.
+    low-level scheduling transition. Locks follow Group -> Coach -> source
+    Lesson -> Venue. This matches coach reassignment on Coach -> Lesson and
+    publication on Lesson -> Venue, while generation serializes the shared
+    coach/venue resources before creating a lesson.
     """
     require_permission(
         actor,
@@ -76,7 +124,6 @@ def validate_reschedule_template_occurrences(
     ).get(pk=lesson_id)
     TrainingGroup.objects.select_for_update().get(pk=source_ref.group_id)
     CoachProfile.objects.select_for_update().get(pk=source_ref.coach_id)
-    Venue.objects.select_for_update().get(pk=source_ref.venue_id)
     source = (
         Lesson.objects.select_for_update()
         .only(
@@ -89,20 +136,27 @@ def validate_reschedule_template_occurrences(
         )
         .get(pk=lesson_id)
     )
+    if (
+        source.group_id != source_ref.group_id
+        or source.coach_id != source_ref.coach_id
+        or source.venue_id != source_ref.venue_id
+    ):
+        raise ValidationError(
+            {"lesson": "Lesson scheduling resources changed concurrently. Retry."}
+        )
+    Venue.objects.select_for_update().get(pk=source.venue_id)
     if source.status not in _RESCHEDULABLE_STATUSES:
         return
 
-    # Keep concrete-lesson errors as the first conflicts shown to the caller;
-    # the low-level service renders the established group/coach/venue message.
+    # Keep the concrete-lesson error as the first conflict shown to the caller;
+    # the low-level service will render the resource-specific message.
     if (
         Lesson.objects.filter(
-            starts_at__lt=new_ends_at,
-            ends_at__gt=new_starts_at,
-        )
-        .filter(
             Q(group_id=source.group_id)
             | Q(coach_id=source.coach_id)
-            | Q(venue_id=source.venue_id)
+            | Q(venue_id=source.venue_id),
+            starts_at__lt=new_ends_at,
+            ends_at__gt=new_starts_at,
         )
         .exclude(pk=source.id)
         .exclude(status=Lesson.Status.CANCELLED)
@@ -111,25 +165,27 @@ def validate_reschedule_template_occurrences(
         return
 
     templates = (
-        ScheduleTemplate.objects.filter(is_active=True)
-        .filter(
+        ScheduleTemplate.objects.filter(
             Q(group_id=source.group_id)
             | Q(coach_id=source.coach_id)
-            | Q(venue_id=source.venue_id)
-        )
-        # Same-group/same-type occurrences are the established coverage case:
-        # generation reuses the materialized lesson rather than creating a
-        # second lesson. Every other selected template competes for a group or
-        # physical/staff resource.
-        .exclude(
-            group_id=source.group_id,
-            lesson_type_id=source.lesson_type_id,
+            | Q(venue_id=source.venue_id),
+            is_active=True,
         )
         .select_related("lesson_type")
         .order_by("valid_from", "id")
     )
 
     for template in templates:
+        resources = _template_conflict_resources(
+            template=template,
+            group_id=source.group_id,
+            lesson_type_id=source.lesson_type_id,
+            coach_id=source.coach_id,
+            venue_id=source.venue_id,
+        )
+        if not resources:
+            continue
+
         # An overlapping occurrence may begin before the local date of the
         # replacement when a template crosses midnight. Search back by the
         # template duration, then apply the exact timestamp overlap test.
@@ -170,12 +226,10 @@ def validate_reschedule_template_occurrences(
 
             raise ValidationError(
                 {
-                    "new_starts_at": (
-                        "Replacement interval overlaps unmaterialized active "
-                        "schedule template occurrence "
-                        f'"{template.lesson_type.name}" at '
-                        f"{starts_at.isoformat()}. Skip the conflicting "
-                        "template occurrence first or choose another time."
+                    "new_starts_at": _resource_template_message(
+                        template=template,
+                        starts_at=starts_at,
+                        resources=resources,
                     )
                 }
             )
