@@ -113,6 +113,11 @@ def _mfa_identity_or_login(request):
             "Сеанс проверки входа отсутствует или истёк. Войдите снова.",
         )
         return None, redirect("login")
+    if (
+        request.user.is_authenticated
+        and not mfa_required_for_user(identity.user)
+    ):
+        return identity, None
     if not identity.user.has_usable_password():
         clear_mfa_transient_session(request)
         if request.user.is_authenticated:
