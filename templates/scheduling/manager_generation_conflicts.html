@@ -15,6 +15,13 @@
       </div>
       {% if row.resolved %}<span class="badge badge--covered">решён</span>{% else %}<span class="badge badge--unknown">требует решения</span>{% endif %}
     </div>
+    {% if row.event.payload.conflict_resource == "coach" %}
+      <p>Причина: тренер уже занят другим занятием в это время.</p>
+    {% elif row.event.payload.conflict_resource == "venue" %}
+      <p>Причина: площадка уже занята другим занятием в это время.</p>
+    {% elif row.event.payload.conflict_resource == "coach_and_venue" %}
+      <p>Причина: и тренер, и площадка уже заняты другим занятием в это время.</p>
+    {% endif %}
     {% if row.conflicting_lesson %}
       <p>Конфликтует с <a href="{% url 'scheduling_manager:lesson_detail' row.conflicting_lesson.id %}">{{ row.conflicting_lesson.lesson_type.name }} · {{ row.conflicting_lesson.starts_at|date:"d.m H:i" }}</a>.</p>
     {% endif %}
