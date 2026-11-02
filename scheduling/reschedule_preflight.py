@@ -6,11 +6,13 @@ from uuid import UUID
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 
+from accounts.models import CoachProfile
 from core.permissions import require_permission
 from core.time import make_school_aware, school_date
 
-from .models import Lesson, ScheduleTemplate, TrainingGroup
+from .models import Lesson, ScheduleTemplate, TrainingGroup, Venue
 
 
 _RESCHEDULABLE_STATUSES = {
@@ -46,14 +48,15 @@ def validate_reschedule_template_occurrences(
 ) -> None:
     """Reject a replacement that would create a later generation conflict.
 
-    ``reschedule_lesson`` already rejects materialized lesson overlaps. This
-    preflight covers the complementary case: an active recurring template has
-    a cross-type occurrence in the target interval, but that occurrence has
-    not been materialized yet.
+    ``reschedule_lesson`` rejects materialized overlaps for the source group,
+    coach, and venue. This preflight covers the complementary case: an active
+    recurring template has a conflicting occurrence in the target interval,
+    but that occurrence has not been materialized yet.
 
     The canonical interactive reschedule workflow calls this before the
-    low-level scheduling transition. Locking the group serializes the check
-    with lesson generation, which takes the same group lock.
+    low-level scheduling transition. Locking the source group, coach, and
+    venue serializes the check with lesson generation, which takes the same
+    resource locks before materializing lessons.
     """
     require_permission(
         actor,
@@ -66,23 +69,40 @@ def validate_reschedule_template_occurrences(
     if new_ends_at <= new_starts_at or new_starts_at <= now:
         return
 
-    source_ref = Lesson.objects.only("group_id").get(pk=lesson_id)
+    source_ref = Lesson.objects.only(
+        "group_id",
+        "coach_id",
+        "venue_id",
+    ).get(pk=lesson_id)
     TrainingGroup.objects.select_for_update().get(pk=source_ref.group_id)
+    CoachProfile.objects.select_for_update().get(pk=source_ref.coach_id)
+    Venue.objects.select_for_update().get(pk=source_ref.venue_id)
     source = (
         Lesson.objects.select_for_update()
-        .only("id", "group_id", "lesson_type_id", "status")
+        .only(
+            "id",
+            "group_id",
+            "lesson_type_id",
+            "coach_id",
+            "venue_id",
+            "status",
+        )
         .get(pk=lesson_id)
     )
     if source.status not in _RESCHEDULABLE_STATUSES:
         return
 
-    # Keep the existing concrete-lesson error as the first conflict shown to
-    # the caller; the low-level service will render the established message.
+    # Keep concrete-lesson errors as the first conflicts shown to the caller;
+    # the low-level service renders the established group/coach/venue message.
     if (
         Lesson.objects.filter(
-            group_id=source.group_id,
             starts_at__lt=new_ends_at,
             ends_at__gt=new_starts_at,
+        )
+        .filter(
+            Q(group_id=source.group_id)
+            | Q(coach_id=source.coach_id)
+            | Q(venue_id=source.venue_id)
         )
         .exclude(pk=source.id)
         .exclude(status=Lesson.Status.CANCELLED)
@@ -91,11 +111,20 @@ def validate_reschedule_template_occurrences(
         return
 
     templates = (
-        ScheduleTemplate.objects.filter(
-            group_id=source.group_id,
-            is_active=True,
+        ScheduleTemplate.objects.filter(is_active=True)
+        .filter(
+            Q(group_id=source.group_id)
+            | Q(coach_id=source.coach_id)
+            | Q(venue_id=source.venue_id)
         )
-        .exclude(lesson_type_id=source.lesson_type_id)
+        # Same-group/same-type occurrences are the established coverage case:
+        # generation reuses the materialized lesson rather than creating a
+        # second lesson. Every other selected template competes for a group or
+        # physical/staff resource.
+        .exclude(
+            group_id=source.group_id,
+            lesson_type_id=source.lesson_type_id,
+        )
         .select_related("lesson_type")
         .order_by("valid_from", "id")
     )
