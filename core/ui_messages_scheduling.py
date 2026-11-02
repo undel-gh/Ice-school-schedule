@@ -65,6 +65,7 @@ SCHEDULING_UI_MESSAGES = {
     "Only an active coach can be assigned to a lesson.": "На занятие можно назначить только активного тренера.",
     "Replacement lesson must end after it starts.": "Перенесённое занятие должно заканчиваться позже начала.",
     "Replacement lesson must start in the future.": "Перенесённое занятие должно начинаться в будущем.",
+    "Lesson scheduling resources changed concurrently. Retry.": "Параметры расписания занятия были изменены одновременно другим действием. Повторите перенос.",
     "Only DRAFT, RSVP_OPEN or CONFIRMED lessons can be rescheduled.": "Перенести можно только черновик, занятие со сбором ответов или подтверждённое занятие.",
     "Only a CONFIRMED lesson can be completed.": "Проведённым можно отметить только подтверждённое занятие.",
     "Lesson cannot be completed before it ends.": "Нельзя завершить занятие до времени его окончания.",
