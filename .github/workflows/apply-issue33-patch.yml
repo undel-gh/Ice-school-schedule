@@ -5,7 +5,7 @@ on:
     branches:
       - fix/scheduling-resource-conflicts
     paths:
-      - .github/issue33.patch
+      - .github/issue33_apply.py
       - .github/workflows/apply-issue33-patch.yml
 
 permissions:
@@ -18,8 +18,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: fix/scheduling-resource-conflicts
-      - name: Apply patch
-        run: git apply --check .github/issue33.patch && git apply .github/issue33.patch
+      - name: Apply deterministic source update
+        run: python .github/issue33_apply.py
       - name: Commit patched sources
         run: |
           git config user.name "github-actions[bot]"
