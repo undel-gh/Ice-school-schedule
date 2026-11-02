@@ -80,7 +80,7 @@
       </form>
       {% endif %}
     {% endif %}
-    {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Журнал покрытия</a></p>{% endif %}
+    {% if perms.audit.view_auditevent %}<p><a href="{% url 'audit_manager:events' %}?aggregate_type=AbsenceCompensationActionGrant&aggregate_id={{ grant.id }}">Журнал действий</a></p>{% endif %}
   </article>
 {% empty %}<div class="empty-state">Право ещё не выдано.</div>{% endfor %}
 </div>
