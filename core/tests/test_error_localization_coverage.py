@@ -64,9 +64,6 @@ DYNAMIC_ERROR_EXAMPLES = {
     "Replacement interval overlaps another non-cancelled lesson at the same venue: {}.": (
         "Replacement interval overlaps another non-cancelled lesson at the same venue: 11111111-1111-1111-1111-111111111111."
     ),
-    'Replacement interval overlaps unmaterialized active schedule template occurrence "{}" at {}. Skip the conflicting template occurrence first or choose another time.': (
-        'Replacement interval overlaps unmaterialized active schedule template occurrence "Зал" at 2026-10-14T18:00:00+03:00. Skip the conflicting template occurrence first or choose another time.'
-    ),
     "Unsupported allowance categories: {}.": (
         "Unsupported allowance categories: ['unknown']."
     ),
