@@ -1,10 +1,19 @@
 {% extends "base.html" %}
+{% load manager_forms %}
 {% block title %}Выдать разовое право{% endblock %}
 {% block content %}
 <header class="page-header"><h1>Выдать разовое право</h1></header>
 <form class="report-card manager-form" method="post">
   {% csrf_token %}{{ form.non_field_errors }}
-  {% for field in form %}<div class="field">{{ field.label_tag }}{{ field }}{% if field.help_text %}<small class="muted">{{ field.help_text }}</small>{% endif %}{% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}</div>{% endfor %}
+  {% for field in form %}
+  <div class="field">
+    {{ field.label_tag }}{{ field }}
+    {% if field.help_text %}<div class="field-help" id="{{ field.auto_id }}_helptext">{{ field.help_text }}</div>{% endif %}
+    {% manager_choice_empty_state field as empty_state %}
+    {% if empty_state %}<div class="field-empty-state">{{ empty_state }}</div>{% endif %}
+    {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
+  </div>
+  {% endfor %}
   <button class="btn-primary" type="submit">Выдать</button>
 </form>
 {% endblock %}

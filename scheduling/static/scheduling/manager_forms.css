@@ -1,0 +1,14 @@
+.field-help {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.field-empty-state {
+  padding: 0.55rem 0.65rem;
+  text-align: left;
+  color: var(--muted);
+  background: var(--surface-muted);
+  border: 0;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
