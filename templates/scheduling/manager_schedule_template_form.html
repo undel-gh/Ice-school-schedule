@@ -12,7 +12,7 @@
       {{ field }}
       {% if field.help_text %}<div class="field-help">{{ field.help_text }}</div>{% endif %}
       {% manager_choice_empty_state field as empty_state %}
-      {% if empty_state %}<div class="empty-state">{{ empty_state }}</div>{% endif %}
+      {% if empty_state %}<div class="field-empty-state">{{ empty_state }}</div>{% endif %}
       {% for error in field.errors %}<div class="form-error">{{ error }}</div>{% endfor %}
     </div>
   {% endfor %}
