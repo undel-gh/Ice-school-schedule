@@ -4,13 +4,18 @@ from datetime import timedelta
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.forms import ModelChoiceField
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 
-from accounts.forms import CoachProfileForm
-from accounts.models import CoachProfile, Student
+from accounts.forms import AccountInvitationForm, CoachProfileForm, StudentAccessForm
+from accounts.models import CoachProfile, Student, StudentAccess
 from core.choices import SubscriptionCategory
+from core.templatetags.manager_forms import (
+    MANAGER_CHOICE_EMPTY_STATES,
+    manager_choice_empty_state,
+)
 from scheduling.forms import ManagerScheduleTemplateForm
 from scheduling.models import Lesson, LessonType, TrainingGroup, Venue
 from subscriptions.forms import ManagerSubscriptionIssueForm
@@ -28,6 +33,38 @@ def manager(db):
         is_staff=True,
         is_superuser=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("form_class", "field_name"),
+    list(MANAGER_CHOICE_EMPTY_STATES),
+    ids=[
+        f"{form_class.__name__}.{field_name}"
+        for form_class, field_name in MANAGER_CHOICE_EMPTY_STATES
+    ],
+)
+def test_empty_state_registry_points_to_model_choice_fields(form_class, field_name):
+    assert field_name in form_class.base_fields
+    assert isinstance(form_class.base_fields[field_name], ModelChoiceField)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("form_class", "field_name", "expected"),
+    [
+        (form_class, field_name, message)
+        for (form_class, field_name), message in MANAGER_CHOICE_EMPTY_STATES.items()
+    ],
+    ids=[
+        f"{form_class.__name__}.{field_name}"
+        for form_class, field_name in MANAGER_CHOICE_EMPTY_STATES
+    ],
+)
+def test_every_registered_empty_state_resolves(form_class, field_name, expected):
+    form = form_class()
+    form.fields[field_name].queryset = form.fields[field_name].queryset.none()
+
+    assert manager_choice_empty_state(form[field_name]) == expected
 
 
 @pytest.mark.django_db
@@ -146,3 +183,58 @@ def test_coach_form_explains_missing_account_candidates():
     )
 
     assert "Нет активных пользователей без профиля тренера" in body
+
+
+@pytest.mark.django_db
+def test_student_access_empty_state_points_to_existing_access():
+    student = Student.objects.create(display_name="Ученица с доступом")
+    user = User.objects.create_user(username="existing-access", password="test")
+    StudentAccess.objects.create(
+        user=user,
+        student=student,
+        role=StudentAccess.Role.GUARDIAN,
+        is_active=False,
+    )
+    form = StudentAccessForm(student=student)
+
+    body = render_to_string(
+        "accounts/manager_student_access_form.html",
+        {
+            "form": form,
+            "title": "Новый доступ",
+            "student": student,
+        },
+    )
+
+    assert not form.fields["user"].queryset.exists()
+    assert "измените или включите существующий доступ" in body
+
+
+@pytest.mark.django_db
+def test_invitation_empty_states_are_field_specific():
+    body = render_to_string(
+        "accounts/manager_invitation_form.html",
+        {"form": AccountInvitationForm()},
+    )
+
+    assert "Нет активных учеников для приглашения" in body
+    assert "Нет неактивных непривилегированных аккаунтов для восстановления" in body
+    assert body.count('class="field-empty-state"') >= 2
+
+
+@pytest.mark.django_db
+def test_invitation_empty_states_disappear_when_candidates_exist():
+    Student.objects.create(display_name="Ученица для приглашения")
+    User.objects.create_user(
+        username="recovery-candidate",
+        password="test",
+        is_active=False,
+    )
+
+    body = render_to_string(
+        "accounts/manager_invitation_form.html",
+        {"form": AccountInvitationForm()},
+    )
+
+    assert "Нет активных учеников для приглашения" not in body
+    assert "Нет неактивных непривилегированных аккаунтов для восстановления" not in body
