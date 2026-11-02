@@ -52,6 +52,33 @@ def test_nonprivileged_user_without_local_password_keeps_session_on_mfa_challeng
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("url_name", "expected_status", "expected_url_name"),
+    [
+        ("mfa:setup", 302, "scheduling:home"),
+        ("mfa:setup_qr", 404, None),
+    ],
+)
+def test_nonprivileged_user_without_password_is_not_logged_out_by_mfa_get(
+    url_name,
+    expected_status,
+    expected_url_name,
+):
+    client = Client()
+    user = User.objects.create_user(username="oauth-only-mfa-get-user")
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    client.force_login(user)
+
+    response = client.get(reverse(url_name))
+
+    assert response.status_code == expected_status
+    if expected_url_name is not None:
+        assert response.url == reverse(expected_url_name)
+    assert str(client.session["_auth_user_id"]) == str(user.id)
+
+
+@pytest.mark.django_db
 def test_unverified_privileged_session_still_requires_fresh_login_on_mfa_challenge():
     client = Client()
     user = User.objects.create_superuser(
