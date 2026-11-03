@@ -776,7 +776,7 @@ def create_group_membership(
             ends_on=ends_on,
             other=membership,
         )
-        for other in existing
+        for membership in existing
     ):
         raise ValidationError(
             {
