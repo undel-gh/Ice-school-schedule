@@ -1962,6 +1962,10 @@ def publish_lesson(
         raise ValidationError(
             {"lesson": "Only a DRAFT lesson can be published."}
         )
+    if now > lesson.rsvp_deadline:
+        raise ValidationError(
+            {"lesson": "Lesson cannot be published after its RSVP deadline."}
+        )
 
     if not lesson.group.is_active:
         raise ValidationError(
@@ -2535,6 +2539,20 @@ def reschedule_lesson(
             }
         )
 
+    rsvp_lead = source.starts_at - source.rsvp_deadline
+    decision_lead = source.starts_at - source.decision_deadline
+    replacement_rsvp_deadline = new_starts_at - rsvp_lead
+    replacement_decision_deadline = new_starts_at - decision_lead
+    if replacement_rsvp_deadline <= now:
+        raise ValidationError(
+            {
+                "new_starts_at": (
+                    "Replacement lesson RSVP deadline must remain in the future. "
+                    "Choose a later start time."
+                )
+            }
+        )
+
     conflicting_lessons = list(
         Lesson.objects.filter(
             Q(group_id=source.group_id)
@@ -2602,9 +2620,6 @@ def reschedule_lesson(
             }
         )
 
-    rsvp_lead = source.starts_at - source.rsvp_deadline
-    decision_lead = source.starts_at - source.decision_deadline
-
     replacement = Lesson.objects.create(
         source_template=None,
         group_id=source.group_id,
@@ -2614,8 +2629,8 @@ def reschedule_lesson(
         starts_at=new_starts_at,
         ends_at=new_ends_at,
         minimum_attendees=source.minimum_attendees,
-        rsvp_deadline=new_starts_at - rsvp_lead,
-        decision_deadline=new_starts_at - decision_lead,
+        rsvp_deadline=replacement_rsvp_deadline,
+        decision_deadline=replacement_decision_deadline,
         status=Lesson.Status.DRAFT,
     )
 
