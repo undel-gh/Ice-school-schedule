@@ -628,7 +628,7 @@ def restore_group_membership_from_reservation(
     )
     membership = GroupMembership.objects.create(
         student_id=reservation.student_id,
-        group_id=reservation.group_id,
+        group=group,
         starts_on=starts_on,
         ends_on=ends_on,
         created_by=actor,
@@ -776,7 +776,7 @@ def create_group_membership(
             ends_on=ends_on,
             other=membership,
         )
-        for membership in existing
+        for other in existing
     ):
         raise ValidationError(
             {
