@@ -44,6 +44,12 @@ _ABSENCE_REASON_LABELS = {
     "other": "другой причины отсутствия",
 }
 
+_RESOURCE_LABELS = {
+    "coach": "тем же тренером",
+    "venue": "той же площадкой",
+    "coach and venue": "тем же тренером и той же площадкой",
+}
+
 
 def format_ui_date(value: str) -> str:
     try:
@@ -186,6 +192,18 @@ _DYNAMIC_PATTERNS = (
         ),
     ),
     (
+        re.compile(r'^Replacement interval overlaps another non-cancelled lesson with the same coach: (?P<id>[0-9a-f-]+)\.$'),
+        lambda m: (
+            f"Новое время пересекается с {_lesson_instrumental(m.group('id'))} того же тренера."
+        ),
+    ),
+    (
+        re.compile(r'^Replacement interval overlaps another non-cancelled lesson at the same venue: (?P<id>[0-9a-f-]+)\.$'),
+        lambda m: (
+            f"Новое время пересекается с {_lesson_instrumental(m.group('id'))} на той же площадке."
+        ),
+    ),
+    (
         re.compile(
             r'^Replacement interval overlaps unmaterialized active schedule template '
             r'occurrence "(?P<lesson_type>.+)" at (?P<starts_at>.+)\. '
@@ -194,6 +212,20 @@ _DYNAMIC_PATTERNS = (
         lambda m: (
             "Новое время пересекается с регулярным занятием "
             f"«{m.group('lesson_type')}» {format_ui_datetime(m.group('starts_at'))}. "
+            "Явно пропустите конфликтующее занятие шаблона или выберите другое время."
+        ),
+    ),
+    (
+        re.compile(
+            r'^Replacement interval overlaps unmaterialized active schedule template '
+            r'occurrence using the same (?P<resources>coach|venue|coach and venue) '
+            r'"(?P<lesson_type>.+)" at (?P<starts_at>.+)\. '
+            r'Skip the conflicting template occurrence first or choose another time\.$'
+        ),
+        lambda m: (
+            "Новое время пересекается с регулярным занятием "
+            f"«{m.group('lesson_type')}» {format_ui_datetime(m.group('starts_at'))}, "
+            f"связанным с {_label(_RESOURCE_LABELS, m.group('resources'))}. "
             "Явно пропустите конфликтующее занятие шаблона или выберите другое время."
         ),
     ),

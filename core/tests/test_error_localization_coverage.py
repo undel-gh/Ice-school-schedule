@@ -58,8 +58,11 @@ DYNAMIC_ERROR_EXAMPLES = {
     "Replacement interval overlaps another non-cancelled lesson of this group: {}.": (
         "Replacement interval overlaps another non-cancelled lesson of this group: 11111111-1111-1111-1111-111111111111."
     ),
-    'Replacement interval overlaps unmaterialized active schedule template occurrence "{}" at {}. Skip the conflicting template occurrence first or choose another time.': (
-        'Replacement interval overlaps unmaterialized active schedule template occurrence "Зал" at 2026-10-14T18:00:00+03:00. Skip the conflicting template occurrence first or choose another time.'
+    "Replacement interval overlaps another non-cancelled lesson with the same coach: {}.": (
+        "Replacement interval overlaps another non-cancelled lesson with the same coach: 11111111-1111-1111-1111-111111111111."
+    ),
+    "Replacement interval overlaps another non-cancelled lesson at the same venue: {}.": (
+        "Replacement interval overlaps another non-cancelled lesson at the same venue: 11111111-1111-1111-1111-111111111111."
     ),
     "Unsupported allowance categories: {}.": (
         "Unsupported allowance categories: ['unknown']."
@@ -199,6 +202,12 @@ def test_dynamic_ui_errors_hide_known_technical_values():
         f'occurrence "Зал" at {template_conflict_iso}. Skip the conflicting '
         'template occurrence first or choose another time.'
     )
+    resource_template_conflict = localize_message(
+        "Replacement interval overlaps unmaterialized active schedule template "
+        "occurrence using the same coach and venue \"Лёд\" at "
+        f"{template_conflict_iso}. Skip the conflicting template occurrence first "
+        "or choose another time."
+    )
     expected_template_start = format_school_datetime(
         datetime.fromisoformat(template_conflict_iso)
     )
@@ -221,6 +230,11 @@ def test_dynamic_ui_errors_hide_known_technical_values():
     assert "Зал" in template_conflict
     assert expected_template_start in template_conflict
     assert template_conflict_iso not in template_conflict
+    assert "Лёд" in resource_template_conflict
+    assert expected_template_start in resource_template_conflict
+    assert template_conflict_iso not in resource_template_conflict
+    assert "coach" not in resource_template_conflict
+    assert "venue" not in resource_template_conflict
     assert "unexcused" not in compensation
     assert "2026-10-01" not in compensation
     assert "01.10.2026" in compensation
@@ -259,6 +273,12 @@ def test_lesson_conflict_messages_show_school_local_start(monkeypatch):
         + lesson_id
         + ".",
         "Replacement interval overlaps another non-cancelled lesson of this group: "
+        + lesson_id
+        + ".",
+        "Replacement interval overlaps another non-cancelled lesson with the same coach: "
+        + lesson_id
+        + ".",
+        "Replacement interval overlaps another non-cancelled lesson at the same venue: "
         + lesson_id
         + ".",
     )
