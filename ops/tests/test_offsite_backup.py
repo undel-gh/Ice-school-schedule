@@ -24,6 +24,14 @@ with Path(os.environ["MOCK_RESTIC_CALLS"]).open("a") as stream:
     stream.write(json.dumps(sys.argv[1:]) + "\\n")
 if os.environ.get("MOCK_RESTIC_FAIL") in sys.argv:
     sys.exit(13)
+remote = Path(os.environ["MOCK_REMOTE_STATE"])
+if "backup" in sys.argv:
+    remote.write_text(sys.argv[-1])
+elif "snapshots" in sys.argv:
+    if remote.exists():
+        print(json.dumps([{"paths": [remote.read_text()]}]))
+    else:
+        print("[]")
 """
 
 
@@ -43,6 +51,7 @@ def uploader(tmp_path):
     creds = tmp_path / "credentials"
     creds.write_text("[default]\naws_access_key_id=test\naws_secret_access_key=test\n")
     calls = tmp_path / "calls.jsonl"
+    remote = tmp_path / "remote-path"
     env = dict(
         os.environ,
         PATH=str(fake) + os.pathsep + os.environ["PATH"],
@@ -52,6 +61,7 @@ def uploader(tmp_path):
         OFFSITE_BACKUP_DIR=str(backup),
         OFFSITE_STATUS_DIR=str(state),
         MOCK_RESTIC_CALLS=str(calls),
+        MOCK_REMOTE_STATE=str(remote),
     )
 
     def invoke(**extra):
@@ -75,7 +85,7 @@ def uploader(tmp_path):
 
     return dict(
         backup=backup, state=state, invoke=invoke,
-        health=health, calls=restic_calls,
+        health=health, calls=restic_calls, remote=remote, env=env,
     )
 
 
@@ -113,11 +123,14 @@ def test_upload_retention_and_idempotency(uploader):
     assert calls[0][calls[0].index("--group-by") + 1] == "host,tags"
     assert "forget" in calls[1] and "--prune" in calls[1]
     assert calls[1][calls[1].index("--group-by") + 1] == "host,tags"
-    assert (uploader["state"] / "last_uploaded").read_text().strip() == latest.name
+    assert (uploader["state"] / "last_uploaded").read_text().strip().endswith(
+        " " + latest.name
+    )
     assert uploader["health"]().returncode == 0
     repeated = uploader["invoke"]()
     assert repeated.returncode == 0
-    assert len(uploader["calls"]()) == 2
+    assert len(uploader["calls"]()) == 3
+    assert "snapshots" in uploader["calls"]()[-1]
 
 
 @pytest.mark.parametrize("failure", ["backup", "forget"])
@@ -154,3 +167,21 @@ def test_stale_health_marker_is_unhealthy(uploader):
         BACKUP_INTERVAL_SECONDS="60",
         OFFSITE_HEALTH_GRACE_SECONDS="0",
     ).returncode != 0
+
+
+def test_changed_repository_reuploads_dump(uploader):
+    add_dump(uploader)
+    assert uploader["invoke"]().returncode == 0
+    updated = uploader["invoke"](RESTIC_REPOSITORY="/different-repository")
+    assert updated.returncode == 0, updated.stderr
+    assert sum("backup" in c for c in uploader["calls"]()) == 2
+
+
+def test_deleted_remote_snapshot_reuploaded(uploader):
+    add_dump(uploader)
+    assert uploader["invoke"]().returncode == 0
+    uploader["remote"].unlink()
+    result = uploader["invoke"]()
+    assert result.returncode == 0, result.stderr
+    assert "remote_snapshot_missing_or_unreachable" in result.stdout
+    assert sum("backup" in c for c in uploader["calls"]()) == 2

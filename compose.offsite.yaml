@@ -13,6 +13,7 @@ services:
     hostname: ice-school-offsite
     environment:
       RESTIC_REPOSITORY: ${OFFSITE_RESTIC_REPOSITORY:?set S3 repository URL}
+      AWS_DEFAULT_REGION: ${OFFSITE_AWS_REGION:-us-east-1}
       RESTIC_PASSWORD_FILE: /run/secrets/offsite_restic_password
       AWS_SHARED_CREDENTIALS_FILE: /run/secrets/offsite_aws_credentials
       OFFSITE_BACKUP_DIR: /backups

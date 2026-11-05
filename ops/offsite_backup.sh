@@ -48,13 +48,21 @@ run_once() {
   [ -n "$dump" ] || { fail no_verified_dump; return 1; }
   [ -r "$dump" ] || { fail dump_not_readable; return 1; }
   dump_name="$(basename "$dump")"
+  # Bind the acknowledgement to the repository URL. Switching endpoints
+  # must never let a marker for the old repository suppress new uploads.
+  repo_id="$(printf '%s' "$RESTIC_REPOSITORY" | sha256sum | cut -d ' ' -f 1)"
   previous=""
   if [ -f "$MARKER" ]; then
     IFS= read -r previous < "$MARKER" || true
   fi
-  if [ "$previous" = "$dump_name" ] && [ -f "$SUCCESS" ]; then
-    log "already_uploaded dump=$dump_name"
-    return 0
+  if [ "$previous" = "$repo_id $dump_name" ] && [ -f "$SUCCESS" ]; then
+    # The repository may have been replaced/deleted after our last success.
+    # Verify that the referenced dump still occurs in remote snapshots.
+    if restic --retry-lock 10m snapshots --json --host "$RESTIC_HOST"         --tag ice-school-postgres | grep -Fq "$dump_name"; then
+      log "already_uploaded dump=$dump_name"
+      return 0
+    fi
+    log "remote_snapshot_missing_or_unreachable dump=$dump_name"
   fi
 
   log "start dump=$dump_name"
@@ -71,7 +79,7 @@ run_once() {
     return 1
   fi
   temp="$STATUS_DIR/last_uploaded.$$"
-  if ! printf '%s\n' "$dump_name" > "$temp"; then
+  if ! printf '%s\n' "$repo_id $dump_name" > "$temp"; then
     fail status_write
     return 1
   fi
