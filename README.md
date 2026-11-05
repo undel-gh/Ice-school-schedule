@@ -277,7 +277,25 @@ docker compose --env-file .env.production -f compose.production.yaml \
   exec backup /ops/postgres_backup.sh --once
 ```
 
-Локальный каталог `backups/` не является полной backup-стратегией. Проверенные дампы должны копироваться в защищенное off-host хранилище; восстановление необходимо периодически тестировать. В текущем Compose контейнер `backup` работает от root, а `umask 077` обычно создает dump-файлы как `root:root 0600`; непривилегированному `deploy` для чтения/копирования таких файлов может потребоваться `sudo` или копирование через контейнер.
+Локальные дампы **не зашифрованы**, создаются как `root:root 0600` и остаются полезными для быстрого восстановления. Сами по себе они **не защищают** от потери или компрометации VPS.
+
+### Зашифрованные off-site backups — Issue #35
+
+Опциональный `compose.offsite.yaml` запускает отдельный `offsite-backup` сервис с Restic. Он берёт только завершённые `ice_school_*.dump`, шифрует их **до отправки** на S3-compatible endpoint через HTTPS, применяет отдельный remote retention (14 daily / 8 weekly / 12 monthly) и публикует Docker healthcheck. Данные удалённого репозитория нельзя восстановить без отдельного пароля. Секреты берутся из двух файлов на сервере через Docker secrets и **не лежат в backup repository или Git**.
+
+В `.env.production` активируйте `OFFSITE_ENABLED=1`, задайте `OFFSITE_RESTIC_REPOSITORY=s3:https://s3.example.net/school-bucket/restic`, `OFFSITE_RESTIC_PASSWORD_HOST_FILE` и `OFFSITE_AWS_CREDENTIALS_HOST_FILE` (абсолютные пути к файлам `0600` вне Git checkout). Предварительно создайте отдельный bucket и Restic repository (см. [руководство системного администратора](docs/Эксплуатационная%20документация/01_Руководство_системного_администратора.md)).
+
+После инициализации:
+
+```bash
+./install.sh update
+./install.sh status
+```
+
+При `OFFSITE_ENABLED=1` скрипт **не запускает миграции**, если свежий локальный dump не был успешно выгружен в encrypted off-site repository. При `OFFSITE_ENABLED=0` совместимость со старой установкой сохраняется, но `status` выводит явное предупреждение — это **незакрытый операционный риск**, а не рабочее резервирование.
+
+CI создаёт изолированный Restic repository, шифрует реальный PostgreSQL dump, проверяет `restic check --read-data`, восстанавливает архив **без доступа к первоначальным файлам** и сверяет его побайтно. Окончательная приёмка требует отдельного реального restore-упражнения из S3 на другом хосте, а также внешнего алерта на отсутствие `OFFSITE_SUCCESS_PING_URL` и unhealthy `offsite-backup`.
+
 
 ## Мониторинг
 
