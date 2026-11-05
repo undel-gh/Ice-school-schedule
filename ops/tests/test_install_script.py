@@ -429,8 +429,10 @@ def test_reinstall_preserves_data_and_requires_healthy_db(stack):
 
 def enable_offsite(stack):
     root = stack["root"]
-    password = root / "restic-password"
-    credentials = root / "aws-credentials"
+    secret_dir = root.parent / (root.name + "-offsite-secrets")
+    secret_dir.mkdir()
+    password = secret_dir / "restic-password"
+    credentials = secret_dir / "aws-credentials"
     password.write_text("secret-passphrase-for-tests")
     credentials.write_text("[default]\naws_access_key_id=test\naws_secret_access_key=test\n")
     password.chmod(0o600)

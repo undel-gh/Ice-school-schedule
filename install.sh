@@ -208,6 +208,9 @@ validate_offsite() {
     path="${CFG[$key]:-}"
     [[ "$path" == /* && -f "$path" && ! -L "$path" ]] ||
       die "$key must be an absolute path to a regular non-symlink file"
+    path="$(realpath -e "$path")" || die "$key cannot be resolved safely"
+    [[ "$path" != "$ROOT_DIR" && "$path" != "$ROOT_DIR/"* ]] ||
+      die "$key must be outside the Git checkout and local backups"
     mode="$(stat -c '%a' "$path")"
     [[ "$mode" =~ ^[0-7]+$ ]] && (( (8#$mode & 077) == 0 )) ||
       die "$key must not be readable by group or others (chmod 600)"
