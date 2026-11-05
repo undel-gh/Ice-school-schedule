@@ -200,7 +200,7 @@ def test_ordinary_disable_requires_password_and_a_fresh_otp():
         reverse("mfa:optional_disable"),
         {
             "password": PASSWORD,
-            "otp_device": recovery.persistent_id,
+            "otp_device": device.persistent_id,
             "otp_token": "invalid",
         },
     )
