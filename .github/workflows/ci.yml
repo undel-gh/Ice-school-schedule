@@ -86,6 +86,22 @@ jobs:
           sed -i 's/^DJANGO_SECRET_KEY=.*/DJANGO_SECRET_KEY=ci-production-strong-secret-not-for-real-use-1234567/' .env.production
           sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-production-strong-db-password-1234567/' .env.production
           chmod 600 .env.production
+      - name: Validate optional encrypted offsite overlay
+        run: |
+          mkdir -p "$RUNNER_TEMP/ice-offsite-secrets"
+          printf '%s\n' 'ci-only-restic-password' > "$RUNNER_TEMP/ice-offsite-secrets/password"
+          printf '%s\n' '[default]' 'aws_access_key_id=ci' 'aws_secret_access_key=ci' > "$RUNNER_TEMP/ice-offsite-secrets/credentials"
+          chmod 600 "$RUNNER_TEMP/ice-offsite-secrets/"*
+          cp .env.production .env.offsite.ci
+          {
+            echo "OFFSITE_ENABLED=1"
+            echo "OFFSITE_RESTIC_REPOSITORY=s3:https://s3.example.invalid/school-backups"
+            echo "OFFSITE_RESTIC_PASSWORD_HOST_FILE=$RUNNER_TEMP/ice-offsite-secrets/password"
+            echo "OFFSITE_AWS_CREDENTIALS_HOST_FILE=$RUNNER_TEMP/ice-offsite-secrets/credentials"
+          } >> .env.offsite.ci
+          chmod 600 .env.offsite.ci
+          docker compose --env-file .env.offsite.ci \
+            -f compose.production.yaml -f compose.offsite.yaml config --quiet
       - name: Build production image
         run: docker build -t ice-school-app:local .
       - name: Validate production Compose
