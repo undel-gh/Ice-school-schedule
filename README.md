@@ -143,6 +143,27 @@ backup    -> verified PostgreSQL custom-format dumps
 
 PostgreSQL не публикуется на host network. Gunicorn доступен только внутри Compose network. Caddy является единственной публичной точкой входа.
 
+### Рекомендуемый путь — installation script
+
+Запускайте команды из доверенного Git checkout проекта на production Linux-сервере. Нужны Bash, Git, Docker Engine и Docker Compose v2+, а также доступ текущего пользователя к Docker daemon. Docker API эквивалентен root-доступу — не доверяйте скрипт случайным пользователям.
+
+~~~bash
+./install.sh install       # при первом запуске создает .env.production и останавливается
+# отредактируйте .env.production (секреты, APP_HOST, DNS, timezone), chmod 600
+./install.sh install       # проверка env/Compose, build, migration gate, web health
+./install.sh status        # revision, состояние контейнеров и health
+./install.sh update        # backup, origin/main, build, migrations, rollout
+./install.sh update --ref v1.2.3   # проверенный tag/commit/branch
+./install.sh reinstall    # backup + rebuild + recreate, без удаления данных
+./install.sh uninstall    # остановить/удалить контейнеры; тома/backup/env сохранить
+~~~
+
+Для принудительного уничтожения **именованных Docker volumes**, включая PostgreSQL и Caddy, существует только `./install.sh uninstall --purge-data`. Операция требует терминала и ввода `PURGE <APP_HOST>`. `.env.production` и backup-файлы в host bind mount даже в этом режиме не удаляются. **Не вызывайте** purge при обычной переустановке.
+
+Важные инварианты: `update` откажется работать с грязным Git checkout, выполнит подтверждённый `pg_dump` через существующий backup service **до checkout/build/migrations** и остановится при любой ошибке; migrate запускается из нового образа как одноразовый Compose service, а `web` переключается только после успешного migration gate. Обновление схемы может быть несовместимо со старой версией, поэтому для breaking migrations нужен согласованный downtime и отдельный restore/forward-fix план. Скрипт не выполняет откат БД автоматически.
+
+Ниже сохранён **ручной fallback** на случай отладки или недоступности скрипта. При ручном deploy всегда контролируйте build, exit code миграций и /healthz/.
+
 ### Минимальная подготовка
 
 ```bash
@@ -164,7 +185,7 @@ chmod 700 backups
 
 До запуска Caddy публичный DNS должен указывать на сервер, а TCP 80/443 — быть доступен для получения/обновления TLS-сертификатов.
 
-### Первый запуск
+### Первый запуск (ручной fallback)
 
 ```bash
 docker compose --env-file .env.production -f compose.production.yaml config >/dev/null
@@ -186,7 +207,7 @@ curl -fsS https://<school-host>/healthz/ ; echo
 
 Подробный процесс первого развертывания, обновления, backup/restore, monitoring, MFA recovery и incident handling находится в [руководстве системного администратора](docs/Эксплуатационная%20документация/01_Руководство_системного_администратора.md).
 
-## Обновление production
+## Обновление production (ручной fallback)
 
 Критически важно: `git pull` сам по себе не обновляет код внутри уже запущенного Docker image.
 
