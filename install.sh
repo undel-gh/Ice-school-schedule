@@ -38,6 +38,14 @@ HELP
 on_exit() {
   local code=$?
   trap - EXIT
+  # Candidate tags are disposable: after promotion the release tag retains
+  # the image, while on failure the release tag was never modified.
+  # Housekeeping must not override the command's original exit status.
+  if [[ -n "$CANDIDATE_IMAGE_TAG" ]]; then
+    if ! docker image rm "ice-school-app:$CANDIDATE_IMAGE_TAG" >/dev/null 2>&1; then
+      info "WARNING: could not remove temporary image tag ice-school-app:$CANDIDATE_IMAGE_TAG"
+    fi
+  fi
   if (( code != 0 )) && [[ "$ACTION" == update ]]; then
     if (( CHECKED_OUT == 1 && MIGRATION_STARTED == 0 )); then
       info "Update failed before migrations; restoring source revision $OLD_SHA"

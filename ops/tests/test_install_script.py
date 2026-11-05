@@ -47,6 +47,9 @@ if args[:2] == ["image", "tag"]:
     if os.environ.get("MOCK_TAG_FAIL") == "1":
         sys.exit(44)
     Path(os.environ["MOCK_RELEASE_IMAGE_STATE"]).write_text(args[2])
+elif args[:2] == ["image", "rm"]:
+    if os.environ.get("MOCK_IMAGE_RM_FAIL") == "1":
+        sys.exit(45)
 elif args[0] == "info":
     print("27.4.0")
 elif args[0] == "inspect":
@@ -257,6 +260,64 @@ def test_image_tag_stays_consistent_with_production_compose(stack):
         x[0] == "compose-tag" and x[1] == "release-1" and "web" in x[2]
         for x in calls
     )
+
+
+def test_candidate_cleanup_after_successful_rollout(stack):
+    response = stack["invoke"]("update", "--ref", "v1.2.3")
+    calls = stack["docker_calls"]()
+    promotion = next(
+        (i, x) for i, x in enumerate(calls) if x[:2] == ["image", "tag"]
+    )
+    removals = [
+        (i, x) for i, x in enumerate(calls) if x[:2] == ["image", "rm"]
+    ]
+
+    assert response.returncode == 0, response.stderr
+    assert len(removals) == 1
+    assert removals[0][1] == ["image", "rm", promotion[1][2]]
+    assert removals[0][0] > promotion[0]
+    assert stack["release_state"].read_text() == promotion[1][2]
+
+
+def test_candidate_cleanup_after_migration_failure_preserves_release(stack):
+    response = stack["invoke"](
+        "update", "--ref", "v1.2.3", MOCK_MIGRATION_FAIL="1"
+    )
+    calls = stack["docker_calls"]()
+    build_tag = next(
+        x[1] for x in calls
+        if x[0] == "compose-tag" and "build" in x[2]
+    )
+
+    assert response.returncode != 0
+    assert [x for x in calls if x[:2] == ["image", "rm"]] == [
+        ["image", "rm", "ice-school-app:" + build_tag]
+    ]
+    assert not any(x[:2] == ["image", "tag"] for x in calls)
+    assert stack["release_state"].read_text() == "old-release-image"
+
+
+def test_cleanup_failure_does_not_change_operation_exit_status(stack):
+    succeeded = stack["invoke"]("reinstall", MOCK_IMAGE_RM_FAIL="1")
+    assert succeeded.returncode == 0, succeeded.stderr
+    assert "could not remove temporary image tag" in succeeded.stdout
+    release = stack["release_state"].read_text()
+    assert release.startswith("ice-school-app:candidate-")
+
+    failed = stack["invoke"](
+        "update", "--ref", "v1.2.3",
+        MOCK_MIGRATION_FAIL="1", MOCK_IMAGE_RM_FAIL="1",
+    )
+    assert failed.returncode != 0
+    assert "Migration gate failed" in failed.stderr
+    assert "could not remove temporary image tag" in failed.stdout
+    assert stack["release_state"].read_text() == release
+
+
+def test_no_candidate_cleanup_when_backup_fails_before_build(stack):
+    response = stack["invoke"]("update", MOCK_BACKUP_FAIL="1")
+    assert response.returncode != 0
+    assert not any(x[:2] == ["image", "rm"] for x in stack["docker_calls"]())
 
 
 def test_update_backup_failure_blocks_fetch_build_and_rollout(stack):
