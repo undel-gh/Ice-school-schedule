@@ -7,6 +7,7 @@ from django.contrib import messages
 from django.contrib.auth import login as django_login
 from django.contrib.auth import logout as django_logout
 from django.contrib.auth.views import LoginView
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
@@ -577,7 +578,7 @@ def mfa_optional_disable(request):
         )
 
     with transaction.atomic():
-        locked_user = type(user).objects.select_for_update().get(pk=user.pk)
+        locked_user = get_user_model().objects.select_for_update().get(pk=user.pk)
         if mfa_required_for_user(locked_user):
             return redirect("mfa:security")
         TOTPDevice.objects.filter(user=locked_user).delete()
