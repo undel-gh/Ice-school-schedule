@@ -236,11 +236,17 @@ backup_once() {
 }
 
 set_image_tag() {
-  local sha
+  local sha tag
   sha="$(git -C "$ROOT_DIR" rev-parse --verify HEAD)" ||
     die "Cannot identify source revision"
-  export APP_IMAGE_TAG="git-${sha:0:12}"
-  info "Application revision: $sha (image: $APP_IMAGE_TAG)"
+  # Match the image reference used by manual Compose operations. Exporting a
+  # transient commit tag would cause a later plain 'docker compose up' to
+  # select the old :local image unless .env.production were modified.
+  tag="${CFG[APP_IMAGE_TAG]:-local}"
+  [[ "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
+    die "APP_IMAGE_TAG must be a valid Docker tag"
+  export APP_IMAGE_TAG="$tag"
+  info "Application revision: $sha (Compose image tag: $APP_IMAGE_TAG)"
 }
 
 migration_gate() {
