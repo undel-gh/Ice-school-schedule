@@ -7,6 +7,9 @@ on:
 jobs:
   deployment-script:
     runs-on: ubuntu-latest
+    env:
+      DJANGO_DEBUG: '1'
+      DJANGO_SECRET_KEY: ci-install-script-tests-only
     steps:
       - uses: actions/checkout@v4
       - name: Validate Bash syntax and ShellCheck
