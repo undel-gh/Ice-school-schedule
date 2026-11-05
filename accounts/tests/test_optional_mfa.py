@@ -288,7 +288,7 @@ def test_oauth_with_password_and_totp_remains_single_factor_for_ordinary_user(
 
     assert callback.url == reverse("scheduling:home")
     assert client.session[MFA_LOGIN_METHOD_SESSION_KEY] == "external"
-    assert client.get(reverse("scheduling:home")).status_code == 200
+    assert client.get(reverse("external_auth:identities")).status_code == 200
     assert client.get(reverse("mfa:challenge")).url == reverse("scheduling:home")
     assert str(client.session["_auth_user_id"]) == str(user.id)
     # Security controls are restricted to local password + verified MFA.
@@ -323,6 +323,7 @@ def test_ordinary_user_can_enable_totp_from_oauth_session_with_password():
     )
 
     assert started.url == reverse("mfa:setup")
+    assert client.get(reverse("mfa:setup")).status_code == 200
     device = TOTPDevice.objects.get(user=user, confirmed=False)
     confirmed = client.post(
         reverse("mfa:setup"), {"token": _token(device)}
