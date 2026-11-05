@@ -26,6 +26,8 @@ from audit.services import record_event
 from .mfa import (
     MFA_RECOVERY_CODES_SESSION_KEY,
     MFA_SETUP_DEVICE_SESSION_KEY,
+    MFA_VERIFIED_AT_SESSION_KEY,
+    MFA_LOGIN_METHOD_SESSION_KEY,
     authenticated_mfa_setup_is_authorized,
     authorize_authenticated_mfa_setup,
     begin_mfa_preauth,
@@ -33,14 +35,21 @@ from .mfa import (
     clear_mfa_transient_session,
     has_confirmed_mfa_device,
     has_confirmed_totp,
+    local_password_login_requires_mfa,
     mark_privileged_mfa_verified,
     mfa_required_for_user,
     pop_mfa_next,
     privileged_mfa_verification_is_fresh,
+    remember_mfa_next,
     resolve_mfa_identity,
     totp_replacement_old_device_ids,
 )
-from .mfa_forms import LocalizedOTPTokenForm, MFAPasswordReauthForm, MFASetupTokenForm
+from .mfa_forms import (
+    LocalizedOTPTokenForm,
+    MFAPasswordReauthForm,
+    MFAOptionalDisableForm,
+    MFASetupTokenForm,
+)
 
 
 RECOVERY_CODE_COUNT = 10
@@ -66,14 +75,58 @@ def _create_recovery_codes(user) -> list[str]:
     return codes
 
 
-def _verified_privileged_user(request):
-    if (
-        request.user.is_authenticated
-        and mfa_required_for_user(request.user)
-        and getattr(request.user, "is_verified", lambda: False)()
-    ):
-        return request.user
-    return None
+def _security_user(request):
+    user = request.user
+    if not user.is_authenticated or not user.has_usable_password():
+        return None
+    mandatory = mfa_required_for_user(user)
+    if mandatory or has_confirmed_totp(user):
+        if (
+            not getattr(user, "is_verified", lambda: False)()
+            or not privileged_mfa_verification_is_fresh(request)
+        ):
+            return None
+        # OAuth may access the ordinary UI without TOTP, but security
+        # mutations require a locally OTP-verified session.
+        if (
+            not mandatory
+            and request.session.get(MFA_LOGIN_METHOD_SESSION_KEY) == "external"
+        ):
+            return None
+    return user
+
+
+def _security_context(user, **form_overrides):
+    mandatory = mfa_required_for_user(user)
+    enabled = mandatory or has_confirmed_totp(user)
+    result = {
+        "mfa_optional": not mandatory,
+        "mfa_enabled": enabled,
+        "recovery_code_count": (
+            StaticToken.objects.filter(
+                device__user=user,
+                device__confirmed=True,
+            ).count()
+            if enabled else 0
+        ),
+        "enable_form": MFAPasswordReauthForm(user),
+        "regenerate_form": MFAPasswordReauthForm(user),
+        "replace_form": MFAPasswordReauthForm(user),
+        "disable_form": (
+            MFAOptionalDisableForm(user)
+            if not mandatory and enabled
+            else None
+        ),
+    }
+    result.update(form_overrides)
+    return result
+
+
+def _security_denied(request):
+    if request.user.is_authenticated and not request.user.has_usable_password():
+        return redirect("external_auth:identities")
+    query = urlencode({"next": reverse("mfa:security")})
+    return redirect(f"{reverse('login')}?{query}")
 
 
 class LocalLoginView(LoginView):
@@ -81,9 +134,14 @@ class LocalLoginView(LoginView):
 
     def form_valid(self, form):
         user = form.get_user()
-        if not mfa_required_for_user(user):
-            return super().form_valid(form)
+        if not local_password_login_requires_mfa(user):
+            response = super().form_valid(form)
+            self.request.session[MFA_LOGIN_METHOD_SESSION_KEY] = "local"
+            return response
 
+        if self.request.user.is_authenticated:
+            # Never complete second factor inside an earlier OAuth session.
+            django_logout(self.request)
         begin_mfa_preauth(
             self.request,
             user=user,
@@ -147,6 +205,7 @@ def _finish_verified_login(request, *, identity, device) -> None:
         )
         otp_login(request, device)
     mark_privileged_mfa_verified(request)
+    request.session[MFA_LOGIN_METHOD_SESSION_KEY] = "local"
     request.session.set_expiry(
         int(
             getattr(
@@ -165,7 +224,13 @@ def mfa_challenge(request):
         return failure
     user = identity.user
     if not mfa_required_for_user(user):
-        return redirect("scheduling:home")
+        if not has_confirmed_totp(user):
+            return redirect("scheduling:home")
+        if (
+            request.user.is_authenticated
+            and request.session.get(MFA_LOGIN_METHOD_SESSION_KEY) == "external"
+        ):
+            return redirect("scheduling:home")
     if request.user.is_authenticated:
         is_verified = getattr(
             request.user,
@@ -283,8 +348,16 @@ def mfa_setup(request):
         return failure
     user = identity.user
     if not mfa_required_for_user(user):
-        clear_mfa_transient_session(request)
-        return redirect("scheduling:home")
+        if not user.has_usable_password():
+            clear_mfa_transient_session(request)
+            return redirect("scheduling:home")
+        if (
+            not identity.preauthenticated
+            and not authenticated_mfa_setup_is_authorized(
+                request, user=user
+            )
+        ):
+            return redirect("mfa:security")
     replacement_old_device_ids = totp_replacement_old_device_ids(
         request,
         user=user,
@@ -293,7 +366,9 @@ def mfa_setup(request):
         has_confirmed_totp(user)
         and replacement_old_device_ids is None
     ):
-        return redirect("mfa:challenge")
+        return redirect(
+            "mfa:challenge" if mfa_required_for_user(user) else "mfa:security"
+        )
     if (
         request.user.is_authenticated
         and not identity.preauthenticated
@@ -412,7 +487,10 @@ def mfa_setup_qr(request):
 def mfa_recovery_codes(request):
     if (
         not request.user.is_authenticated
-        or not mfa_required_for_user(request.user)
+        or not (
+            mfa_required_for_user(request.user)
+            or has_confirmed_totp(request.user)
+        )
         or not getattr(request.user, "is_verified", lambda: False)()
     ):
         return redirect("mfa:challenge")
@@ -441,62 +519,99 @@ def mfa_recovery_codes(request):
 
 @never_cache
 def mfa_security(request):
-    user = _verified_privileged_user(request)
+    user = _security_user(request)
     if user is None:
-        return redirect("mfa:challenge")
-
-    recovery_code_count = StaticToken.objects.filter(
-        device__user=user,
-        device__confirmed=True,
-    ).count()
+        return _security_denied(request)
     return _response_no_store(
         render(
             request,
             "accounts/mfa_security.html",
-            {
-                "recovery_code_count": recovery_code_count,
-                "regenerate_form": MFAPasswordReauthForm(
-                    user,
-                    request=request,
-                ),
-                "replace_form": MFAPasswordReauthForm(
-                    user,
-                    request=request,
-                ),
-            },
+            _security_context(user),
         )
     )
 
 
 @never_cache
 @require_POST
-def mfa_regenerate_recovery_codes(request):
-    user = _verified_privileged_user(request)
+def mfa_optional_enable(request):
+    user = _security_user(request)
     if user is None:
-        return redirect("mfa:challenge")
+        return _security_denied(request)
+    if mfa_required_for_user(user) or has_confirmed_totp(user):
+        return redirect("mfa:security")
 
-    form = MFAPasswordReauthForm(
-        user,
-        request.POST,
-        request=request,
-    )
+    form = MFAPasswordReauthForm(user, request.POST, request=request)
     if not form.is_valid():
-        recovery_code_count = StaticToken.objects.filter(
-            device__user=user,
-            device__confirmed=True,
-        ).count()
         return _response_no_store(
             render(
                 request,
                 "accounts/mfa_security.html",
-                {
-                    "recovery_code_count": recovery_code_count,
-                    "regenerate_form": form,
-                    "replace_form": MFAPasswordReauthForm(
-                        user,
-                        request=request,
-                    ),
-                },
+                _security_context(user, enable_form=form),
+                status=400,
+            )
+        )
+
+    authorize_authenticated_mfa_setup(request, user=user)
+    remember_mfa_next(request, reverse("mfa:security"))
+    return redirect("mfa:setup")
+
+
+@never_cache
+@require_POST
+def mfa_optional_disable(request):
+    user = _security_user(request)
+    if user is None:
+        return _security_denied(request)
+    if mfa_required_for_user(user) or not has_confirmed_totp(user):
+        return redirect("mfa:security")
+
+    form = MFAOptionalDisableForm(user, request.POST, request=request)
+    if not form.is_valid():
+        return _response_no_store(
+            render(
+                request,
+                "accounts/mfa_security.html",
+                _security_context(user, disable_form=form),
+                status=400,
+            )
+        )
+
+    with transaction.atomic():
+        locked_user = type(user).objects.select_for_update().get(pk=user.pk)
+        if mfa_required_for_user(locked_user):
+            return redirect("mfa:security")
+        TOTPDevice.objects.filter(user=locked_user).delete()
+        StaticDevice.objects.filter(user=locked_user).delete()
+    request.session.pop(DEVICE_ID_SESSION_KEY, None)
+    request.session.pop(MFA_VERIFIED_AT_SESSION_KEY, None)
+    clear_mfa_transient_session(request)
+    record_event(
+        event_type="MFAOptionalDisabled",
+        aggregate_type="User",
+        aggregate_id=user.id,
+        actor=user,
+        payload={},
+    )
+    messages.success(request, "Двухфакторная защита входа по паролю отключена.")
+    return redirect("mfa:security")
+
+
+@never_cache
+@require_POST
+def mfa_regenerate_recovery_codes(request):
+    user = _security_user(request)
+    if user is None:
+        return _security_denied(request)
+    if not mfa_required_for_user(user) and not has_confirmed_totp(user):
+        return redirect("mfa:security")
+
+    form = MFAPasswordReauthForm(user, request.POST, request=request)
+    if not form.is_valid():
+        return _response_no_store(
+            render(
+                request,
+                "accounts/mfa_security.html",
+                _security_context(user, regenerate_form=form),
                 status=400,
             )
         )
@@ -518,32 +633,19 @@ def mfa_regenerate_recovery_codes(request):
 @never_cache
 @require_POST
 def mfa_replace_authenticator(request):
-    user = _verified_privileged_user(request)
+    user = _security_user(request)
     if user is None:
-        return redirect("mfa:challenge")
+        return _security_denied(request)
+    if not mfa_required_for_user(user) and not has_confirmed_totp(user):
+        return redirect("mfa:security")
 
-    form = MFAPasswordReauthForm(
-        user,
-        request.POST,
-        request=request,
-    )
+    form = MFAPasswordReauthForm(user, request.POST, request=request)
     if not form.is_valid():
-        recovery_code_count = StaticToken.objects.filter(
-            device__user=user,
-            device__confirmed=True,
-        ).count()
         return _response_no_store(
             render(
                 request,
                 "accounts/mfa_security.html",
-                {
-                    "recovery_code_count": recovery_code_count,
-                    "regenerate_form": MFAPasswordReauthForm(
-                        user,
-                        request=request,
-                    ),
-                    "replace_form": form,
-                },
+                _security_context(user, replace_form=form),
                 status=400,
             )
         )
