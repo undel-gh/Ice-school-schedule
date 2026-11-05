@@ -10,7 +10,7 @@ server="ice-school-minio-ci-$$"
 cleanup() {
   docker rm -f "$server" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
-  rm -rf "$tmp"
+  sudo rm -rf "$tmp"
 }
 trap cleanup EXIT
 
@@ -61,5 +61,5 @@ docker run "${common[@]}" \
   --mount "type=bind,src=$tmp/restore,dst=/restore" \
   --entrypoint restic ice-school-offsite:ci restore latest --target /restore
 dump="$(find "$BACKUP_SOURCE_DIR" -maxdepth 1 -type f -name 'ice_school_*.dump' | LC_ALL=C sort | tail -1)"
-cmp "$dump" "$tmp/restore/backups/$(basename "$dump")"
+sudo cmp "$dump" "$tmp/restore/backups/$(basename "$dump")"
 echo "Encrypted upload/restore with real S3 protocol passed (ephemeral MinIO only)"
