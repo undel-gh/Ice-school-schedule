@@ -23,6 +23,7 @@ MFA_SETUP_AUTH_SESSION_KEY = "mfa_setup_auth"
 MFA_RECOVERY_CODES_SESSION_KEY = "mfa_recovery_codes"
 MFA_VERIFIED_AT_SESSION_KEY = "mfa_verified_at"
 MFA_TOTP_REPLACEMENT_SESSION_KEY = "mfa_totp_replacement"
+MFA_LOGIN_METHOD_SESSION_KEY = "mfa_login_method"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +70,28 @@ def has_confirmed_totp(user) -> bool:
 
 def has_confirmed_mfa_device(user) -> bool:
     return user_has_device(user, confirmed=True)
+
+
+def local_password_login_requires_mfa(user) -> bool:
+    """Privileged accounts always need MFA; ordinary password users opt in."""
+    return mfa_required_for_user(user) or (
+        user is not None
+        and user.has_usable_password()
+        and has_confirmed_totp(user)
+    )
+
+
+def mfa_required_for_session(request) -> bool:
+    """Optional TOTP protects local sessions, not ordinary OAuth sessions."""
+    user = request.user
+    if not user.is_authenticated:
+        return False
+    if mfa_required_for_user(user, use_request_cache=True):
+        return True
+    return (
+        has_confirmed_totp(user)
+        and request.session.get(MFA_LOGIN_METHOD_SESSION_KEY) != "external"
+    )
 
 
 def mark_privileged_mfa_verified(request) -> None:
@@ -249,7 +272,7 @@ def resolve_mfa_identity(request) -> MFAIdentity | None:
         clear_mfa_transient_session(request)
         return None
 
-    if not mfa_required_for_user(user):
+    if not local_password_login_requires_mfa(user):
         clear_mfa_transient_session(request)
         return None
 
