@@ -6,7 +6,7 @@ umask 077
 test -n "${BACKUP_SOURCE_DIR:-}"
 test -n "$(find "$BACKUP_SOURCE_DIR" -maxdepth 1 -name 'ice_school_*.dump' -type f -print -quit)"
 tmp="$(mktemp -d)"
-trap 'rm -rf -- "$tmp"' EXIT
+trap 'sudo rm -rf -- "$tmp"' EXIT
 mkdir -p "$tmp/repo" "$tmp/state" "$tmp/restore" "$tmp/secrets"
 printf '%s\n' 'CI-only-randomized-offsite-test-password' > "$tmp/secrets/restic-password"
 printf '%s\n' '[default]' 'aws_access_key_id=test' 'aws_secret_access_key=test' > "$tmp/secrets/aws-credentials"
@@ -32,7 +32,7 @@ docker run "${common[@]}" \
   --mount "type=bind,src=$tmp/restore,dst=/restore" \
   --entrypoint restic "$OFFSITE_CI_IMAGE" restore latest --target /restore
 dump="$(find "$BACKUP_SOURCE_DIR" -maxdepth 1 -type f -name 'ice_school_*.dump' | LC_ALL=C sort | tail -1)"
-cmp "$dump" "$tmp/restore/backups/$(basename "$dump")"
+sudo cmp "$dump" "$tmp/restore/backups/$(basename "$dump")"
 printf '%s\n' 'wrong-password' > "$tmp/secrets/wrong-password"
 if docker run "${common[@]}" \
     -e RESTIC_PASSWORD_FILE=/secrets/wrong-password \
