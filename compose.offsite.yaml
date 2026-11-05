@@ -15,6 +15,7 @@ services:
       RESTIC_REPOSITORY: ${OFFSITE_RESTIC_REPOSITORY:?set S3 repository URL}
       AWS_DEFAULT_REGION: ${OFFSITE_AWS_REGION:-us-east-1}
       RESTIC_PASSWORD_FILE: /run/secrets/offsite_restic_password
+      RESTIC_CACHE_DIR: /state/restic-cache
       AWS_SHARED_CREDENTIALS_FILE: /run/secrets/offsite_aws_credentials
       OFFSITE_BACKUP_DIR: /backups
       OFFSITE_STATUS_DIR: /state
@@ -45,13 +46,17 @@ services:
       retries: 3
       start_period: 180s
     networks:
-      - backend
+      - offsite_egress
 
 secrets:
   offsite_restic_password:
     file: ${OFFSITE_RESTIC_PASSWORD_HOST_FILE:?set path to password file}
   offsite_aws_credentials:
     file: ${OFFSITE_AWS_CREDENTIALS_HOST_FILE:?set path to S3 credentials file}
+
+networks:
+  offsite_egress:
+    driver: bridge
 
 volumes:
   offsite_status:
