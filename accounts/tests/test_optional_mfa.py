@@ -356,8 +356,7 @@ def test_optional_mfa_security_regeneration_and_replacement_reuse_existing_flow(
 
 
 @pytest.mark.django_db
-def test_privileged_account_cannot_disable_required_mfa():
-    client = Client()
+def test_privileged_account_cannot_disable_required_mfa(client):
     user = User.objects.create_superuser(
         username="optional-privileged", password=PASSWORD
     )
