@@ -182,10 +182,11 @@ prepare_backup_dir() {
     mkdir -p -- "$backup_path" ||
       die "Cannot create backup directory"
   fi
-  [[ -d "$backup_path" && -w "$backup_path" ]] ||
-    die "Backup directory must be writable by the deployment user"
+  [[ -d "$backup_path" ]] || die "Cannot access backup directory"
   if [[ -O "$backup_path" ]]; then
     chmod 700 "$backup_path"
+  else
+    info "Backup directory is root-owned; Docker backup service must verify write access"
   fi
 }
 
