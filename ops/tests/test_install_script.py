@@ -52,6 +52,8 @@ elif args[0] == "compose":
     )
     if command == "ps" and "--quiet" in args:
         print("mock-" + args[-1])
+    if command == "build":
+        print("compose-image-tag=" + os.environ.get("APP_IMAGE_TAG", "unset"))
     if command == "build" and os.environ.get("MOCK_BUILD_FAIL") == "1":
         sys.exit(41)
     if command == "run":
@@ -202,6 +204,18 @@ def test_install_runs_migration_before_recreating_web(stack):
     assert gate < deploy
     assert not any("--volumes" in x or "-v" in x for x in commands)
     assert stack["env_file"].read_text() == VALID_ENV
+
+
+def test_image_tag_stays_consistent_with_production_compose(stack):
+    normal = stack["invoke"]("install")
+    assert normal.returncode == 0, normal.stderr
+    assert "compose-image-tag=local" in normal.stdout
+
+    stack["env_file"].write_text(VALID_ENV + "APP_IMAGE_TAG=release-1\n")
+    stack["env_file"].chmod(0o600)
+    custom = stack["invoke"]("reinstall")
+    assert custom.returncode == 0, custom.stderr
+    assert "compose-image-tag=release-1" in custom.stdout
 
 
 def test_update_backup_failure_blocks_fetch_build_and_rollout(stack):
