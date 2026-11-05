@@ -47,11 +47,13 @@ elif args[0] == "compose":
         print("2.40.0")
         sys.exit(0)
     command = next(
-        (v for v in ("config", "build", "run", "up", "ps", "down") if v in args),
+        (v for v in ("config", "build", "run", "up", "ps", "down", "exec") if v in args),
         None,
     )
     if command == "ps" and "--quiet" in args:
         print("mock-" + args[-1])
+    if command == "exec" and "psql" in args:
+        print("0" if os.environ.get("MOCK_EMPTY_DB") == "1" else "1")
     if command == "build":
         print("compose-image-tag=" + os.environ.get("APP_IMAGE_TAG", "unset"))
     if command == "build" and os.environ.get("MOCK_BUILD_FAIL") == "1":
@@ -204,6 +206,18 @@ def test_install_runs_migration_before_recreating_web(stack):
     assert gate < deploy
     assert not any("--volumes" in x or "-v" in x for x in commands)
     assert stack["env_file"].read_text() == VALID_ENV
+
+
+def test_first_install_skips_empty_dump_but_installs_schema(stack):
+    result = stack["invoke"]("install", MOCK_EMPTY_DB="1")
+    commands = compose_commands(stack["docker_calls"]())
+
+    assert result.returncode == 0, result.stderr
+    assert "New empty database" in result.stdout
+    assert not any(x[:1] == ["run"] and "backup" in x for x in commands)
+    assert contains_command(
+        commands, ["run", "--rm", "--no-deps", "-T", "migrate"]
+    )
 
 
 def test_image_tag_stays_consistent_with_production_compose(stack):
