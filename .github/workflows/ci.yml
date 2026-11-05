@@ -346,6 +346,12 @@ jobs:
         run: |
           bash -n ops/tests/smoke_offsite_restore.sh
           bash ops/tests/smoke_offsite_restore.sh
+      - name: Smoke encrypted S3 upload and restore against ephemeral MinIO
+        env:
+          BACKUP_SOURCE_DIR: ${{ github.workspace }}/backups
+        run: |
+          bash -n ops/tests/smoke_offsite_s3.sh
+          bash ops/tests/smoke_offsite_s3.sh
       - name: Stop production smoke stack
         if: always()
         run: |
