@@ -150,6 +150,16 @@ load_env() {
     fi
     CFG["$key"]="$value"
   done < "$ENV_FILE"
+  # Preserve existing deployments: offsite overlay is activated only when
+  # explicitly configured, never by implicit Compose profiles.
+  OFFSITE_ENABLED="${CFG[OFFSITE_ENABLED]:-0}"
+  [[ "$OFFSITE_ENABLED" == 0 || "$OFFSITE_ENABLED" == 1 ]] ||
+    die "OFFSITE_ENABLED must be 0 or 1"
+  COMPOSE=(docker compose --project-directory "$ROOT_DIR" --env-file "$ENV_FILE"
+    -f "$ROOT_DIR/compose.production.yaml")
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    COMPOSE+=(-f "$ROOT_DIR/compose.offsite.yaml")
+  fi
 }
 
 validate_env() {
@@ -180,10 +190,28 @@ validate_env() {
   (( ${#password} >= 20 )) && [[ "$password" != *replace* ]] ||
     die "Set a strong non-placeholder POSTGRES_PASSWORD"
   backup_path="${CFG[BACKUP_HOST_PATH]:-./backups}"
+  validate_offsite
   [[ "$backup_path" != *'$'* && "$backup_path" != *'~'* &&
      "$backup_path" != *'*'* && "$backup_path" != *'?'* &&
      "$backup_path" != *'['* ]] ||
     die "BACKUP_HOST_PATH must be a literal relative or absolute path"
+}
+
+validate_offsite() {
+  [[ "$OFFSITE_ENABLED" == 1 ]] || return 0
+  local repo key path mode
+  repo="${CFG[OFFSITE_RESTIC_REPOSITORY]:-}"
+  # TLS is mandatory on production S3 endpoints; disallow URL credentials.
+  [[ "$repo" == s3:https://*/* && "$repo" != *@* ]] ||
+    die "OFFSITE_RESTIC_REPOSITORY must use s3:https://endpoint/bucket/prefix"
+  for key in OFFSITE_RESTIC_PASSWORD_HOST_FILE OFFSITE_AWS_CREDENTIALS_HOST_FILE; do
+    path="${CFG[$key]:-}"
+    [[ "$path" == /* && -f "$path" && ! -L "$path" ]] ||
+      die "$key must be an absolute path to a regular non-symlink file"
+    mode="$(stat -c '%a' "$path")"
+    [[ "$mode" =~ ^[0-7]+$ ]] && (( (8#$mode & 077) == 0 )) ||
+      die "$key must not be readable by group or others (chmod 600)"
+  done
 }
 
 prepare_backup_dir() {
@@ -249,6 +277,15 @@ backup_once() {
   info "Creating and validating a fresh PostgreSQL backup before modifying the installation"
   "${COMPOSE[@]}" run --rm --no-deps -T backup /ops/postgres_backup.sh --once ||
     die "Pre-update backup failed. No migration or rollout attempted."
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    # A risky database upgrade must not proceed until the *new* dump has
+    # reached encrypted off-host storage (not merely queued for polling).
+    info "Uploading verified pre-migration dump to encrypted offsite repository"
+    "${COMPOSE[@]}" build offsite-backup ||
+      die "Cannot build offsite backup image; rollout stopped"
+    "${COMPOSE[@]}" run --rm --no-deps -T offsite-backup --once ||
+      die "Encrypted offsite backup failed; rollout stopped before migration"
+  fi
 }
 
 backup_before_initial_migration() {
@@ -302,6 +339,11 @@ migration_gate() {
   "${COMPOSE[@]}" run --rm --no-deps -T migrate ||
     die "Migration gate failed; release image tag is unchanged and rollout stopped"
 
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    "${COMPOSE[@]}" build offsite-backup ||
+      die "Offsite service build failed; release tag remains unchanged"
+  fi
+
   # Promote only after migrate succeeds. A later ordinary Compose invocation
   # will select the same release tag as the installer, never a failed image.
   info "Promoting verified candidate to ice-school-app:$RELEASE_IMAGE_TAG"
@@ -320,6 +362,13 @@ rollout_services() {
   info "Starting or recreating reverse proxy"
   "${COMPOSE[@]}" up -d --no-deps --force-recreate proxy
   wait_state proxy running 20
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    info "Starting encrypted offsite backup uploader"
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate offsite-backup
+    wait_state offsite-backup healthy 120
+  else
+    info "WARNING: OFFSITE_ENABLED=0; database dumps remain local only"
+  fi
   info "Completed revision: $(git -C "$ROOT_DIR" rev-parse --verify HEAD)"
   "${COMPOSE[@]}" ps --all
 }
@@ -426,6 +475,13 @@ run_status() {
   for service in db web scheduler backup proxy; do
     info "$service: $(container_state "$service")"
   done
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    info "offsite-backup: $(container_state offsite-backup)"
+    [[ "$(container_state offsite-backup)" == healthy ]] ||
+      die "Encrypted offsite backup is not healthy"
+  else
+    info "WARNING: offsite-backup disabled; no encrypted external copies"
+  fi
   [[ "$(container_state web)" == healthy ]] ||
     die "Application healthcheck is not healthy"
 }
