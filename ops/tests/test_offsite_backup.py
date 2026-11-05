@@ -140,6 +140,7 @@ def test_remote_failure_not_acknowledged(uploader, failure):
     assert result.returncode != 0
     assert not (uploader["state"] / "last_uploaded").exists()
     assert uploader["health"]().returncode != 0
+    assert (uploader["state"] / "last_failure").exists()
 
 
 def test_after_failure_retries_same_dump(uploader):
@@ -147,6 +148,25 @@ def test_after_failure_retries_same_dump(uploader):
     assert uploader["invoke"](MOCK_RESTIC_FAIL="backup").returncode != 0
     assert uploader["invoke"]().returncode == 0
     assert (uploader["state"] / "last_success").is_file()
+    assert not (uploader["state"] / "last_failure").exists()
+
+
+def test_failed_new_dump_immediately_marks_service_unhealthy(uploader):
+    add_dump(uploader)
+    assert uploader["invoke"]().returncode == 0
+    assert uploader["health"]().returncode == 0
+
+    add_dump(uploader, "ice_school_20261107T180000Z.dump")
+    failed = uploader["invoke"](MOCK_RESTIC_FAIL="backup")
+    assert failed.returncode != 0
+    assert uploader["health"]().returncode != 0
+    assert (uploader["state"] / "last_failure").exists()
+    assert (uploader["state"] / "last_success").exists()
+
+    recovered = uploader["invoke"]()
+    assert recovered.returncode == 0, recovered.stderr
+    assert uploader["health"]().returncode == 0
+    assert not (uploader["state"] / "last_failure").exists()
 
 
 def test_new_dump_causes_new_upload(uploader):

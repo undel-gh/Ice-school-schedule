@@ -12,9 +12,19 @@ KEEP_MONTHLY="${OFFSITE_KEEP_MONTHLY:-12}"
 RESTIC_HOST="${OFFSITE_RESTIC_HOST:-ice-school-production}"
 MARKER="$STATUS_DIR/last_uploaded"
 SUCCESS="$STATUS_DIR/last_success"
+FAILURE="$STATUS_DIR/last_failure"
 
 log() { printf '%s offsite event=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
-fail() { log "failed stage=$1" >&2; return 1; }
+fail() {
+  # Preserve a negative result even when the previous successful upload is
+  # recent. Otherwise Docker reports healthy for up to two backup intervals.
+  # An error marker is private, contains no secrets, and survives restarts.
+  if ! printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" > "$FAILURE"; then
+    log "failed stage=state_write" >&2
+  fi
+  log "failed stage=$1" >&2
+  return 1
+}
 positive_int() {
   case "$2" in ""|*[!0-9]*) echo "$1 must be positive integer" >&2; exit 2;; esac
   [ "$2" -gt 0 ] || { echo "$1 must be positive" >&2; exit 2; }
@@ -58,7 +68,12 @@ run_once() {
   if [ "$previous" = "$repo_id $dump_name" ] && [ -f "$SUCCESS" ]; then
     # The repository may have been replaced/deleted after our last success.
     # Verify that the referenced dump still occurs in remote snapshots.
-    if restic --retry-lock 10m snapshots --json --host "$RESTIC_HOST"         --tag ice-school-postgres | grep -Fq "$dump_name"; then
+    if restic --retry-lock 10m snapshots --json --host "$RESTIC_HOST" \
+        --tag ice-school-postgres | grep -Fq "$dump_name"; then
+      if ! rm -f "$FAILURE"; then
+        fail state_write
+        return 1
+      fi
       log "already_uploaded dump=$dump_name"
       return 0
     fi
@@ -83,7 +98,8 @@ run_once() {
     fail status_write
     return 1
   fi
-  if ! mv -f "$temp" "$MARKER" || ! touch "$SUCCESS"; then
+  if ! mv -f "$temp" "$MARKER" || ! touch "$SUCCESS" ||
+     ! rm -f "$FAILURE"; then
     rm -f "$temp"
     fail status_write
     return 1

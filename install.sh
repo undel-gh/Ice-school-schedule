@@ -199,7 +199,11 @@ validate_env() {
 
 validate_offsite() {
   [[ "$OFFSITE_ENABLED" == 1 ]] || return 0
-  local repo key path mode
+  local repo key path mode backup_path
+  backup_path="${CFG[BACKUP_HOST_PATH]:-./backups}"
+  [[ "$backup_path" = /* ]] || backup_path="$ROOT_DIR/$backup_path"
+  backup_path="$(realpath -m "$backup_path")" ||
+    die "Cannot canonicalize BACKUP_HOST_PATH"
   repo="${CFG[OFFSITE_RESTIC_REPOSITORY]:-}"
   # TLS is mandatory on production S3 endpoints; disallow URL credentials.
   [[ "$repo" == s3:https://*/* && "$repo" != *@* ]] ||
@@ -209,7 +213,8 @@ validate_offsite() {
     [[ "$path" == /* && -f "$path" && ! -L "$path" ]] ||
       die "$key must be an absolute path to a regular non-symlink file"
     path="$(realpath -e "$path")" || die "$key cannot be resolved safely"
-    [[ "$path" != "$ROOT_DIR" && "$path" != "$ROOT_DIR/"* ]] ||
+    [[ "$path" != "$ROOT_DIR" && "$path" != "$ROOT_DIR/"* &&
+       "$path" != "$backup_path" && "$path" != "$backup_path/"* ]] ||
       die "$key must be outside the Git checkout and local backups"
     mode="$(stat -c '%a' "$path")"
     [[ "$mode" =~ ^[0-7]+$ ]] && (( (8#$mode & 077) == 0 )) ||

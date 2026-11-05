@@ -489,6 +489,29 @@ def test_offsite_password_file_must_be_private(stack):
     assert not contains_command(compose_commands(stack["docker_calls"]()), ["build"])
 
 
+def test_offsite_secrets_must_not_reside_inside_external_backup_dir(stack):
+    password, _ = enable_offsite(stack)
+    backup_dir = stack["root"].parent / (stack["root"].name + "-host-backups")
+    backup_dir.mkdir()
+    password_inside = backup_dir / "restic-password"
+    password_inside.write_text(password.read_text())
+    password_inside.chmod(0o600)
+
+    settings = stack["env_file"].read_text()
+    settings = settings.replace("BACKUP_HOST_PATH=./backups",
+                                f"BACKUP_HOST_PATH={backup_dir}")
+    settings = settings.replace(str(password), str(password_inside))
+    stack["env_file"].write_text(settings)
+    stack["env_file"].chmod(0o600)
+
+    result = stack["invoke"]("install")
+    assert result.returncode != 0
+    assert "outside the Git checkout and local backups" in result.stderr
+    assert not contains_command(
+        compose_commands(stack["docker_calls"]()), ["build"]
+    )
+
+
 def test_offsite_requires_tls_repository_not_plain_http(stack):
     enable_offsite(stack)
     content = stack["env_file"].read_text().replace("s3:https://", "s3:http://")
