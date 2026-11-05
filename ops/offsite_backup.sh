@@ -58,13 +58,13 @@ run_once() {
   fi
 
   log "start dump=$dump_name"
-  if ! restic backup --host "$RESTIC_HOST" --tag ice-school-postgres \
+  if ! restic --retry-lock 10m backup --host "$RESTIC_HOST" --tag ice-school-postgres \
        --group-by host,tags -- "$dump"; then
     fail restic_backup
     return 1
   fi
   # Dump filenames vary. Group retention by host+tag, not paths.
-  if ! restic forget --host "$RESTIC_HOST" --tag ice-school-postgres \
+  if ! restic --retry-lock 10m forget --host "$RESTIC_HOST" --tag ice-school-postgres \
        --group-by host,tags --keep-daily "$KEEP_DAILY" \
        --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" --prune; then
     fail restic_retention
