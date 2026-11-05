@@ -39,6 +39,14 @@ positive_int OFFSITE_KEEP_MONTHLY "$KEEP_MONTHLY"
 [ -r "${RESTIC_PASSWORD_FILE:-/not-configured}" ] || { echo "Missing restic password file" >&2; exit 2; }
 [ -r "${AWS_SHARED_CREDENTIALS_FILE:-/not-configured}" ] || { echo "Missing S3 credentials file" >&2; exit 2; }
 [ -n "${RESTIC_REPOSITORY:-}" ] || { echo "RESTIC_REPOSITORY not configured" >&2; exit 2; }
+# Never send a monitoring token to an unencrypted endpoint, even if this
+# container is started manually without the installer validation.
+if [ -n "${OFFSITE_SUCCESS_PING_URL:-}" ]; then
+  case "$OFFSITE_SUCCESS_PING_URL" in
+    https://*) ;;
+    *) echo "OFFSITE_SUCCESS_PING_URL must use HTTPS" >&2; exit 2 ;;
+  esac
+fi
 
 newest_dump() {
   find "$BACKUP_DIR" -maxdepth 1 -type f -name 'ice_school_*.dump' -print |

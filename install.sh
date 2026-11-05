@@ -205,6 +205,10 @@ validate_offsite() {
   backup_path="$(realpath -m "$backup_path")" ||
     die "Cannot canonicalize BACKUP_HOST_PATH"
   repo="${CFG[OFFSITE_RESTIC_REPOSITORY]:-}"
+  local ping_url
+  ping_url="${CFG[OFFSITE_SUCCESS_PING_URL]:-}"
+  [[ -z "$ping_url" || ( "$ping_url" == https://* && "$ping_url" != *@* ) ]] ||
+    die "OFFSITE_SUCCESS_PING_URL must use HTTPS and no embedded credentials"
   # TLS is mandatory on production S3 endpoints; disallow URL credentials.
   [[ "$repo" == s3:https://*/* && "$repo" != *@* ]] ||
     die "OFFSITE_RESTIC_REPOSITORY must use s3:https://endpoint/bucket/prefix"

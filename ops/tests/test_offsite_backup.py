@@ -101,6 +101,16 @@ def test_shell_syntax():
         assert result.returncode == 0
 
 
+def test_plaintext_monitoring_url_is_refused(uploader):
+    add_dump(uploader)
+    response = uploader["invoke"](
+        OFFSITE_SUCCESS_PING_URL="http://example.net/ping/private-token"
+    )
+    assert response.returncode == 2
+    assert "OFFSITE_SUCCESS_PING_URL" in response.stderr
+    assert uploader["calls"]() == []
+
+
 def test_missing_dump_fails_without_success(uploader):
     (uploader["backup"] / "ice_school_test.dump.partial").write_bytes(b"partial")
     result = uploader["invoke"]()

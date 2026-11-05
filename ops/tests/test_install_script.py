@@ -489,6 +489,18 @@ def test_offsite_password_file_must_be_private(stack):
     assert not contains_command(compose_commands(stack["docker_calls"]()), ["build"])
 
 
+def test_offsite_ping_url_requires_https(stack):
+    enable_offsite(stack)
+    with stack["env_file"].open("a") as output:
+        output.write("OFFSITE_SUCCESS_PING_URL=http://monitor.example.net/ping/secret\n")
+    result = stack["invoke"]("install")
+    assert result.returncode != 0
+    assert "OFFSITE_SUCCESS_PING_URL" in result.stderr
+    assert not contains_command(
+        compose_commands(stack["docker_calls"]()), ["build"]
+    )
+
+
 def test_offsite_secrets_must_not_reside_inside_external_backup_dir(stack):
     password, _ = enable_offsite(stack)
     backup_dir = stack["root"].parent / (stack["root"].name + "-host-backups")
