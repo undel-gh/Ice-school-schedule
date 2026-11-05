@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+# Only the latest commit needs the costly end-to-end Docker and timezone matrix.
+# Keep push and pull_request results separate for branch protection.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   deployment-script:
     runs-on: ubuntu-latest
