@@ -16,6 +16,16 @@ urlpatterns = [
     ),
     path("security/", mfa_views.mfa_security, name="security"),
     path(
+        "security/enable/",
+        mfa_views.mfa_optional_enable,
+        name="optional_enable",
+    ),
+    path(
+        "security/disable/",
+        mfa_views.mfa_optional_disable,
+        name="optional_disable",
+    ),
+    path(
         "security/recovery-codes/regenerate/",
         mfa_views.mfa_regenerate_recovery_codes,
         name="regenerate_recovery_codes",

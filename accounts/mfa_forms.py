@@ -1,7 +1,7 @@
 from django import forms
 from django.contrib.auth import authenticate
 from django.utils.translation import ngettext_lazy
-from django_otp import devices_for_user
+from django_otp import devices_for_user, verify_token
 from django_otp.forms import OTPTokenForm
 from django_otp.plugins.otp_static.models import StaticDevice
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -93,3 +93,31 @@ class LocalizedOTPTokenForm(OTPTokenForm):
                 label = device.name
             choices.append((device.persistent_id, label))
         return choices
+
+
+class MFAOptionalDisableForm(MFAPasswordReauthForm):
+    """Disabling optional MFA requires both the password and a fresh OTP."""
+
+    otp_device = forms.ChoiceField(label="Способ проверки")
+    otp_token = forms.CharField(
+        label="Одноразовый код",
+        widget=forms.TextInput(attrs={"autocomplete": "one-time-code"}),
+    )
+
+    def __init__(self, user, *args, request=None, **kwargs):
+        super().__init__(user, *args, request=request, **kwargs)
+        self.fields["otp_device"].choices = LocalizedOTPTokenForm.device_choices(
+            user
+        )
+
+    def clean(self):
+        cleaned = super().clean()
+        if "password" not in cleaned:
+            return cleaned
+        device_id = cleaned.get("otp_device")
+        token = cleaned.get("otp_token")
+        if not device_id or not token:
+            return cleaned
+        if verify_token(self.user, device_id, token.strip()) is None:
+            self.add_error("otp_token", "Неверный или уже использованный код.")
+        return cleaned
