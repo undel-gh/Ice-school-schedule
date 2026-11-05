@@ -235,6 +235,20 @@ backup_once() {
     die "Pre-update backup failed. No migration or rollout attempted."
 }
 
+backup_before_initial_migration() {
+  local table_count
+  table_count="$("${COMPOSE[@]}" exec -T db psql     -U "${CFG[POSTGRES_USER]}" -d "${CFG[POSTGRES_DB]}" -Atqc     "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public';")" ||
+    die "Cannot inspect database before install; refusing to migrate"
+  [[ "$table_count" =~ ^[0-9]+$ ]] ||
+    die "Unexpected database inspection output; refusing to migrate"
+  if (( table_count > 0 )); then
+    # Install can be rerun after uninstall; persisted data still needs backup.
+    backup_once
+  else
+    info "New empty database: skipping empty pre-migration dump"
+  fi
+}
+
 set_image_tag() {
   local sha tag
   sha="$(git -C "$ROOT_DIR" rev-parse --verify HEAD)" ||
@@ -282,8 +296,7 @@ run_install() {
   "${COMPOSE[@]}" up -d db
   wait_state db healthy 65
   # A preserved volume may contain prior data even on a fresh container.
-  # Always take a verified pre-migration dump, including on install reruns.
-  backup_once
+  backup_before_initial_migration
   migration_gate
   rollout_services
 }
