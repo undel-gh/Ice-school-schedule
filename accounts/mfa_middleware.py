@@ -9,6 +9,7 @@ from django.utils.http import urlencode
 
 from .mfa import (
     mfa_required_for_user,
+    mfa_required_for_session,
     privileged_mfa_verification_is_fresh,
 )
 
@@ -39,7 +40,7 @@ class PrivilegedMFAMiddleware:
 
         if (
             user.is_authenticated
-            and mfa_required_for_user(user, use_request_cache=True)
+            and mfa_required_for_session(request)
             and not self._is_exempt(request)
         ):
             is_verified = getattr(user, "is_verified", lambda: False)()
@@ -66,11 +67,16 @@ class PrivilegedMFAMiddleware:
                     "Срок MFA-сессии истёк. Войдите локальным паролем и "
                     "подтвердите MFA снова.",
                 )
-            else:
+            elif mfa_required_for_user(user):
                 messages.info(
                     request,
                     "Для привилегированного доступа войдите локальным паролем "
                     "и подтвердите MFA.",
+                )
+            else:
+                messages.info(
+                    request,
+                    "Для входа по паролю подтвердите двухфакторную защиту.",
                 )
             query = urlencode({"next": target})
             return redirect(f"{reverse('login')}?{query}")

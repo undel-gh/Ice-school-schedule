@@ -25,6 +25,7 @@ from .external_auth import (
     provider_is_configured,
 )
 from .models import AccountInvitation, ExternalIdentity
+from .mfa import MFA_LOGIN_METHOD_SESSION_KEY
 from .onboarding import (
     accept_account_invitation_for_existing_user,
     authenticate_external_identity,
@@ -327,6 +328,8 @@ def external_callback(request, *, provider: str):
             user,
             backend="django.contrib.auth.backends.ModelBackend",
         )
+        # OAuth remains independent from optional password-only TOTP.
+        request.session[MFA_LOGIN_METHOD_SESSION_KEY] = "external"
         request.session.pop(INVITATION_SESSION_KEY, None)
         messages.success(request, "Вход выполнен.")
         return redirect("scheduling:home")

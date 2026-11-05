@@ -3,22 +3,45 @@
 {% block content %}
 <section class="auth-card">
   <h1>Безопасность аккаунта</h1>
-  <p>MFA включена. Резервных одноразовых кодов осталось: <strong>{{ recovery_code_count }}</strong>.</p>
+  {% if mfa_optional %}
+    <p class="muted">Двухфакторная защита относится к входу по локальному паролю. Вход через Яндекс/VK работает отдельно.</p>
+  {% endif %}
 
-  <h2>Новые резервные коды</h2>
-  <p>Старые резервные коды будут немедленно отозваны.</p>
-  <form method="post" action="{% url 'mfa:regenerate_recovery_codes' %}">
-    {% csrf_token %}
-    {{ regenerate_form.as_p }}
-    <button type="submit">Выпустить новые коды</button>
-  </form>
+  {% if mfa_enabled %}
+    <p>Двухфакторная защита включена. Резервных одноразовых кодов осталось: <strong>{{ recovery_code_count }}</strong>.</p>
+    <h2>Новые резервные коды</h2>
+    <p>Старые резервные коды будут немедленно отозваны.</p>
+    <form method="post" action="{% url 'mfa:regenerate_recovery_codes' %}">
+      {% csrf_token %}
+      {{ regenerate_form.as_p }}
+      <button type="submit">Выпустить новые коды</button>
+    </form>
 
-  <h2>Заменить приложение-аутентификатор</h2>
-  <p>Текущее приложение-аутентификатор останется действующим, пока вы не подтвердите новое. После успешного подтверждения старый TOTP будет отозван атомарно.</p>
-  <form method="post" action="{% url 'mfa:replace_authenticator' %}">
-    {% csrf_token %}
-    {{ replace_form.as_p }}
-    <button type="submit">Заменить аутентификатор</button>
-  </form>
+    <h2>Заменить приложение-аутентификатор</h2>
+    <p>Текущее приложение-аутентификатор останется действующим, пока вы не подтвердите новое. После успешного подтверждения старый TOTP будет отозван атомарно.</p>
+    <form method="post" action="{% url 'mfa:replace_authenticator' %}">
+      {% csrf_token %}
+      {{ replace_form.as_p }}
+      <button type="submit">Заменить аутентификатор</button>
+    </form>
+
+    {% if mfa_optional %}
+      <h2>Отключить защиту входа по паролю</h2>
+      <p>Для отключения введите текущий пароль и одноразовый код из приложения или резервный код. После отключения вход по паролю снова будет без второго фактора.</p>
+      <form method="post" action="{% url 'mfa:optional_disable' %}">
+        {% csrf_token %}
+        {{ disable_form.as_p }}
+        <button type="submit">Отключить двухфакторную защиту</button>
+      </form>
+    {% endif %}
+  {% else %}
+    <p>Двухфакторная защита входа по паролю выключена.</p>
+    <p>После включения при входе по логину и паролю потребуется код из приложения-аутентификатора. Вход через Яндекс/VK не изменится.</p>
+    <form method="post" action="{% url 'mfa:optional_enable' %}">
+      {% csrf_token %}
+      {{ enable_form.as_p }}
+      <button type="submit">Включить двухфакторную защиту</button>
+    </form>
+  {% endif %}
 </section>
 {% endblock %}

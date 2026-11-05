@@ -9,6 +9,11 @@ def external_auth(request):
         "external_auth_providers": providers,
         "yandex_external_auth_available": "yandex" in providers,
         "vk_external_auth_available": "vk" in providers,
+        "password_security_available": (
+            user is not None
+            and user.is_authenticated
+            and user.has_usable_password()
+        ),
         "privileged_mfa_available": (
             user is not None
             and user.is_authenticated

@@ -16,9 +16,10 @@
   <p class="muted">Первый вход ученика, родителя или тренера выполняется по приглашению школы.</p>
   {% endif %}
 
-  <h2>Служебный вход</h2>
+  <h2>Вход по логину и паролю</h2>
   <form method="post">
     {% csrf_token %}
+    {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
     {{ form.as_p }}
     <button type="submit">Войти</button>
   </form>
