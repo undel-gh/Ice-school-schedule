@@ -1,0 +1,56 @@
+# Optional overlay: only include when OFFSITE_ENABLED=1.
+services:
+  offsite-backup:
+    build:
+      context: .
+      dockerfile: ops/offsite.Dockerfile
+    image: ice-school-offsite:local
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    hostname: ice-school-offsite
+    environment:
+      RESTIC_REPOSITORY: ${OFFSITE_RESTIC_REPOSITORY:?set S3 repository URL}
+      RESTIC_PASSWORD_FILE: /run/secrets/offsite_restic_password
+      AWS_SHARED_CREDENTIALS_FILE: /run/secrets/offsite_aws_credentials
+      OFFSITE_BACKUP_DIR: /backups
+      OFFSITE_STATUS_DIR: /state
+      OFFSITE_RESTIC_HOST: ${OFFSITE_RESTIC_HOST:-ice-school-production}
+      OFFSITE_POLL_SECONDS: ${OFFSITE_POLL_SECONDS:-300}
+      OFFSITE_KEEP_DAILY: ${OFFSITE_KEEP_DAILY:-14}
+      OFFSITE_KEEP_WEEKLY: ${OFFSITE_KEEP_WEEKLY:-8}
+      OFFSITE_KEEP_MONTHLY: ${OFFSITE_KEEP_MONTHLY:-12}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      OFFSITE_HEALTH_GRACE_SECONDS: ${OFFSITE_HEALTH_GRACE_SECONDS:-3600}
+      OFFSITE_SUCCESS_PING_URL: ${OFFSITE_SUCCESS_PING_URL:-}
+      MONITORING_HTTP_TIMEOUT_SECONDS: ${MONITORING_HTTP_TIMEOUT_SECONDS:-10}
+    secrets:
+      - offsite_restic_password
+      - offsite_aws_credentials
+    volumes:
+      - ${BACKUP_HOST_PATH:-./backups}:/backups:ro
+      - offsite_status:/state
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    depends_on:
+      backup:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/ops/offsite_healthcheck.sh"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+    networks:
+      - backend
+
+secrets:
+  offsite_restic_password:
+    file: ${OFFSITE_RESTIC_PASSWORD_HOST_FILE:?set path to password file}
+  offsite_aws_credentials:
+    file: ${OFFSITE_AWS_CREDENTIALS_HOST_FILE:?set path to S3 credentials file}
+
+volumes:
+  offsite_status:
