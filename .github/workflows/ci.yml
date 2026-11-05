@@ -5,6 +5,21 @@ on:
   pull_request:
 
 jobs:
+  deployment-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Bash syntax and ShellCheck
+        run: |
+          bash -n install.sh
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning install.sh
+      - name: Exercise lifecycle safety and failure guards
+        run: |
+          python -m pip install pytest
+          python -m pytest -q ops/tests/test_install_script.py
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -62,7 +77,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Prepare production environment
-        run: cp .env.production.example .env.production
+        run: |
+          cp .env.production.example .env.production
+          sed -i 's/school.example.com/ci.school.invalid/g' .env.production
+          sed -i 's/^DJANGO_SECRET_KEY=.*/DJANGO_SECRET_KEY=ci-production-strong-secret-not-for-real-use-1234567/' .env.production
+          sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=ci-production-strong-db-password-1234567/' .env.production
+          chmod 600 .env.production
       - name: Build production image
         run: docker build -t ice-school-app:local .
       - name: Validate production Compose
@@ -291,6 +311,16 @@ jobs:
             exec -T db dropdb \
               -U "$POSTGRES_USER" \
               ice_school_restore_ci
+      - name: Smoke production lifecycle script with live Docker
+        run: |
+          ./install.sh update --ref "$GITHUB_SHA"
+          ./install.sh status
+          ./install.sh reinstall
+          ./install.sh uninstall
+          test -f .env.production
+          test -n "$(find backups -maxdepth 1 -name 'ice_school_*.dump' -print -quit)"
+          ./install.sh install
+          ./install.sh status
       - name: Stop production smoke stack
         if: always()
         run: |
