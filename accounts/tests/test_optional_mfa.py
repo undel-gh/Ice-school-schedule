@@ -87,16 +87,33 @@ def test_ordinary_password_with_totp_needs_challenge_and_keeps_safe_next():
 
     assert password.url == reverse("mfa:challenge")
     assert "_auth_user_id" not in client.session
-    invalid = _challenge(client, device, token="000000")
-    assert invalid.status_code == 200
-    assert "_auth_user_id" not in client.session
-
     accepted = _challenge(client, device)
     assert accepted.url == target
     assert str(client.session["_auth_user_id"]) == str(user.id)
     assert client.session[DEVICE_ID_SESSION_KEY] == device.persistent_id
     assert client.session[MFA_LOGIN_METHOD_SESSION_KEY] == "local"
     assert client.get(target).status_code == 200
+
+
+@pytest.mark.django_db
+def test_ordinary_totp_rejects_bad_token_before_creating_session():
+    client = Client()
+    user, device = _user("optional-invalid-token", totp=True)
+    assert _login(client, user).url == reverse("mfa:challenge")
+
+    denied = _challenge(client, device, token="not-a-code")
+
+    assert denied.status_code == 200
+    assert "_auth_user_id" not in client.session
+
+
+@pytest.mark.django_db
+def test_local_login_form_keeps_next_value_from_get():
+    client = Client()
+    response = client.get(reverse("login") + "?next=/account/")
+
+    assert response.status_code == 200
+    assert 'name="next" value="/account/"' in response.content.decode()
 
 
 @pytest.mark.django_db
