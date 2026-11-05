@@ -38,7 +38,16 @@ import sys
 args = sys.argv[1:]
 with Path(os.environ["MOCK_DOCKER_LOG"]).open("a") as handle:
     handle.write(json.dumps(args) + "\n")
-if args[0] == "info":
+    if args[0] == "compose" and args[1] != "version":
+        handle.write(
+            json.dumps(["compose-tag", os.environ.get("APP_IMAGE_TAG", "unset"), args])
+            + "\n"
+        )
+if args[:2] == ["image", "tag"]:
+    if os.environ.get("MOCK_TAG_FAIL") == "1":
+        sys.exit(44)
+    Path(os.environ["MOCK_RELEASE_IMAGE_STATE"]).write_text(args[2])
+elif args[0] == "info":
     print("27.4.0")
 elif args[0] == "inspect":
     print("running" if args[-1] == "mock-proxy" else "healthy")
@@ -52,6 +61,8 @@ elif args[0] == "compose":
     )
     if command == "ps" and "--quiet" in args:
         print("mock-" + args[-1])
+        if os.environ.get("MOCK_MULTI_IDS") == "1" and args[-1] == "web":
+            print("mock-duplicate-web")
     if command == "exec" and "psql" in args:
         print("0" if os.environ.get("MOCK_EMPTY_DB") == "1" else "1")
     if command == "build":
@@ -116,12 +127,15 @@ def stack(tmp_path):
     (tmp_path / "git-head").write_text("a" * 40)
     docker_log = tmp_path / "docker.log"
     git_log = tmp_path / "git.log"
+    release_state = tmp_path / "release-image-state"
+    release_state.write_text("old-release-image")
     environ = dict(
         os.environ,
         PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
         MOCK_DOCKER_LOG=str(docker_log),
         MOCK_GIT_LOG=str(git_log),
         MOCK_GIT_HEAD_FILE=str(tmp_path / "git-head"),
+        MOCK_RELEASE_IMAGE_STATE=str(release_state),
     )
 
     def invoke(*args, **overrides):
@@ -142,6 +156,7 @@ def stack(tmp_path):
     return {
         "root": tmp_path,
         "env_file": env_file,
+        "release_state": release_state,
         "invoke": invoke,
         "docker_calls": lambda: calls(docker_log),
         "git_calls": lambda: calls(git_log),
@@ -223,13 +238,25 @@ def test_first_install_skips_empty_dump_but_installs_schema(stack):
 def test_image_tag_stays_consistent_with_production_compose(stack):
     normal = stack["invoke"]("install")
     assert normal.returncode == 0, normal.stderr
-    assert "compose-image-tag=local" in normal.stdout
+    calls = stack["docker_calls"]()
+    first_build = next(x for x in calls if x[0] == "compose-tag" and "build" in x[2])
+    assert first_build[1].startswith("candidate-")
+    assert stack["release_state"].read_text() == "ice-school-app:" + first_build[1]
+    assert any(
+        x[0] == "compose-tag" and x[1] == "local" and "web" in x[2]
+        for x in calls
+    )
 
     stack["env_file"].write_text(VALID_ENV + "APP_IMAGE_TAG=release-1\n")
     stack["env_file"].chmod(0o600)
     custom = stack["invoke"]("reinstall")
     assert custom.returncode == 0, custom.stderr
-    assert "compose-image-tag=release-1" in custom.stdout
+    calls = stack["docker_calls"]()
+    assert ["image", "tag", stack["release_state"].read_text(), "ice-school-app:release-1"] in calls
+    assert any(
+        x[0] == "compose-tag" and x[1] == "release-1" and "web" in x[2]
+        for x in calls
+    )
 
 
 def test_update_backup_failure_blocks_fetch_build_and_rollout(stack):
@@ -257,6 +284,7 @@ def test_update_build_failure_restores_old_checkout_before_migration(stack):
     assert contains_command(commands, ["build", "migrate"])
     assert not any("migrate" in x for x in commands if x[:1] == ["run"])
     assert not contains_command(commands, ["up"])
+    assert stack["release_state"].read_text() == "old-release-image"
 
 
 def test_update_migration_failure_blocks_rollout_without_schema_rollback(stack):
@@ -272,6 +300,30 @@ def test_update_migration_failure_blocks_rollout_without_schema_rollback(stack):
     )
     assert not contains_command(commands, ["up"])
     assert "Do NOT blindly roll back" in response.stdout
+    assert stack["release_state"].read_text() == "old-release-image"
+    assert not any(x[:2] == ["image", "tag"] for x in stack["docker_calls"]())
+    assert any(
+        x[0] == "compose-tag" and x[1].startswith("candidate-") and "migrate" in x[2]
+        for x in stack["docker_calls"]()
+    )
+
+
+def test_tag_promotion_failure_prevents_rollout_and_keeps_release_image(stack):
+    result = stack["invoke"](
+        "update", "--ref", "v1.2.3", MOCK_TAG_FAIL="1"
+    )
+    assert result.returncode != 0
+    assert stack["release_state"].read_text() == "old-release-image"
+    assert not contains_command(
+        compose_commands(stack["docker_calls"]()), ["up"]
+    )
+    assert "Do NOT blindly roll back" in result.stdout
+
+
+def test_multiple_web_container_ids_fail_with_clear_error(stack):
+    result = stack["invoke"]("install", MOCK_MULTI_IDS="1")
+    assert result.returncode != 0
+    assert "multiple container IDs" in result.stderr
 
 
 def test_update_success_orders_backup_build_gate_rollout(stack):
@@ -283,7 +335,19 @@ def test_update_success_orders_backup_build_gate_rollout(stack):
     build = commands.index(["build", "migrate"])
     migrate = commands.index(["run", "--rm", "--no-deps", "-T", "migrate"])
     web = next(i for i, x in enumerate(commands) if x[:1] == ["up"] and "web" in x)
+    calls = stack["docker_calls"]()
+    promotion = next(i for i, x in enumerate(calls) if x[:2] == ["image", "tag"])
+    migration_call = next(
+        i for i, x in enumerate(calls)
+        if x[0] == "compose-tag" and x[1].startswith("candidate-")
+        and "run" in x[2] and "migrate" in x[2]
+    )
+    web_call = next(
+        i for i, x in enumerate(calls)
+        if x[0] == "compose-tag" and x[1] == "local" and "web" in x[2]
+    )
     assert backup < build < migrate < web
+    assert migration_call < promotion < web_call
     assert stack["env_file"].read_text() == VALID_ENV
 
 

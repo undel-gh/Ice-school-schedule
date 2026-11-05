@@ -12,6 +12,8 @@ PURGE_DATA=0
 OLD_SHA=""
 CHECKED_OUT=0
 MIGRATION_STARTED=0
+RELEASE_IMAGE_TAG=""
+CANDIDATE_IMAGE_TAG=""
 declare -A CFG=()
 
 info() { printf '[install] %s\n' "$*"; }
@@ -204,6 +206,10 @@ container_state() {
     printf 'absent\n'
     return 0
   fi
+  if [[ "$id" == *$'\n'* ]]; then
+    printf 'ambiguous-multiple-containers\n'
+    return 0
+  fi
   docker inspect --format \
     '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{if .State.Running}}running{{else}}stopped{{end}}{{end}}' \
     "$id" 2>/dev/null || printf 'unknown\n'
@@ -217,6 +223,8 @@ wait_state() {
       info "$service: $wanted"
       return 0
     fi
+    [[ "$current" == ambiguous-multiple-containers ]] &&
+      die "$service has multiple container IDs; inspect 'docker compose ps -a' before retrying"
     [[ "$current" == unhealthy || "$current" == stopped ]] &&
       die "$service entered state $current"
     sleep 2
@@ -237,7 +245,9 @@ backup_once() {
 
 backup_before_initial_migration() {
   local table_count
-  table_count="$("${COMPOSE[@]}" exec -T db psql     -U "${CFG[POSTGRES_USER]}" -d "${CFG[POSTGRES_DB]}" -Atqc     "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public';")" ||
+  table_count="$("${COMPOSE[@]}" exec -T db psql \
+    -U "${CFG[POSTGRES_USER]}" -d "${CFG[POSTGRES_DB]}" -Atqc \
+    "SELECT COUNT(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public';")" ||
     die "Cannot inspect database before install; refusing to migrate"
   [[ "$table_count" =~ ^[0-9]+$ ]] ||
     die "Unexpected database inspection output; refusing to migrate"
@@ -259,18 +269,40 @@ set_image_tag() {
   tag="${CFG[APP_IMAGE_TAG]:-local}"
   [[ "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] ||
     die "APP_IMAGE_TAG must be a valid Docker tag"
-  export APP_IMAGE_TAG="$tag"
-  info "Application revision: $sha (Compose image tag: $APP_IMAGE_TAG)"
+  RELEASE_IMAGE_TAG="$tag"
+  export APP_IMAGE_TAG="$RELEASE_IMAGE_TAG"
+  info "Application revision: $sha (release image: ice-school-app:$RELEASE_IMAGE_TAG)"
 }
 
 migration_gate() {
-  info "Building application image"
+  local sha
+  sha="$(git -C "$ROOT_DIR" rev-parse --verify HEAD)" ||
+    die "Cannot identify source revision"
+  # A unique candidate avoids overwriting the live release tag on build.
+  # Compose prefers this exported value over APP_IMAGE_TAG in .env.production.
+  CANDIDATE_IMAGE_TAG="candidate-${sha:0:12}-$$"
+  [[ "$CANDIDATE_IMAGE_TAG" != "$RELEASE_IMAGE_TAG" ]] ||
+    die "Candidate and release Docker tags must differ"
+
+  export APP_IMAGE_TAG="$CANDIDATE_IMAGE_TAG"
+  info "Building candidate image ice-school-app:$CANDIDATE_IMAGE_TAG"
   "${COMPOSE[@]}" build migrate ||
-    die "Build failed; active services were not replaced"
+    die "Candidate build failed; release image tag is unchanged"
+
   MIGRATION_STARTED=1
-  info "Running migration gate (no service rollout on failure)"
+  info "Running migrations on candidate image (release tag unchanged)"
   "${COMPOSE[@]}" run --rm --no-deps -T migrate ||
-    die "Migration gate failed; active services were not replaced"
+    die "Migration gate failed; release image tag is unchanged and rollout stopped"
+
+  # Promote only after migrate succeeds. A later ordinary Compose invocation
+  # will select the same release tag as the installer, never a failed image.
+  info "Promoting verified candidate to ice-school-app:$RELEASE_IMAGE_TAG"
+  docker image tag \
+    "ice-school-app:$CANDIDATE_IMAGE_TAG" \
+    "ice-school-app:$RELEASE_IMAGE_TAG" ||
+    die "Candidate tag promotion failed; release tag is unchanged"
+
+  export APP_IMAGE_TAG="$RELEASE_IMAGE_TAG"
 }
 
 rollout_services() {
