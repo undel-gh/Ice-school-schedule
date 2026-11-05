@@ -275,6 +275,9 @@ run_install() {
   info "Starting PostgreSQL (persistent volume retained)"
   "${COMPOSE[@]}" up -d db
   wait_state db healthy 65
+  # A preserved volume may contain prior data even on a fresh container.
+  # Always take a verified pre-migration dump, including on install reruns.
+  backup_once
   migration_gate
   rollout_services
 }
