@@ -160,7 +160,7 @@ PostgreSQL не публикуется на host network. Gunicorn доступ�
 
 Для принудительного уничтожения **именованных Docker volumes**, включая PostgreSQL и Caddy, существует только `./install.sh uninstall --purge-data`. Операция требует терминала и ввода `PURGE <APP_HOST>`. `.env.production` и backup-файлы в host bind mount даже в этом режиме не удаляются. **Не вызывайте** purge при обычной переустановке.
 
-Важные инварианты: после обновления образ остаётся доступным под `APP_IMAGE_TAG` из `.env.production` (по умолчанию `local`), поэтому обычный `docker compose up` не переключается на устаревший тег.  `update` откажется работать с грязным Git checkout, выполнит подтверждённый `pg_dump` через существующий backup service **до checkout/build/migrations** и остановится при любой ошибке; migrate запускается из нового образа как одноразовый Compose service, а `web` переключается только после успешного migration gate. Обновление схемы может быть несовместимо со старой версией, поэтому для breaking migrations нужен согласованный downtime и отдельный restore/forward-fix план. Скрипт не выполняет откат БД автоматически.
+Важные инварианты: `update` требует чистый Git checkout и создаёт проверенный backup **до checkout/build/migrations**. Сборка и миграции выполняются на отдельном образе `candidate-...`; **только после успешного migration gate** он получает рабочий `APP_IMAGE_TAG` из `.env.production` (по умолчанию `local`), непосредственно перед переключением `web`. Неудачная сборка или миграция **не меняет действующий release-тег**: ручной `docker compose up` не запустит непроверенный candidate. После первого `update` Git checkout остаётся в состоянии **detached HEAD** — это ожидаемо, следующий `update` снова получает `origin/main`. Для несовместимых schema migrations нужен downtime и отдельный restore/forward-fix план; скрипт не выполняет автоматический rollback БД.
 
 Ниже сохранён **ручной fallback** на случай отладки или недоступности скрипта. При ручном deploy всегда контролируйте build, exit code миграций и /healthz/.
 
@@ -211,31 +211,36 @@ curl -fsS https://<school-host>/healthz/ ; echo
 
 Критически важно: `git pull` сам по себе не обновляет код внутри уже запущенного Docker image.
 
-Базовый безопасный процесс:
+Для ручного обновления **не собирайте новый образ прямо под действующим тегом**. Безопасная последовательность:
 
 ```bash
 cd /opt/ice-school-schedule
-git status --short
-git pull --ff-only
+git status --short # должно быть чисто
+docker compose --env-file .env.production -f compose.production.yaml \
+  run --rm --no-deps -T backup /ops/postgres_backup.sh --once
+git fetch --prune --tags origin
+git checkout --detach origin/main # либо проверенный tag/commit
 git rev-parse HEAD
 
+# Вручную задайте реальный APP_IMAGE_TAG из .env.production (по умолчанию local):
+RELEASE_TAG=local
+CANDIDATE_TAG="candidate-$(git rev-parse --short=12 HEAD)-manual-$$"
+export APP_IMAGE_TAG="$CANDIDATE_TAG"
 docker compose --env-file .env.production -f compose.production.yaml build migrate
-
 docker compose --env-file .env.production -f compose.production.yaml \
-  up -d --force-recreate migrate
+  run --rm --no-deps -T migrate
 
+# Только после успешного завершения всех предыдущих команд:
+docker image tag "ice-school-app:$CANDIDATE_TAG" "ice-school-app:$RELEASE_TAG"
+export APP_IMAGE_TAG="$RELEASE_TAG"
 docker compose --env-file .env.production -f compose.production.yaml \
-  ps -a migrate
+  up -d --no-deps --force-recreate web scheduler backup
+docker compose --env-file .env.production -f compose.production.yaml \
+  up -d --no-deps --force-recreate proxy
+docker compose --env-file .env.production -f compose.production.yaml ps -a
 ```
 
-Продолжать следует только после `Exited (0)` у `migrate`:
-
-```bash
-docker compose --env-file .env.production -f compose.production.yaml \
-  up -d --no-deps --force-recreate web scheduler
-```
-
-Если изменялись proxy/backup/Compose-настройки, выполните `up -d` для всего stack.
+При ручном выполнении используйте `set -e` либо проверяйте код возврата **каждого** шага: при ошибке backup, build или migrate нельзя выполнять дальнейшие команды. Для существующей БД первый install через ручную сборку активного тега также небезопасен — используйте `./install.sh install` или приведённую последовательность.
 
 ## Scheduler
 
