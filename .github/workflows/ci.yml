@@ -17,7 +17,7 @@ jobs:
           shellcheck -S warning install.sh
       - name: Exercise lifecycle safety and failure guards
         run: |
-          python -m pip install pytest
+          python -m pip install -e '.[dev]'
           python -m pytest -q ops/tests/test_install_script.py
 
   test:
