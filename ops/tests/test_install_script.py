@@ -448,6 +448,109 @@ def enable_offsite(stack):
     return password, credentials
 
 
+def test_fresh_install_offsite_upload_after_migration_before_rollout(stack):
+    enable_offsite(stack)
+    result = stack["invoke"]("install", MOCK_EMPTY_DB="1")
+    calls = stack["docker_calls"]()
+
+    assert result.returncode == 0, result.stderr
+    assert "New empty database" in result.stdout
+
+    def index(condition):
+        return next(i for i, call in enumerate(calls) if condition(call))
+
+    migrate = index(
+        lambda c: c[:1] == ["compose"] and "run" in c and "migrate" in c
+    )
+    backup = index(
+        lambda c: c[:1] == ["compose"] and "run" in c and "backup" in c
+    )
+    remote = index(
+        lambda c: c[:1] == ["compose"] and "run" in c and "offsite-backup" in c
+    )
+    promoted = index(lambda c: c[:2] == ["image", "tag"])
+    web = index(
+        lambda c: c[:1] == ["compose"] and "up" in c and "web" in c
+    )
+    sidecar = index(
+        lambda c: c[:1] == ["compose"] and "up" in c and "offsite-backup" in c
+    )
+    assert migrate < backup < remote < promoted < web < sidecar
+    assert sum(
+        c[:1] == ["compose"] and "run" in c and "offsite-backup" in c
+        for c in calls
+    ) == 1
+    assert stack["release_state"].read_text().startswith(
+        "ice-school-app:candidate-"
+    )
+
+
+def test_fresh_install_offsite_failure_blocks_release_after_migrations(stack):
+    enable_offsite(stack)
+    response = stack["invoke"](
+        "install", MOCK_EMPTY_DB="1", MOCK_OFFSITE_FAIL="1"
+    )
+    calls = stack["docker_calls"]()
+    commands = compose_commands(calls)
+
+    assert response.returncode != 0
+    assert "Initial post-migration encrypted offsite backup failed" in response.stderr
+    assert contains_command(
+        commands, ["run", "--rm", "--no-deps", "-T", "migrate"]
+    )
+    assert any(c[:1] == ["run"] and "backup" in c for c in commands)
+    assert any(
+        c[:1] == ["run"] and "offsite-backup" in c for c in commands
+    )
+    assert not any(c[:2] == ["image", "tag"] for c in calls)
+    assert not any(c[:1] == ["up"] and "web" in c for c in commands)
+    assert not any(
+        c[:1] == ["up"] and "offsite-backup" in c for c in commands
+    )
+    assert stack["release_state"].read_text() == "old-release-image"
+    assert any(c[:2] == ["image", "rm"] for c in calls)
+
+
+def test_fresh_install_local_backup_failure_stops_before_release(stack):
+    enable_offsite(stack)
+    response = stack["invoke"](
+        "install", MOCK_EMPTY_DB="1", MOCK_BACKUP_FAIL="1"
+    )
+    calls = stack["docker_calls"]()
+    commands = compose_commands(calls)
+
+    assert response.returncode != 0
+    assert "Initial post-migration PostgreSQL backup failed" in response.stderr
+    assert contains_command(
+        commands, ["run", "--rm", "--no-deps", "-T", "migrate"]
+    )
+    assert not any(
+        c[:1] == ["run"] and "offsite-backup" in c for c in commands
+    )
+    assert not any(c[:2] == ["image", "tag"] for c in calls)
+    assert not any(c[:1] == ["up"] and "web" in c for c in commands)
+    assert stack["release_state"].read_text() == "old-release-image"
+
+
+def test_reused_install_offsite_still_backs_up_before_migrations(stack):
+    enable_offsite(stack)
+    response = stack["invoke"]("install")
+    commands = compose_commands(stack["docker_calls"]())
+
+    assert response.returncode == 0, response.stderr
+
+    def index(service):
+        return next(
+            i for i, c in enumerate(commands)
+            if c[:1] == ["run"] and service in c
+        )
+
+    assert index("backup") < index("offsite-backup") < index("migrate")
+    assert sum(
+        c[:1] == ["run"] and "offsite-backup" in c for c in commands
+    ) == 1
+
+
 def test_offsite_update_requires_remote_copy_before_migration(stack):
     enable_offsite(stack)
     response = stack["invoke"]("update", "--ref", "v1.2.3")
