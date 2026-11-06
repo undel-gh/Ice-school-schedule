@@ -12,6 +12,7 @@ PURGE_DATA=0
 OLD_SHA=""
 CHECKED_OUT=0
 MIGRATION_STARTED=0
+INITIAL_EMPTY_DB=0
 RELEASE_IMAGE_TAG=""
 CANDIDATE_IMAGE_TAG=""
 declare -A CFG=()
@@ -286,17 +287,25 @@ require_existing_db() {
 }
 
 backup_once() {
-  info "Creating and validating a fresh PostgreSQL backup before modifying the installation"
-  "${COMPOSE[@]}" run --rm --no-deps -T backup /ops/postgres_backup.sh --once ||
+  local phase="${1:-pre-migration}"
+  info "Creating and validating a fresh PostgreSQL backup ($phase)"
+  if ! "${COMPOSE[@]}" run --rm --no-deps -T backup /ops/postgres_backup.sh --once; then
+    if [[ "$phase" == post-migration ]]; then
+      die "Initial post-migration PostgreSQL backup failed; database schema may have changed; rollout stopped"
+    fi
     die "Pre-update backup failed. No migration or rollout attempted."
+  fi
   if [[ "$OFFSITE_ENABLED" == 1 ]]; then
-    # A risky database upgrade must not proceed until the *new* dump has
-    # reached encrypted off-host storage (not merely queued for polling).
-    info "Uploading verified pre-migration dump to encrypted offsite repository"
+    # The deployment must not rely on the background uploader to catch up.
+    info "Uploading verified $phase dump to encrypted offsite repository"
     "${COMPOSE[@]}" build offsite-backup ||
       die "Cannot build offsite backup image; rollout stopped"
-    "${COMPOSE[@]}" run --rm --no-deps -T offsite-backup --once ||
+    if ! "${COMPOSE[@]}" run --rm --no-deps -T offsite-backup --once; then
+      if [[ "$phase" == post-migration ]]; then
+        die "Initial post-migration encrypted offsite backup failed; database schema may have changed; release tag not promoted"
+      fi
       die "Encrypted offsite backup failed; rollout stopped before migration"
+    fi
   fi
 }
 
@@ -309,9 +318,12 @@ backup_before_initial_migration() {
   [[ "$table_count" =~ ^[0-9]+$ ]] ||
     die "Unexpected database inspection output; refusing to migrate"
   if (( table_count > 0 )); then
-    # Install can be rerun after uninstall; persisted data still needs backup.
+    # Reused installation: preserve the existing pre-migration backup gate.
+    INITIAL_EMPTY_DB=0
     backup_once
   else
+    # The first useful dump can only be produced after schema creation.
+    INITIAL_EMPTY_DB=1
     info "New empty database: skipping empty pre-migration dump"
   fi
 }
@@ -352,11 +364,17 @@ migration_gate() {
     die "Migration gate failed; release image tag is unchanged and rollout stopped"
 
   if [[ "$OFFSITE_ENABLED" == 1 ]]; then
-    "${COMPOSE[@]}" build offsite-backup ||
-      die "Offsite service build failed; release tag remains unchanged"
+    if (( INITIAL_EMPTY_DB == 1 )); then
+      # First install: create and upload a verified dump *synchronously*
+      # before release-tag promotion and before starting web/sidecar.
+      backup_once post-migration
+    else
+      "${COMPOSE[@]}" build offsite-backup ||
+        die "Offsite service build failed; release tag remains unchanged"
+    fi
   fi
 
-  # Promote only after migrate succeeds. A later ordinary Compose invocation
+  # Promote only after migrate and any required initial upload succeed. A later ordinary Compose invocation
   # will select the same release tag as the installer, never a failed image.
   info "Promoting verified candidate to ice-school-app:$RELEASE_IMAGE_TAG"
   docker image tag \
