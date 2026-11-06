@@ -101,6 +101,14 @@ def test_shell_syntax():
         assert result.returncode == 0
 
 
+def test_invalid_retry_interval_is_rejected(uploader):
+    add_dump(uploader)
+    response = uploader["invoke"](OFFSITE_RETRY_SECONDS="0")
+    assert response.returncode == 2
+    assert "OFFSITE_RETRY_SECONDS" in response.stderr
+    assert uploader["calls"]() == []
+
+
 def test_plaintext_monitoring_url_is_refused(uploader):
     add_dump(uploader)
     response = uploader["invoke"](
