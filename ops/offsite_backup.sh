@@ -6,6 +6,7 @@ umask 077
 BACKUP_DIR="${OFFSITE_BACKUP_DIR:-/backups}"
 STATUS_DIR="${OFFSITE_STATUS_DIR:-/state}"
 POLL_SECONDS="${OFFSITE_POLL_SECONDS:-300}"
+RETRY_SECONDS="${OFFSITE_RETRY_SECONDS:-30}"
 KEEP_DAILY="${OFFSITE_KEEP_DAILY:-14}"
 KEEP_WEEKLY="${OFFSITE_KEEP_WEEKLY:-8}"
 KEEP_MONTHLY="${OFFSITE_KEEP_MONTHLY:-12}"
@@ -30,6 +31,7 @@ positive_int() {
   [ "$2" -gt 0 ] || { echo "$1 must be positive" >&2; exit 2; }
 }
 positive_int OFFSITE_POLL_SECONDS "$POLL_SECONDS"
+positive_int OFFSITE_RETRY_SECONDS "$RETRY_SECONDS"
 positive_int OFFSITE_KEEP_DAILY "$KEEP_DAILY"
 positive_int OFFSITE_KEEP_WEEKLY "$KEEP_WEEKLY"
 positive_int OFFSITE_KEEP_MONTHLY "$KEEP_MONTHLY"
@@ -122,7 +124,12 @@ fi
 [ "$#" -eq 0 ] || { echo "Usage: offsite_backup.sh [--once]" >&2; exit 2; }
 trap 'exit 0' TERM INT
 while :; do
-  run_once || true
-  sleep "$POLL_SECONDS" &
+  if run_once; then
+    delay="$POLL_SECONDS"
+  else
+    # Recover promptly after transient S3 failures or a missing initial dump.
+    delay="$RETRY_SECONDS"
+  fi
+  sleep "$delay" &
   wait "$!" || true
 done
