@@ -12,6 +12,7 @@ PURGE_DATA=0
 OLD_SHA=""
 CHECKED_OUT=0
 MIGRATION_STARTED=0
+INITIAL_EMPTY_DB=0
 RELEASE_IMAGE_TAG=""
 CANDIDATE_IMAGE_TAG=""
 declare -A CFG=()
@@ -150,6 +151,16 @@ load_env() {
     fi
     CFG["$key"]="$value"
   done < "$ENV_FILE"
+  # Preserve existing deployments: offsite overlay is activated only when
+  # explicitly configured, never by implicit Compose profiles.
+  OFFSITE_ENABLED="${CFG[OFFSITE_ENABLED]:-0}"
+  [[ "$OFFSITE_ENABLED" == 0 || "$OFFSITE_ENABLED" == 1 ]] ||
+    die "OFFSITE_ENABLED must be 0 or 1"
+  COMPOSE=(docker compose --project-directory "$ROOT_DIR" --env-file "$ENV_FILE"
+    -f "$ROOT_DIR/compose.production.yaml")
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    COMPOSE+=(-f "$ROOT_DIR/compose.offsite.yaml")
+  fi
 }
 
 validate_env() {
@@ -180,10 +191,40 @@ validate_env() {
   (( ${#password} >= 20 )) && [[ "$password" != *replace* ]] ||
     die "Set a strong non-placeholder POSTGRES_PASSWORD"
   backup_path="${CFG[BACKUP_HOST_PATH]:-./backups}"
+  validate_offsite
   [[ "$backup_path" != *'$'* && "$backup_path" != *'~'* &&
      "$backup_path" != *'*'* && "$backup_path" != *'?'* &&
      "$backup_path" != *'['* ]] ||
     die "BACKUP_HOST_PATH must be a literal relative or absolute path"
+}
+
+validate_offsite() {
+  [[ "$OFFSITE_ENABLED" == 1 ]] || return 0
+  local repo key path mode backup_path
+  backup_path="${CFG[BACKUP_HOST_PATH]:-./backups}"
+  [[ "$backup_path" = /* ]] || backup_path="$ROOT_DIR/$backup_path"
+  backup_path="$(realpath -m "$backup_path")" ||
+    die "Cannot canonicalize BACKUP_HOST_PATH"
+  repo="${CFG[OFFSITE_RESTIC_REPOSITORY]:-}"
+  local ping_url
+  ping_url="${CFG[OFFSITE_SUCCESS_PING_URL]:-}"
+  [[ -z "$ping_url" || ( "$ping_url" == https://* && "$ping_url" != *@* ) ]] ||
+    die "OFFSITE_SUCCESS_PING_URL must use HTTPS and no embedded credentials"
+  # TLS is mandatory on production S3 endpoints; disallow URL credentials.
+  [[ "$repo" == s3:https://*/* && "$repo" != *@* ]] ||
+    die "OFFSITE_RESTIC_REPOSITORY must use s3:https://endpoint/bucket/prefix"
+  for key in OFFSITE_RESTIC_PASSWORD_HOST_FILE OFFSITE_AWS_CREDENTIALS_HOST_FILE; do
+    path="${CFG[$key]:-}"
+    [[ "$path" == /* && -f "$path" && ! -L "$path" ]] ||
+      die "$key must be an absolute path to a regular non-symlink file"
+    path="$(realpath -e "$path")" || die "$key cannot be resolved safely"
+    [[ "$path" != "$ROOT_DIR" && "$path" != "$ROOT_DIR/"* &&
+       "$path" != "$backup_path" && "$path" != "$backup_path/"* ]] ||
+      die "$key must be outside the Git checkout and local backups"
+    mode="$(stat -c '%a' "$path")"
+    [[ "$mode" =~ ^[0-7]+$ ]] && (( (8#$mode & 077) == 0 )) ||
+      die "$key must not be readable by group or others (chmod 600)"
+  done
 }
 
 prepare_backup_dir() {
@@ -246,9 +287,26 @@ require_existing_db() {
 }
 
 backup_once() {
-  info "Creating and validating a fresh PostgreSQL backup before modifying the installation"
-  "${COMPOSE[@]}" run --rm --no-deps -T backup /ops/postgres_backup.sh --once ||
+  local phase="${1:-pre-migration}"
+  info "Creating and validating a fresh PostgreSQL backup ($phase)"
+  if ! "${COMPOSE[@]}" run --rm --no-deps -T backup /ops/postgres_backup.sh --once; then
+    if [[ "$phase" == post-migration ]]; then
+      die "Initial post-migration PostgreSQL backup failed; database schema may have changed; rollout stopped"
+    fi
     die "Pre-update backup failed. No migration or rollout attempted."
+  fi
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    # The deployment must not rely on the background uploader to catch up.
+    info "Uploading verified $phase dump to encrypted offsite repository"
+    "${COMPOSE[@]}" build offsite-backup ||
+      die "Cannot build offsite backup image; rollout stopped"
+    if ! "${COMPOSE[@]}" run --rm --no-deps -T offsite-backup --once; then
+      if [[ "$phase" == post-migration ]]; then
+        die "Initial post-migration encrypted offsite backup failed; database schema may have changed; release tag not promoted"
+      fi
+      die "Encrypted offsite backup failed; rollout stopped before migration"
+    fi
+  fi
 }
 
 backup_before_initial_migration() {
@@ -260,9 +318,12 @@ backup_before_initial_migration() {
   [[ "$table_count" =~ ^[0-9]+$ ]] ||
     die "Unexpected database inspection output; refusing to migrate"
   if (( table_count > 0 )); then
-    # Install can be rerun after uninstall; persisted data still needs backup.
+    # Reused installation: preserve the existing pre-migration backup gate.
+    INITIAL_EMPTY_DB=0
     backup_once
   else
+    # The first useful dump can only be produced after schema creation.
+    INITIAL_EMPTY_DB=1
     info "New empty database: skipping empty pre-migration dump"
   fi
 }
@@ -302,7 +363,18 @@ migration_gate() {
   "${COMPOSE[@]}" run --rm --no-deps -T migrate ||
     die "Migration gate failed; release image tag is unchanged and rollout stopped"
 
-  # Promote only after migrate succeeds. A later ordinary Compose invocation
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    if (( INITIAL_EMPTY_DB == 1 )); then
+      # First install: create and upload a verified dump *synchronously*
+      # before release-tag promotion and before starting web/sidecar.
+      backup_once post-migration
+    else
+      "${COMPOSE[@]}" build offsite-backup ||
+        die "Offsite service build failed; release tag remains unchanged"
+    fi
+  fi
+
+  # Promote only after migrate and any required initial upload succeed. A later ordinary Compose invocation
   # will select the same release tag as the installer, never a failed image.
   info "Promoting verified candidate to ice-school-app:$RELEASE_IMAGE_TAG"
   docker image tag \
@@ -320,6 +392,13 @@ rollout_services() {
   info "Starting or recreating reverse proxy"
   "${COMPOSE[@]}" up -d --no-deps --force-recreate proxy
   wait_state proxy running 20
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    info "Starting encrypted offsite backup uploader"
+    "${COMPOSE[@]}" up -d --no-deps --force-recreate offsite-backup
+    wait_state offsite-backup healthy 120
+  else
+    info "WARNING: OFFSITE_ENABLED=0; database dumps remain local only"
+  fi
   info "Completed revision: $(git -C "$ROOT_DIR" rev-parse --verify HEAD)"
   "${COMPOSE[@]}" ps --all
 }
@@ -426,6 +505,13 @@ run_status() {
   for service in db web scheduler backup proxy; do
     info "$service: $(container_state "$service")"
   done
+  if [[ "$OFFSITE_ENABLED" == 1 ]]; then
+    info "offsite-backup: $(container_state offsite-backup)"
+    [[ "$(container_state offsite-backup)" == healthy ]] ||
+      die "Encrypted offsite backup is not healthy"
+  else
+    info "WARNING: offsite-backup disabled; no encrypted external copies"
+  fi
   [[ "$(container_state web)" == healthy ]] ||
     die "Application healthcheck is not healthy"
 }

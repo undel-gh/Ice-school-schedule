@@ -73,6 +73,8 @@ elif args[0] == "compose":
     if command == "build" and os.environ.get("MOCK_BUILD_FAIL") == "1":
         sys.exit(41)
     if command == "run":
+        if "offsite-backup" in args and os.environ.get("MOCK_OFFSITE_FAIL") == "1":
+            sys.exit(46)
         if "backup" in args and os.environ.get("MOCK_BACKUP_FAIL") == "1":
             sys.exit(42)
         if "migrate" in args and os.environ.get("MOCK_MIGRATION_FAIL") == "1":
@@ -423,6 +425,215 @@ def test_reinstall_preserves_data_and_requires_healthy_db(stack):
     )
     assert not contains_command(commands, ["down"])
     assert stack["env_file"].exists()
+
+
+def enable_offsite(stack):
+    root = stack["root"]
+    secret_dir = root.parent / (root.name + "-offsite-secrets")
+    secret_dir.mkdir()
+    password = secret_dir / "restic-password"
+    credentials = secret_dir / "aws-credentials"
+    password.write_text("secret-passphrase-for-tests")
+    credentials.write_text("[default]\naws_access_key_id=test\naws_secret_access_key=test\n")
+    password.chmod(0o600)
+    credentials.chmod(0o600)
+    stack["env_file"].write_text(
+        VALID_ENV
+        + "OFFSITE_ENABLED=1\n"
+        + "OFFSITE_RESTIC_REPOSITORY=s3:https://s3.example.net/school-backup\n"
+        + f"OFFSITE_RESTIC_PASSWORD_HOST_FILE={password}\n"
+        + f"OFFSITE_AWS_CREDENTIALS_HOST_FILE={credentials}\n"
+    )
+    stack["env_file"].chmod(0o600)
+    return password, credentials
+
+
+def test_fresh_install_offsite_upload_after_migration_before_rollout(stack):
+    enable_offsite(stack)
+    result = stack["invoke"]("install", MOCK_EMPTY_DB="1")
+    calls = stack["docker_calls"]()
+
+    assert result.returncode == 0, result.stderr
+    assert "New empty database" in result.stdout
+
+    def index(condition):
+        return next(i for i, call in enumerate(calls) if condition(call))
+
+    migrate = index(
+        lambda c: c[:1] == ["compose"] and "run" in c and "migrate" in c
+    )
+    backup = index(
+        lambda c: c[:1] == ["compose"] and "run" in c and "backup" in c
+    )
+    remote = index(
+        lambda c: c[:1] == ["compose"] and "run" in c and "offsite-backup" in c
+    )
+    promoted = index(lambda c: c[:2] == ["image", "tag"])
+    web = index(
+        lambda c: c[:1] == ["compose"] and "up" in c and "web" in c
+    )
+    sidecar = index(
+        lambda c: c[:1] == ["compose"] and "up" in c and "offsite-backup" in c
+    )
+    assert migrate < backup < remote < promoted < web < sidecar
+    assert sum(
+        c[:1] == ["compose"] and "run" in c and "offsite-backup" in c
+        for c in calls
+    ) == 1
+    assert stack["release_state"].read_text().startswith(
+        "ice-school-app:candidate-"
+    )
+
+
+def test_fresh_install_offsite_failure_blocks_release_after_migrations(stack):
+    enable_offsite(stack)
+    response = stack["invoke"](
+        "install", MOCK_EMPTY_DB="1", MOCK_OFFSITE_FAIL="1"
+    )
+    calls = stack["docker_calls"]()
+    commands = compose_commands(calls)
+
+    assert response.returncode != 0
+    assert "Initial post-migration encrypted offsite backup failed" in response.stderr
+    assert contains_command(
+        commands, ["run", "--rm", "--no-deps", "-T", "migrate"]
+    )
+    assert any(c[:1] == ["run"] and "backup" in c for c in commands)
+    assert any(
+        c[:1] == ["run"] and "offsite-backup" in c for c in commands
+    )
+    assert not any(c[:2] == ["image", "tag"] for c in calls)
+    assert not any(c[:1] == ["up"] and "web" in c for c in commands)
+    assert not any(
+        c[:1] == ["up"] and "offsite-backup" in c for c in commands
+    )
+    assert stack["release_state"].read_text() == "old-release-image"
+    assert any(c[:2] == ["image", "rm"] for c in calls)
+
+
+def test_fresh_install_local_backup_failure_stops_before_release(stack):
+    enable_offsite(stack)
+    response = stack["invoke"](
+        "install", MOCK_EMPTY_DB="1", MOCK_BACKUP_FAIL="1"
+    )
+    calls = stack["docker_calls"]()
+    commands = compose_commands(calls)
+
+    assert response.returncode != 0
+    assert "Initial post-migration PostgreSQL backup failed" in response.stderr
+    assert contains_command(
+        commands, ["run", "--rm", "--no-deps", "-T", "migrate"]
+    )
+    assert not any(
+        c[:1] == ["run"] and "offsite-backup" in c for c in commands
+    )
+    assert not any(c[:2] == ["image", "tag"] for c in calls)
+    assert not any(c[:1] == ["up"] and "web" in c for c in commands)
+    assert stack["release_state"].read_text() == "old-release-image"
+
+
+def test_reused_install_offsite_still_backs_up_before_migrations(stack):
+    enable_offsite(stack)
+    response = stack["invoke"]("install")
+    commands = compose_commands(stack["docker_calls"]())
+
+    assert response.returncode == 0, response.stderr
+
+    def index(service):
+        return next(
+            i for i, c in enumerate(commands)
+            if c[:1] == ["run"] and service in c
+        )
+
+    assert index("backup") < index("offsite-backup") < index("migrate")
+    assert sum(
+        c[:1] == ["run"] and "offsite-backup" in c for c in commands
+    ) == 1
+
+
+def test_offsite_update_requires_remote_copy_before_migration(stack):
+    enable_offsite(stack)
+    response = stack["invoke"]("update", "--ref", "v1.2.3")
+    commands = compose_commands(stack["docker_calls"]())
+    assert response.returncode == 0, response.stderr
+    local = next(
+        i for i, x in enumerate(commands)
+        if x[:1] == ["run"] and "backup" in x and "offsite-backup" not in x
+    )
+    remote = next(
+        i for i, x in enumerate(commands)
+        if x[:1] == ["run"] and "offsite-backup" in x
+    )
+    migrate = next(
+        i for i, x in enumerate(commands)
+        if x[:1] == ["run"] and "migrate" in x
+    )
+    assert local < remote < migrate
+    assert any(x[:1] == ["up"] and "offsite-backup" in x for x in commands)
+
+
+def test_offsite_upload_failure_blocks_migrations_and_checkout(stack):
+    enable_offsite(stack)
+    response = stack["invoke"]("update", MOCK_OFFSITE_FAIL="1")
+    commands = compose_commands(stack["docker_calls"]())
+    assert response.returncode != 0
+    assert "Encrypted offsite backup failed" in response.stderr
+    assert not any("migrate" in x for x in commands if x[:1] == ["run"])
+    assert not any("fetch" in x for x in stack["git_calls"]())
+    assert stack["release_state"].read_text() == "old-release-image"
+
+
+def test_offsite_password_file_must_be_private(stack):
+    password, _ = enable_offsite(stack)
+    password.chmod(0o644)
+    response = stack["invoke"]("install")
+    assert response.returncode != 0
+    assert "OFFSITE_RESTIC_PASSWORD_HOST_FILE" in response.stderr
+    assert not contains_command(compose_commands(stack["docker_calls"]()), ["build"])
+
+
+def test_offsite_ping_url_requires_https(stack):
+    enable_offsite(stack)
+    with stack["env_file"].open("a") as output:
+        output.write("OFFSITE_SUCCESS_PING_URL=http://monitor.example.net/ping/secret\n")
+    result = stack["invoke"]("install")
+    assert result.returncode != 0
+    assert "OFFSITE_SUCCESS_PING_URL" in result.stderr
+    assert not contains_command(
+        compose_commands(stack["docker_calls"]()), ["build"]
+    )
+
+
+def test_offsite_secrets_must_not_reside_inside_external_backup_dir(stack):
+    password, _ = enable_offsite(stack)
+    backup_dir = stack["root"].parent / (stack["root"].name + "-host-backups")
+    backup_dir.mkdir()
+    password_inside = backup_dir / "restic-password"
+    password_inside.write_text(password.read_text())
+    password_inside.chmod(0o600)
+
+    settings = stack["env_file"].read_text()
+    settings = settings.replace("BACKUP_HOST_PATH=./backups",
+                                f"BACKUP_HOST_PATH={backup_dir}")
+    settings = settings.replace(str(password), str(password_inside))
+    stack["env_file"].write_text(settings)
+    stack["env_file"].chmod(0o600)
+
+    result = stack["invoke"]("install")
+    assert result.returncode != 0
+    assert "outside the Git checkout and local backups" in result.stderr
+    assert not contains_command(
+        compose_commands(stack["docker_calls"]()), ["build"]
+    )
+
+
+def test_offsite_requires_tls_repository_not_plain_http(stack):
+    enable_offsite(stack)
+    content = stack["env_file"].read_text().replace("s3:https://", "s3:http://")
+    stack["env_file"].write_text(content)
+    result = stack["invoke"]("install")
+    assert result.returncode != 0
+    assert "OFFSITE_RESTIC_REPOSITORY" in result.stderr
 
 
 def test_uninstall_does_not_remove_volumes_or_secrets(stack):
